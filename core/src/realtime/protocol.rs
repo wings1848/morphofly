@@ -98,6 +98,9 @@ pub enum ClientCommand {
     /// 创建/更新会话配置
     #[serde(rename = "session.update")]
     SessionUpdate { session: SessionConfig },
+    /// 创建/更新会话配置（原始 JSON，保留 `"turn_detection": null` 这类「显式 null」语义）
+    #[serde(rename = "session.update")]
+    RawSessionUpdate { session: Value },
     /// 追加一段上行音频（base64 的 pcm16）
     #[serde(rename = "input_audio_buffer.append")]
     AppendAudio { audio: String },
@@ -189,7 +192,13 @@ pub struct TurnDetection {
 
 impl Default for TurnDetection {
     fn default() -> Self {
-        // 2026-10-24 实测（wings-pc，testdata/audio/04_ack_zai.mp3 走 WS）：
+        // ⚠️ 2026-10-24 二次实测（参数扫描）——**这些参数对 StepFun 实际不生效**：
+        //    silence_duration_ms = 100 / 300 / 500 / 1000 → speech_stopped 恒在语音结束后 1604~1613ms
+        //    energy_awakeness_threshold = 100 / 500 / 1000 → 同样无差别
+        //    结论：StepFun 的 VAD 判定「说完」固定约 1.6 秒，是服务端行为，我们调不动。
+        //    用户感知端到端延迟 = 1.6s(VAD) + 0.4~5s(推理) = **2~7 秒**，P1（<800ms）不达标。
+        //
+        // 2026-10-24 首次实测（wings-pc，testdata/audio/04_ack_zai.mp3 走 WS）：
         //  - energy_awakeness_threshold **默认 2500 太高**：用正常音量 TTS 音频推流，
         //    VAD 完全不触发（收不到 speech_started），等 45s 也没有任何 response。
         //  - 调到 500 后立刻出现完整链路：

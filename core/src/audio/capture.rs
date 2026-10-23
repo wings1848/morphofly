@@ -565,6 +565,8 @@ pub struct AudioCapture {
     forwarder: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// 转发线程的停车开关（stop 时置 true 让线程退出）。
     forward_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// 文件源专用：文件是否已全部推完（真麦克风源永远是 false）
+    file_finished: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for AudioCapture {
@@ -632,6 +634,12 @@ impl AudioCapture {
         let tx2 = tx.clone();
         let frame_samples = cfg.frame_samples;
         let total = out.len();
+        // 文件源推完后必须能告诉调用方「没了」。
+        // 2026-10-24 踩坑：AudioCapture 自己持着 tx，所以 broadcast 通道
+        // 永远不会因为发送端 drop 而关闭，`recv()` 会一直 pending。
+        // 用这个 flag 让调用方能判断「文件推完了」。
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished2 = finished.clone();
         std::thread::spawn(move || {
             let mut buf = out;
             // 末尾补静音让服务端 VAD 判定「说完了」。
@@ -665,6 +673,7 @@ impl AudioCapture {
             if !acc.is_empty() {
                 let _ = tx2.send(acc);
             }
+            finished2.store(true, std::sync::atomic::Ordering::SeqCst);
             tracing::info!(total, "file_source 推完");
         });
 
@@ -678,6 +687,7 @@ impl AudioCapture {
             simple_rx: Mutex::new(None),
             forwarder: Mutex::new(None),
             forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            file_finished: finished,
         })
     }
 
@@ -699,6 +709,7 @@ impl AudioCapture {
             simple_rx: Mutex::new(None),
             forwarder: Mutex::new(None),
             forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            file_finished: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -782,6 +793,15 @@ impl AudioCapture {
     /// 丢弃量见 [`Self::frames_dropped`]。
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Vec<i16>> {
         self.tx.subscribe()
+    }
+
+    /// 文件源是否已经把整个文件推完了（真麦克风源永远返回 false）。
+    ///
+    /// 用途：`file_source` 造出来的 `AudioCapture` 自己持着 broadcast 的发送端，
+    /// 所以 `recv()` 不会因为「发完了」而返回 `Err(Closed)`。调用方要判断
+    /// 「文件还有没有」，必须查这个 flag。
+    pub fn is_file_finished(&self) -> bool {
+        self.file_finished.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// 配置。

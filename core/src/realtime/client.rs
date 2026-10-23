@@ -420,6 +420,16 @@ impl RealtimeClient {
     }
 
     /// 往上下文里塞一条任意 item（`conversation.item.create`）
+    /// 发原始 session.update（绕过 `SessionConfig` 的 `skip_serializing_if`）。
+    ///
+    /// 为什么需要它：StepFun 文档说「把 `turn_detection` 设为 **null** 可禁用 VAD」，
+    /// 而 `SessionConfig.turn_detection` 是 `Option` + `skip_serializing_if=is_none`，
+    /// 序列化时会**整个字段省略** —— 服务端看到「没这个字段」和「字段为 null」是两种行为。
+    /// 禁用 VAD 必须真的发 `"turn_detection": null`。
+    pub fn send_session_update_raw(&self, session: Value) -> Result<()> {
+        self.send_command(ClientCommand::RawSessionUpdate { session })
+    }
+
     pub fn send_item(&self, item: Value) -> Result<()> {
         self.send_command(ClientCommand::ConversationItemCreate { item })
     }
