@@ -69,6 +69,7 @@ impl VoiceSession {
         })
     }
 
+    #[allow(dead_code)] // 供后续「手动触发一轮」等场景
     pub fn client(&self) -> Arc<RealtimeClient> {
         self.client.clone()
     }
@@ -101,10 +102,22 @@ impl VoiceSession {
         let stop2 = stop.clone();
         let m_machine = machine.clone();
         let on_spec = on_spectrum.clone();
+        // 本地 VAD 只在 --features kws 下存在，这些 clone 也只有那时候用
+        #[cfg(feature = "kws")]
+        let player_in_push = player.clone();
+        #[cfg(feature = "kws")]
+        let interruptions_in_push = interruptions.clone();
+        #[cfg(feature = "kws")]
+        let machine_in_push = machine.clone();
         let push_task = tokio::spawn(async move {
             let mut rx = mic2.subscribe();
             let mut spectrum = Spectrum::with_default_window();
             let mut idle_frames = 0u64;
+            // ★ 本地 VAD：打断的触发器。不等云端 speech_started（那要 1.6s）
+            #[cfg(feature = "kws")]
+            let vad = diemeng_core::vad::LocalVad::new(&diemeng_core::vad::VadConfig::default()).ok();
+            #[cfg(feature = "kws")]
+            let mut vad_cooldown = 0u32;
             loop {
                 if stop2.load(Ordering::Relaxed) {
                     break;
@@ -114,6 +127,30 @@ impl VoiceSession {
                         let rms = diemeng_core::spectrum::rms_i16(&frame);
                         let bins = spectrum.analyze_i16(&frame);
                         on_spec(bins, diemeng_core::spectrum::rms_to_visual(rms));
+                        // ★ 本地 VAD 先停，再推流（顺序不能反）
+                        #[cfg(feature = "kws")]
+                        {
+                            if let Some(v) = vad.as_ref() {
+                                let f32s: Vec<f32> =
+                                    frame.iter().map(|&s| s as f32 / 32768.0).collect();
+                                // 冷却：刚打断完 800ms 内不重复触发
+                                if vad_cooldown > 0 {
+                                    vad_cooldown = vad_cooldown.saturating_sub(1);
+                                } else if v.push(&f32s) {
+                                    let queued = player_in_push.queued_frames();
+                                    if queued > 0 {
+                                        player_in_push.stop_now();
+                                        interruptions_in_push.fetch_add(1, Ordering::Relaxed);
+                                        vad_cooldown = 40; // 40 帧 * 20ms = 800ms
+                                        tracing::info!(queued, "⚡ 本地 VAD 打断");
+                                        tauri::async_runtime::block_on(async {
+                                            let mut m = machine_in_push.lock().await;
+                                            let _ = m.handle(Stimulus::UserSpeechStarted);
+                                        });
+                                    }
+                                }
+                            }
+                        }
                         if let Err(_) = client2.send_audio(&frame) {
                             break;
                         }
@@ -230,7 +267,7 @@ impl VoiceSession {
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 let pending = {
                     let s = store_rep.lock().await;
-                    let mut already = reported.lock().await;
+                    let already = reported.lock().await;
                     s.all()
                         .iter()
                         .filter(|t| t.status.is_terminal() && !already.contains(&t.id))
@@ -303,6 +340,7 @@ pub fn should_open_session(state: OrbState) -> bool {
     state == OrbState::S1
 }
 
+#[allow(dead_code)] // 有单测覆盖，生产路径暂时只在循环里内联判断
 pub fn should_close_session(state: OrbState) -> bool {
     !state.is_active_call()
 }

@@ -25,6 +25,7 @@ use tokio::sync::Mutex;
 struct AppState {
     machine: Arc<Mutex<SessionMachine>>,
     caption: Arc<Mutex<String>>,
+    #[allow(dead_code)] // 预留给「改配置不重启」等命令
     cfg: Arc<diemeng_core::Config>,
 }
 
