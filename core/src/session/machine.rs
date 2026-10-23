@@ -124,6 +124,8 @@ pub struct SessionMachine {
     last_activity: Instant,
     /// 状态变更次数（调试用）
     pub transitions: u64,
+    /// 是否曾经成功连上过云端（区分「初始未连」和「连过又断」）
+    ever_connected: bool,
 }
 
 impl SessionMachine {
@@ -134,6 +136,7 @@ impl SessionMachine {
             idle_timeout,
             last_activity: Instant::now(),
             transitions: 0,
+            ever_connected: false,
         }
     }
 
@@ -145,12 +148,24 @@ impl SessionMachine {
         self.connected
     }
 
+    /// 更新连接状态。
+    ///
+    /// 断线时：通话中（S1–S4）→ S5；**待机（S0）也要进 S5**。
+    /// 2026-10-24 审计指出：原实现只在 `is_active_call()` 时跳 S5，
+    /// 导致「待机时连不上云端」完全没反馈，用户以为软件坏了却没任何提示。
+    /// 待机态的唯一例外：从未尝试过连接时不算异常（`!ever_connected`）。
     pub fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
-        if !connected && self.state.is_active_call() {
-            // 连接断了不能继续假装在通话
-            self.state = OrbState::S5;
-            self.transitions += 1;
+        if connected {
+            self.ever_connected = true;
+            return;
+        }
+        // 断线：除了「还没连过」的初始态，一律进异常
+        if self.ever_connected || self.state.is_active_call() {
+            if self.state != OrbState::S5 {
+                self.state = OrbState::S5;
+                self.transitions += 1;
+            }
         }
     }
 
@@ -328,6 +343,34 @@ mod tests {
             m.handle(Stimulus::ConnectionFailed).unwrap();
             assert_eq!(m.state(), OrbState::S5, "pre={:?}", pre);
         }
+    }
+
+    /// 审计发现的缺口：待机时断线也必须进 S5（否则用户看不到任何故障提示）
+    #[test]
+    fn disconnect_while_idle_also_goes_s5_after_first_connect() {
+        let mut m = m();
+        // 连上过再断 → 必须 S5
+        m.set_connected(true);
+        assert!(m.ever_connected);
+        m.set_connected(false);
+        assert_eq!(m.state(), OrbState::S5, "待机时断线也要进异常态");
+
+        let mut m2 = SessionMachine::new(Duration::from_secs(30));
+        m2.set_connected(true);
+        m2.handle(Stimulus::Click).unwrap(); // S1
+        m2.handle(Stimulus::Connected).unwrap(); // S2
+        m2.handle(Stimulus::Click).unwrap(); // 回 S0
+        assert_eq!(m2.state(), OrbState::S0);
+        m2.set_connected(false);
+        assert_eq!(m2.state(), OrbState::S5, "从 S0 断线同样要进 S5");
+    }
+
+    /// 从未连过时，初始化调用 set_connected(false) 不应误判为故障
+    #[test]
+    fn initial_disconnect_without_ever_connecting_stays_idle() {
+        let mut m = m();
+        m.set_connected(false);
+        assert_eq!(m.state(), OrbState::S0, "启动时还没连过，不该显示异常");
     }
 
     #[test]

@@ -634,8 +634,17 @@ impl AudioCapture {
         let total = out.len();
         std::thread::spawn(move || {
             let mut buf = out;
-            // 末尾补静音，让服务端 VAD 判定「说完了」
-            buf.extend(std::iter::repeat(0i16).take(UPLINK_SAMPLE_RATE as usize * 2));
+            // 末尾补静音让服务端 VAD 判定「说完了」。
+            //
+            // ⚠️ 2026-10-24 审计教训：原来写死补 2 秒静音，导致延迟测量被自己污染——
+            // 测「最后有声帧 → speech_stopped」时，那 2 秒静音也要按实时推完才算数，
+            // 于是量出 3.2s 的假延迟。现在改成可配置，且默认只补 0.6s（刚好够 VAD
+            // 的 silence_duration_ms=300 判定两次）。
+            let pad_ms: u32 = std::env::var("DIEMENG_FILE_PAD_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000);
+            buf.extend(std::iter::repeat(0i16).take(UPLINK_SAMPLE_RATE as usize * pad_ms as usize / 1000));
             let mut acc: Vec<i16> = Vec::with_capacity(frame_samples);
             let started = std::time::Instant::now();
             let mut sent = 0usize;

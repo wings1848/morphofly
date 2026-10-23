@@ -96,11 +96,16 @@ fn spawn_state_walker(machine: Arc<Mutex<SessionMachine>>) {
                     Err(e) => tracing::warn!("视觉巡检迁移失败（{label}）: {e}"),
                 }
             }
-            // 最后走一次异常态再恢复
+            // 最后走一次异常态再恢复。
+            // ⚠️ 2026-10-24 审计发现：原来直接 set_connected(false)，
+            // 但「从未连过」的情况下会保持 S0（这是有意的设计），
+            // 于是巡检器永远到不了 S5，六态截图缺 S5。
+            // 修法：先标记「连过」，再断线。
             tokio::time::sleep(Duration::from_secs(3)).await;
             {
                 let mut m = machine.lock().await;
-                m.set_connected(false);
+                m.set_connected(true);   // 让 ever_connected = true
+                m.set_connected(false);  // 断开 → S5
                 tracing::info!(state = m.state().as_str(), "视觉巡检 → S5 异常");
             }
             tokio::time::sleep(Duration::from_secs(3)).await;

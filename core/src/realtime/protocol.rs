@@ -202,8 +202,8 @@ impl Default for TurnDetection {
         //    error "commit when server vad"。轮次完全由服务端 VAD 驱动。
         Self {
             kind: "server_vad".into(),
-            prefix_padding_ms: Some(300),
-            silence_duration_ms: Some(450),
+            prefix_padding_ms: Some(300),  // 300：曾用 500，降到 300 减少用户等待
+            silence_duration_ms: Some(300),  // 300：原 450 让「说完」判定太慢（占 P1 延迟大头）
             energy_awakeness_threshold: Some(500),
         }
     }
