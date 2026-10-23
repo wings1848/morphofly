@@ -12,6 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use diemeng_core::audio::capture::AudioCapture;
+use diemeng_core::dispatch::Dispatcher;
+use diemeng_core::dsh::DshBridge;
+use diemeng_core::tasks::TaskStore;
 use diemeng_core::audio::playback::AudioPlayer;
 use diemeng_core::realtime::{RealtimeClient, RealtimeEvent};
 use diemeng_core::session::{OrbState, SessionMachine, Stimulus};
@@ -22,6 +25,10 @@ use tokio::sync::Mutex;
 
 /// 语音会话（一次唤醒 = 一个会话）
 pub struct VoiceSession {
+    /// 4 工具分发器（派活/查进度/取消/追加）
+    dispatcher: Arc<Dispatcher>,
+    /// 任务表（主动汇报要看它的状态）
+    store: Arc<Mutex<TaskStore>>,
     client: Arc<RealtimeClient>,
     player: Arc<AudioPlayer>,
     mic: Arc<AudioCapture>,
@@ -40,7 +47,18 @@ impl VoiceSession {
         client.send_tools(&tool_defs())?;
         let player = Arc::new(AudioPlayer::open()?);
         let mic = Arc::new(AudioCapture::start_default()?);
+        // 工具分发器：语音模型调 delegate_task → 这里转交给 DSH
+        diemeng_core::config::ensure_data_dir(cfg)?;
+        let store = Arc::new(Mutex::new(TaskStore::open(cfg.task_store_path())?));
+        let bridge = Arc::new(DshBridge::from_config(cfg));
+        let dispatcher = Arc::new(Dispatcher::new(
+            store.clone(),
+            bridge,
+            cfg.dsh.default_cwd.clone(),
+        ));
         Ok(Self {
+            dispatcher,
+            store,
             client,
             player,
             mic,
@@ -72,6 +90,9 @@ impl VoiceSession {
         let first_audio = self.first_audio_ms.clone();
         let on_spectrum = Arc::new(on_spectrum);
 
+        let client_for_tools = client.clone();
+        let dispatcher = self.dispatcher.clone();
+        let store = self.store.clone();
         let mut ev_rx = client.events();
 
         // 采集 → 推流 + 频谱
@@ -166,11 +187,68 @@ impl VoiceSession {
                             break;
                         }
                     }
-                    RealtimeEvent::ToolCall { name, arguments, .. } => {
-                        tracing::info!(%name, %arguments, "工具调用");
+                    RealtimeEvent::ToolCall { call_id, name, arguments } => {
+                        tracing::info!(%name, %arguments, "🔧 工具调用");
                         let _ = m.handle(Stimulus::Thinking);
+                        // 分发到真实动作（派活给 DSH / 查进度 / 取消 / 追加）
+                        let d = dispatcher.clone();
+                        let c = client_for_tools.clone();
+                        let n = name.clone();
+                        let a = arguments.clone();
+                        let cid = call_id.clone();
+                        tokio::spawn(async move {
+                            let speech = match d.dispatch(&n, &a).await {
+                                Ok(r) => {
+                                    tracing::info!(speech = %r.speech, "工具结果");
+                                    r.speech
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "工具执行失败");
+                                    format!("这个没办成：{e}")
+                                }
+                            };
+                            let _ = c.send_function_call_output(&cid, &speech);
+                            let _ = c.create_response();
+                        });
                     }
                     _ => {}
+                }
+            }
+        });
+
+        // 主动汇报：轮询任务表，任务完成就主动开口（验收 F7）
+        let store_rep = store.clone();
+        let client_rep = client.clone();
+        let stop_rep = stop.clone();
+        let reported: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+        let report_task = tokio::spawn(async move {
+            loop {
+                if stop_rep.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let pending = {
+                    let s = store_rep.lock().await;
+                    let mut already = reported.lock().await;
+                    s.all()
+                        .iter()
+                        .filter(|t| t.status.is_terminal() && !already.contains(&t.id))
+                        .map(|t| (t.id.clone(), t.status.spoken().to_string(), t.summary.clone()))
+                        .collect::<Vec<_>>()
+                };
+                for (id, spoken, summary) in pending {
+                    reported.lock().await.insert(id.clone());
+                    let line = format!("{spoken}：{}", diemeng_core::dispatch::clean_for_speech(&summary));
+                    tracing::info!(task = %id, report = %line, "🔔 主动汇报");
+                    // 注入会话 + 触发开口
+                    let _ = client_rep.send_item(serde_json::json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text":
+                            format!("（系统通知，不是用户说的话）后台任务有新结果，请用一句话转告我：{line}")}]
+                    }));
+                    let _ = client_rep.create_response();
                 }
             }
         });
@@ -187,6 +265,7 @@ impl VoiceSession {
         stop.store(true, Ordering::Relaxed);
         let _ = tokio::time::timeout(Duration::from_secs(2), push_task).await;
         let _ = tokio::time::timeout(Duration::from_secs(2), ev_task).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), report_task).await;
         self.player.stop_now();
         Ok(())
     }
