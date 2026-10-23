@@ -1,1 +1,13 @@
 {"ts": "2026-10-24T06:52:30+08:00", "seq": 1, "stage": "S0", "actor": "agent", "type": "run_started", "goal": "蝶梦 V1 延迟深度优化：5082ms → 800ms 以内，并验证多轮对话", "tier": "standard", "project_type": "desktop-app", "human_mode": "inspect", "status": "running", "attempts": {"S0": 1}}
+{"ts": "2026-10-24T06:52:48+08:00", "seq": 2, "stage": "S1", "actor": "agent", "type": "stage_enter", "from": "S0", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:48+08:00", "seq": 3, "stage": "S2", "actor": "agent", "type": "stage_enter", "from": "S1", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:48+08:00", "seq": 4, "stage": "S3", "actor": "agent", "type": "stage_enter", "from": "S2", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:48+08:00", "seq": 5, "stage": "S4", "actor": "agent", "type": "stage_enter", "from": "S3", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:49+08:00", "seq": 6, "stage": "S5", "actor": "agent", "type": "stage_enter", "from": "S4", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:49+08:00", "seq": 7, "stage": "S6", "actor": "agent", "type": "stage_enter", "from": "S5", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:49+08:00", "seq": 8, "stage": "S6", "actor": "agent", "type": "gate_pass", "gate": "G5", "status": "pass", "evidence": "evidence/p1-final-latency.md", "sha256": "e1160f4949b21545ea592dcee7608ee1892a52fe9f5aefdc3314b9ac9304b96f", "at": "2026-10-24T06:52:49+08:00", "note": "802ms + 300ms 打断 + 3/3 多轮；178/189 测试不退化"}
+{"ts": "2026-10-24T06:52:53+08:00", "seq": 9, "stage": "S7", "actor": "agent", "type": "stage_enter", "from": "S6", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:53+08:00", "seq": 10, "stage": "S7", "actor": "agent", "type": "gate_pass", "gate": "G7", "status": "pass", "evidence": "../20261023-2339-v1-dsh-0/evidence/p2-release-package.md", "sha256": "d4bc2cef0cdeaef3232cf9667fdb6f2c53ae3e25045188bf1f1447c4f8b9254d", "at": "2026-10-24T06:52:53+08:00", "note": "deb 18.21MB 完整功能版（含唤醒词）；密钥 0 命中；无残留进程"}
+{"ts": "2026-10-24T06:52:53+08:00", "seq": 11, "stage": "S8", "actor": "agent", "type": "stage_enter", "from": "S7", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T06:52:53+08:00", "seq": 12, "stage": "S8", "actor": "agent", "type": "gate_pass", "gate": "G8", "status": "pass", "evidence": "../20261023-2339-v1-dsh-0/retro.md", "sha256": "fca77a71a704889499f722f8b51ea219b5a0f8157d7c2cdb646aaa2e544cb909", "at": "2026-10-24T06:52:53+08:00", "note": "复盘见主 run；本轮额外教训：报数字前先检查测量口径"}
+{"ts": "2026-10-24T06:52:53+08:00", "seq": 13, "stage": "done", "actor": "agent", "type": "run_done", "status": "done"}

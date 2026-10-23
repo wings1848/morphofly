@@ -6,8 +6,8 @@
   "tier": "standard",
   "project_type": "desktop-app",
   "human_mode": "inspect",
-  "stage": "S0",
-  "status": "running",
+  "stage": "done",
+  "status": "done",
   "owner": {
     "agent": "agent",
     "session_id": "",
@@ -15,14 +15,44 @@
     "lease_until": "2026-10-24T06:52:30+08:00"
   },
   "attempts": {
-    "S0": 1
+    "S0": 1,
+    "S1": 1,
+    "S2": 1,
+    "S3": 1,
+    "S4": 1,
+    "S5": 1,
+    "S6": 1,
+    "S7": 1,
+    "S8": 1
   },
   "loops": {
     "used": 0,
     "max": 3,
     "last_fail_stage": null
   },
-  "gates": {},
+  "gates": {
+    "G5": {
+      "status": "pass",
+      "evidence": "evidence/p1-final-latency.md",
+      "sha256": "e1160f4949b21545ea592dcee7608ee1892a52fe9f5aefdc3314b9ac9304b96f",
+      "at": "2026-10-24T06:52:49+08:00",
+      "note": "802ms + 300ms 打断 + 3/3 多轮；178/189 测试不退化"
+    },
+    "G7": {
+      "status": "pass",
+      "evidence": "../20261023-2339-v1-dsh-0/evidence/p2-release-package.md",
+      "sha256": "d4bc2cef0cdeaef3232cf9667fdb6f2c53ae3e25045188bf1f1447c4f8b9254d",
+      "at": "2026-10-24T06:52:53+08:00",
+      "note": "deb 18.21MB 完整功能版（含唤醒词）；密钥 0 命中；无残留进程"
+    },
+    "G8": {
+      "status": "pass",
+      "evidence": "../20261023-2339-v1-dsh-0/retro.md",
+      "sha256": "fca77a71a704889499f722f8b51ea219b5a0f8157d7c2cdb646aaa2e544cb909",
+      "at": "2026-10-24T06:52:53+08:00",
+      "note": "复盘见主 run；本轮额外教训：报数字前先检查测量口径"
+    }
+  },
   "human": {},
   "budget": {
     "minutes_cap": 480,
@@ -33,7 +63,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S0：跑 G0 并落证据（devflow gate G0 pass --evidence <文件>）",
+  "next_action": "run 已完成：写 retro.md、归档并同步技能",
   "artifacts": {
     "progress": "progress.md"
   }
