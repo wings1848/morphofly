@@ -9,8 +9,9 @@ license.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [features]
-default = []
-# 唤醒词常驻监听（依赖 diemeng-core/kws → sherpa-onnx 静态库）
+# 唤醒词是核心功能（喊「小蝶」唤醒），默认开启。
+# 关闭方式：cargo build --no-default-features（纯逻辑测试用，本机缺 libstdc++ 时需要）
+default = ["kws"]
 kws = ["diemeng-core/kws"]
 
 [dependencies]
