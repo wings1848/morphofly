@@ -6,7 +6,7 @@
   "tier": "standard",
   "project_type": "desktop-app",
   "human_mode": "inspect",
-  "stage": "S0",
+  "stage": "S5",
   "status": "running",
   "owner": {
     "agent": "agent",
@@ -15,7 +15,12 @@
     "lease_until": "2026-10-23T23:39:02+08:00"
   },
   "attempts": {
-    "S0": 1
+    "S0": 1,
+    "S1": 1,
+    "S2": 1,
+    "S3": 1,
+    "S4": 1,
+    "S5": 1
   },
   "loops": {
     "used": 0,
@@ -41,7 +46,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S0 闸门已过：devflow set-stage S1",
+  "next_action": "S5：跑 G5 并落证据（devflow gate G5 pass --evidence <文件>）",
   "artifacts": {
     "progress": "progress.md"
   }

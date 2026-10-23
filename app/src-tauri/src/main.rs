@@ -71,6 +71,49 @@ async fn poke(state: State<'_, AppState>, stimulus: String) -> Result<String, St
 }
 
 /// 后台循环：频谱 + 状态推给前端。
+/// 视觉巡检模式：每 3 秒自动走一个状态，用于截图核对六态差异（验收 U2）。
+///
+/// 只在 `DIEMENG_DEMO_STATES=1` 时启用，产品运行时绝不会打开。
+/// 用法：`DIEMENG_DEMO_STATES=1 ./target/debug/diemeng-app`，然后每 3s 截一张图。
+fn spawn_state_walker(machine: Arc<Mutex<SessionMachine>>) {
+    tauri::async_runtime::spawn(async move {
+        // 合法迁移序列：S0 --click--> S1 --connected--> S2 --thinking--> S3 --speaking--> S4
+        //               然后 disconnect --> S5，再 recover --> S0
+        let steps: Vec<(&str, Stimulus)> = vec![
+            ("S1 唤醒", Stimulus::Click),
+            ("S2 聆听", Stimulus::Connected),
+            ("S3 思考", Stimulus::Thinking),
+            ("S4 说话", Stimulus::ModelSpeaking),
+            ("S2 聆听(打断)", Stimulus::UserSpeechStarted),
+            ("S0 回待机", Stimulus::Click),
+        ];
+        loop {
+            for (label, stim) in &steps {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let mut m = machine.lock().await;
+                match m.handle(*stim) {
+                    Ok(_) => tracing::info!(state = m.state().as_str(), "视觉巡检 → {label}"),
+                    Err(e) => tracing::warn!("视觉巡检迁移失败（{label}）: {e}"),
+                }
+            }
+            // 最后走一次异常态再恢复
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            {
+                let mut m = machine.lock().await;
+                m.set_connected(false);
+                tracing::info!(state = m.state().as_str(), "视觉巡检 → S5 异常");
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            {
+                let mut m = machine.lock().await;
+                m.set_connected(true);
+                let _ = m.handle(Stimulus::Recover);
+                tracing::info!(state = m.state().as_str(), "视觉巡检 → 恢复");
+            }
+        }
+    });
+}
+
 fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: bool) {
     tauri::async_runtime::spawn(async move {
         let mut spectrum = Spectrum::with_default_window();
@@ -156,6 +199,11 @@ fn main() {
     let demo_audio = std::env::var("DIEMENG_DEMO_AUDIO")
         .map(|v| v != "0")
         .unwrap_or(true);
+    // 视觉巡检（仅 QA 用，见 spawn_state_walker 文档）
+    let demo_states = std::env::var("DIEMENG_DEMO_STATES").map(|v| v != "0").unwrap_or(false);
+    if demo_states {
+        spawn_state_walker(machine.clone());
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

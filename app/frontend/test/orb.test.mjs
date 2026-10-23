@@ -5,6 +5,24 @@ import assert from 'node:assert/strict';
 import { STATES, STATE_ORDER, StateSmoother } from '../src/orb/state.js';
 import { Particles } from '../src/orb/particles.js';
 
+test('六个状态两两之间至少两个维度差异明显（肉眼看得出，验收 U2）', () => {
+  const names = STATE_ORDER;
+  const keys = ['glow', 'radius', 'speed', 'spread', 'ringGain', 'pulse'];
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      const a = STATES[names[i]], b = STATES[names[j]];
+      // 归一化差异：相对变化超过 25% 才算「明显」
+      const diffs = keys.filter((k) => {
+        const x = a[k] ?? 0, y = b[k] ?? 0;
+        const scale = Math.max(Math.abs(x), Math.abs(y), 0.001);
+        return Math.abs(x - y) / scale > 0.25;
+      });
+      assert.ok(diffs.length >= 2,
+        `${names[i]} vs ${names[j]} 只有 ${diffs.length} 个维度明显不同（${diffs}），肉眼分不出`);
+    }
+  }
+});
+
 test('六个状态都存在且可区分', () => {
   assert.equal(STATE_ORDER.length, 6);
   for (const name of STATE_ORDER) {
@@ -15,7 +33,7 @@ test('六个状态都存在且可区分', () => {
   // 视觉参数必须两两不同，肉眼才能区分（验收 U2）
   const fingerprints = STATE_ORDER.map((n) => {
     const s = STATES[n];
-    return `${s.glow}|${s.radius}|${s.speed}`;
+    return `${s.glow}|${s.radius}|${s.speed}|${s.spread}|${s.ringGain}|${s.pulse}`;
   });
   assert.equal(new Set(fingerprints).size, 6, '六个状态的视觉参数不能重复');
 });

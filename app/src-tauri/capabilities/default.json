@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "蝶梦主窗口的最小权限集：只需要 core 默认能力（事件收发、窗口操作）。不授予任何文件/Shell 权限——铁律：前端不碰文件、不碰麦克风。",
+  "windows": ["orb"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-set-always-on-top"
+  ]
+}

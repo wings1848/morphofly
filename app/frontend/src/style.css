@@ -39,6 +39,8 @@ canvas { display: block; cursor: pointer; }
   transition: opacity .4s ease;
 }
 #hint.hide { opacity: 0; }
+/* 状态实时显示：截图自动化靠它核对 Rust→WebView 事件链是否通 */
+#hint.live { font-size: 13px; letter-spacing: .06em; color: rgba(34, 211, 238, .72); }
 
 /* 拖动区域：整个窗口可拖（Tauri 用 data-tauri-drag-region） */
 body { -webkit-app-region: drag; }

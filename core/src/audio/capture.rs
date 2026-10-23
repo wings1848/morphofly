@@ -586,6 +586,92 @@ impl Default for AudioCapture {
 const CAPTURE_CHANNEL_FRAMES: usize = 128;
 
 impl AudioCapture {
+    /// **测试/自动化专用**：用音频文件代替物理麦克风。
+    ///
+    /// 不打开任何设备（在无声卡机器上也能跑），把文件解码成 16k mono i16，
+    /// 按 20ms 帧灌进与真采集相同的 `broadcast` 通道，下游代码完全无感。
+    /// 只有 `duplex --input-file` 这类探针会用它；生产路径永远走 `start_default()`。
+    pub fn file_source(path: &str) -> Result<Self, AudioError> {
+        use rodio::Source;
+        let file = std::fs::File::open(path)
+            .map_err(|e| AudioError::Device(format!("打开音频文件失败 {path}: {e}")))?;
+        let decoder = rodio::Decoder::try_from(file)
+            .map_err(|e| AudioError::Device(format!("解码失败 {path}: {e}")))?;
+        let channels = decoder.channels().get() as usize;
+        let rate = decoder.sample_rate().get();
+        let samples: Vec<f32> = decoder.collect();
+        if channels == 0 || rate == 0 || samples.is_empty() {
+            return Err(AudioError::Device(format!("音频文件是空的: {path}")));
+        }
+        // 下混 mono
+        let frames = samples.len() / channels;
+        let mut mono = Vec::with_capacity(frames);
+        for i in 0..frames {
+            let mut acc = 0.0f32;
+            for c in 0..channels {
+                acc += samples[i * channels + c];
+            }
+            mono.push(acc / channels as f32);
+        }
+        // 重采样到 16k
+        let target = UPLINK_SAMPLE_RATE;
+        let out_len = (frames as u64 * target as u64 / rate as u64) as usize;
+        let mut out: Vec<i16> = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let pos = i as f64 * rate as f64 / target as f64;
+            let idx = pos as usize;
+            let frac = (pos - idx as f64) as f32;
+            let a = mono.get(idx).copied().unwrap_or(0.0);
+            let b = mono.get(idx + 1).copied().unwrap_or(a);
+            let v = a + (b - a) * frac;
+            out.push((v.clamp(-1.0, 1.0) * 32768.0).round().clamp(-32768.0, 32767.0) as i16);
+        }
+
+        let cfg = CaptureConfig::default();
+        let (tx, _) = tokio::sync::broadcast::channel::<Vec<i16>>(256);
+        let tx2 = tx.clone();
+        let frame_samples = cfg.frame_samples;
+        let total = out.len();
+        std::thread::spawn(move || {
+            let mut buf = out;
+            // 末尾补静音，让服务端 VAD 判定「说完了」
+            buf.extend(std::iter::repeat(0i16).take(UPLINK_SAMPLE_RATE as usize * 2));
+            let mut acc: Vec<i16> = Vec::with_capacity(frame_samples);
+            let started = std::time::Instant::now();
+            let mut sent = 0usize;
+            for s in buf {
+                acc.push(s);
+                if acc.len() >= frame_samples {
+                    let frame = std::mem::take(&mut acc);
+                    let _ = tx2.send(frame);
+                    sent += 1;
+                    // 按 20ms 节奏发；落后于真实时间就追上（文件比实时快时不会有节奏问题）
+                    let due = started + std::time::Duration::from_millis(20 * sent as u64);
+                    let now = std::time::Instant::now();
+                    if due > now {
+                        std::thread::sleep(due - now);
+                    }
+                }
+            }
+            if !acc.is_empty() {
+                let _ = tx2.send(acc);
+            }
+            tracing::info!(total, "file_source 推完");
+        });
+
+        Ok(Self {
+            config: cfg,
+            tx,
+            stats: Arc::new(CaptureStats::default()),
+            last_error: Arc::new(Mutex::new(None)),
+            stream: Mutex::new(None),
+            format: Mutex::new(None),
+            simple_rx: Mutex::new(None),
+            forwarder: Mutex::new(None),
+            forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+
     /// 用默认配置（16kHz / 320 采样 / 20ms）。
     pub fn new() -> Self {
         Self::with_config(CaptureConfig::default())

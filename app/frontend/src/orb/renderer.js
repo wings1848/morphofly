@@ -26,27 +26,34 @@ export class OrbRenderer {
   }
 
   render(dt, vis, energy, bins) {
+    this.time = (this.time || 0) + dt;
     const ctx = this.ctx;
     const { size, dpr } = this;
     const cx = (size * dpr) / 2;
     const cy = (size * dpr) / 2;
-    const baseR = (size * dpr) * 0.19 * vis.radius;
+    // 球半径占窗口的 ~17%（原来 30% 会让 S4 撑满整屏，失去「深海一点光」的感觉）
+    const baseR = (size * dpr) * 0.17 * vis.radius;
     const R = baseR * (1 + energy * 0.14);
 
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     // 1) 远处体积光：多层同心径向渐变，不是单层大 blur
+    // 体积光：多层叠加但每层都很淡；最外层只负责「有一点空气感」，不能铺满窗口
     const halos = [
-      { mul: 4.6, alpha: 0.055, stop: 0.0 },
-      { mul: 3.1, alpha: 0.085, stop: 0.12 },
-      { mul: 2.1, alpha: 0.14, stop: 0.25 },
+      { mul: 2.9, alpha: 0.028, stop: 0.12 },
+      { mul: 2.1, alpha: 0.048, stop: 0.22 },
+      { mul: 1.55, alpha: 0.075, stop: 0.34 },
+      { mul: 1.20, alpha: 0.11, stop: 0.48 },
     ];
     for (const h of halos) {
       const g = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * h.mul);
-      const a = h.alpha * (0.25 + vis.glow * 1.5);
-      g.addColorStop(0, `hsla(${vis.hue}, ${(vis.sat * 100) | 0}%, 62%, ${a})`);
-      g.addColorStop(h.stop + 0.45, `hsla(${vis.hue}, ${(vis.sat * 100) | 0}%, 48%, ${a * 0.35})`);
-      g.addColorStop(1, `hsla(${vis.hue}, ${(vis.sat * 100) | 0}%, 40%, 0)`);
+      // glow 只放大中心，不放大最外层（否则整屏发青）
+      const a = h.alpha * (0.25 + vis.glow * 1.15) * (h.mul > 3 ? 0.55 : 1.0);
+      const hs = (vis.sat * 100) | 0;
+      g.addColorStop(0, `hsla(${vis.hue}, ${hs}%, 54%, ${a})`);
+      g.addColorStop(h.stop + 0.35, `hsla(${vis.hue}, ${hs}%, 44%, ${a * 0.45})`);
+      g.addColorStop(0.75, `hsla(${vis.hue}, ${hs}%, 34%, ${a * 0.12})`);
+      g.addColorStop(1, `hsla(${vis.hue}, ${hs}%, 28%, 0)`);
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(cx, cy, R * h.mul, 0, TAU);
@@ -56,10 +63,11 @@ export class OrbRenderer {
     // 2) 核心体：白心 → 青边，边缘衰减
     const core = ctx.createRadialGradient(cx - R * 0.22, cy - R * 0.26, R * 0.04, cx, cy, R * 1.04);
     const sat = (vis.sat * 100) | 0;
-    core.addColorStop(0, `hsla(${vis.hue}, 96%, ${86 + vis.glow * 10}%, ${0.55 + vis.glow * 0.45})`);
-    core.addColorStop(0.42, `hsla(${vis.hue}, ${sat}%, 62%, ${0.30 + vis.glow * 0.45})`);
-    core.addColorStop(0.78, `hsla(${vis.hue}, ${sat}%, 46%, ${0.10 + vis.glow * 0.22})`);
-    core.addColorStop(1, `hsla(${vis.hue}, ${sat}%, 40%, 0)`);
+    // 目标色 #22D3EE ≈ hsl(187, 85%, 53%)。核心最亮也只到 ~74%，别冲到白色。
+    core.addColorStop(0, `hsla(${vis.hue}, 100%, ${52 + vis.glow * 12}%, ${0.42 + vis.glow * 0.38})`);
+    core.addColorStop(0.42, `hsla(${vis.hue}, ${sat}%, 52%, ${0.30 + vis.glow * 0.45})`);
+    core.addColorStop(0.78, `hsla(${vis.hue}, ${sat}%, 38%, ${0.12 + vis.glow * 0.26})`);
+    core.addColorStop(1, `hsla(${vis.hue}, ${sat}%, 30%, 0)`);
     ctx.fillStyle = core;
     ctx.beginPath();
     ctx.arc(cx, cy, R * 1.04, 0, TAU);
@@ -71,6 +79,26 @@ export class OrbRenderer {
 
     // 4) 频谱环：64 根短弧，贴在球外侧
     this.drawSpectrumRing(cx, cy, R * 1.55, bins, vis);
+    // 唤醒/说话的脉冲光环（S0/S5 没有）
+    if (vis.pulse > 0.05) this.drawPulseRing(cx, cy, R, vis);
+  }
+
+  drawPulseRing(cx, cy, R, vis) {
+    const ctx = this.ctx;
+    const t = (this.time || 0);
+    const dur = 2.2;
+    const phase = (t % dur) / dur;
+    const r = R * (1.35 + phase * 1.8);
+    const alpha = (1 - phase) ** 2 * 0.34 * (vis.pulse ?? 0);
+    if (alpha <= 0.004) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.beginPath();
+    ctx.strokeStyle = `hsla(${vis.hue}, ${(vis.sat * 100) | 0}%, 76%, ${alpha})`;
+    ctx.lineWidth = Math.max(1, this.size * this.dpr * 0.0035);
+    ctx.arc(cx, cy, r, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
   }
 
   drawSpectrumRing(cx, cy, r, bins, vis) {
@@ -92,7 +120,8 @@ export class OrbRenderer {
       const x2 = cx + Math.cos(ang) * (r + len);
       const y2 = cy + Math.sin(ang) * (r + len);
       ctx.beginPath();
-      ctx.strokeStyle = `hsla(${vis.hue}, ${sat}%, ${64 + v * 22}%, ${0.10 + v * 0.55 * vis.glow})`;
+      const gain = vis.ringGain ?? 1;
+      ctx.strokeStyle = `hsla(${vis.hue}, ${sat}%, ${64 + v * 22}%, ${(0.06 + v * 0.55 * vis.glow) * gain})`;
       ctx.lineWidth = Math.max(1, this.size * this.dpr * 0.0022);
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);

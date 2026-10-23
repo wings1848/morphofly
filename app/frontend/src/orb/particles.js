@@ -52,7 +52,9 @@ export class Particles {
       const band = Math.min(bins.length - 1, (this.baseRadii[i] * bins.length) | 0);
       const bandVal = bins[band] || 0;
 
-      let target = this.baseRadii[i] * (0.70 + energy * 0.50 + bandVal * 0.40);
+      // spread <1 收紧到内核，>1 铺开成球壳 —— 这是状态差异的主要来源
+      const spread = vis.spread ?? 1;
+      let target = this.baseRadii[i] * (0.70 + energy * 0.50 + bandVal * 0.40) * spread;
       if (outward) target *= 1.0 + 0.30 * Math.sin(this.time * 2.2 + this.seeds[i]);
       // 呼吸（待机时也能看出活着）
       target *= 1 + 0.035 * Math.sin(this.time * 1.1 + this.seeds[i]);

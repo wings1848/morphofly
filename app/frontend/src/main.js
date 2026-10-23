@@ -16,6 +16,7 @@ let targetEnergy = 0;
 let last = performance.now();
 let captionTimer = null;
 
+
 // ---- 与 Rust 的桥 ----
 // Tauri 2 注入 window.__TAURI__（withGlobalTauri）或用 @tauri-apps/api。
 // 这里不引入 npm 依赖：优先用注入的全局对象，没有就退化为「演示模式」。
@@ -33,6 +34,12 @@ function listen(event, handler) {
   return Promise.resolve(() => {});
 }
 
+// 调试：如果 Tauri 全局对象不存在（CSP 拦了 IPC / 配置没开 withGlobalTauri），
+// 在画面里直接说明，避免「界面没反应但不知道为啥」。
+if (!tauri) {
+  hintEl.textContent = '无 Tauri 桥：演示模式（点击切换状态）';
+}
+
 async function boot() {
   await listen('spectrum', (payload) => {
     if (Array.isArray(payload?.bins)) bins = payload.bins;
@@ -42,7 +49,16 @@ async function boot() {
   });
 
   await listen('state', (payload) => {
-    if (payload?.state) smoother.set(payload.state);
+    if (payload?.state) {
+      smoother.set(payload.state);
+      // 在画面里显示当前状态：既是给用户的调试信息，也是自动化截图的核对依据
+      // （窗口标题在 X11 下不会随 document.title 变，不能用来验证事件链）
+      // 保留状态标识：既是给用户的提示，也是自动化截图核对的依据
+      hintEl.textContent = `状态 ${payload.state} · ${payload.caption || ''}`;
+      hintEl.classList.remove('hide');
+      hintEl.classList.add('live');
+      hintEl.dataset.state = payload.state;
+    }
     if (payload?.caption) showCaption(payload.caption);
   });
 
