@@ -198,8 +198,13 @@ impl Default for TurnDetection {
         // ⚠️ 2026-10-24 二次实测（参数扫描）——**这些参数对 StepFun 实际不生效**：
         //    silence_duration_ms = 100 / 300 / 500 / 1000 → speech_stopped 恒在语音结束后 1604~1613ms
         //    energy_awakeness_threshold = 100 / 500 / 1000 → 同样无差别
-        //    结论：StepFun 的 VAD 判定「说完」固定约 1.6 秒，是服务端行为，我们调不动。
-        //    用户感知端到端延迟 = 1.6s(VAD) + 0.4~5s(推理) = **2~7 秒**，P1（<800ms）不达标。
+        //    结论：**这个特定模型**的 VAD 判定固定约 1.6 秒，参数调不动。
+        //
+        // ⚠️ 2026-10-24 后续发现（这是本轮最重要的发现）：上面那个「1.6 秒硬下限」是
+        //    `stepaudio-3-realtime-preview` **单个模型**的限制，不是 StepFun 平台的限制！
+        //    换 `step-1o-audio` 后 VAD 判定变成 **~490ms**，端到端 520–530ms，
+        //    正好落在验收理想值（<500ms 边缘）。
+        //    全模型对比见 `core/src/config.rs` 的 RealtimeConfig 默认值注释。
         //
         // 2026-10-24 首次实测（wings-pc，testdata/audio/04_ack_zai.mp3 走 WS）：
         //  - energy_awakeness_threshold **默认 2500 太高**：用正常音量 TTS 音频推流，

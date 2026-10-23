@@ -648,10 +648,19 @@ impl AudioCapture {
             // 测「最后有声帧 → speech_stopped」时，那 2 秒静音也要按实时推完才算数，
             // 于是量出 3.2s 的假延迟。现在改成可配置，且默认只补 0.6s（刚好够 VAD
             // 的 silence_duration_ms=300 判定两次）。
+            // 补静音让服务端 VAD 判「说完」。
+            //
+            // 2026-10-24 粒度说明（这个数字直接影响延迟测量的准确性）：
+            // - 补太少（<400ms）：VAD 判不出说完，整轮不触发
+            // - 补太多（2000ms）：把「最后有声帧 → 说完」的量测污染成 1.9s
+            // - 服务端 step-1o-audio 实测 VAD 判定 ~490ms，所以补 **800ms** 刚好够
+            //
+            // 注意：测量延迟时请用「文件推完 + pad」作为基准，不要用「最后有声帧」，
+            // 否则 pad 会被算进延迟里。
             let pad_ms: u32 = std::env::var("DIEMENG_FILE_PAD_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(2000);
+                .unwrap_or(800);
             buf.extend(std::iter::repeat(0i16).take(UPLINK_SAMPLE_RATE as usize * pad_ms as usize / 1000));
             let mut acc: Vec<i16> = Vec::with_capacity(frame_samples);
             let started = std::time::Instant::now();

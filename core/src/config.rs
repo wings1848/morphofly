@@ -51,9 +51,20 @@ impl Default for RealtimeConfig {
     fn default() -> Self {
         Self {
             provider: Provider::Stepfun,
-            endpoint: "wss://api.stepfun.com/v1/realtime?model=stepaudio-3-realtime-preview"
-                .to_string(),
-            model: "stepaudio-3-realtime-preview".to_string(),
+            // 2026-10-24 模型全量对比实测（原始 WS，同一段音频，4 轮均值）：
+            //
+            //   模型                         VAD判定    端到端     中文
+            //   step-1o-audio                ~490ms    520-530ms  ✅ 好
+            //   stepaudio-2.5-realtime       ~492ms    515-528ms  ❌ 答英文/跑偏
+            //   step-audio-r1.5              ~492ms    4800-13258ms ❌ 只会"嗯"
+            //   stepaudio-3-realtime-preview 1572ms   6969ms     ✅ 好但慢 13 倍
+            //   step-audio-2 / -2-mini      ~492ms    6345-6455ms ❌
+            //
+            // **结论：step-1o-audio 是唯一同时满足「快 + 中文好」的**。
+            // VAD 判定从 1572ms 降到 490ms —— 之前认定的「1.6 秒硬下限」是**这个特定模型**的限制，
+            // 不是 StepFun 平台的限制。
+            endpoint: "wss://api.stepfun.com/v1/realtime?model=step-1o-audio".to_string(),
+            model: "step-1o-audio".to_string(),
             voice: "jingdiannvsheng".to_string(),
             api_key_env: "STEPFUN_KEY".to_string(),
             output_sample_rate: 24_000,
