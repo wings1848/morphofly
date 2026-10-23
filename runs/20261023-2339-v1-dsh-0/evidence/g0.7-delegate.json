@@ -1,0 +1,8 @@
+{
+  "connect_ms": 1822,
+  "cwd": "/home/wings",
+  "session_id": "d84326d6-7a4c-4462-9132-27766fb93ba2",
+  "stop_reason": "end_turn",
+  "text": "里面是一个 Rust 项目目录，包含 `Cargo.toml`、`Cargo.lock`，以及 `app`（应用）、`core`（核心）、`protocol`（协议）、`tools`（工具）、`docs`（文档）、`testdata`（测试数据）、`runs`、`target`（构建产物）这些文件夹。",
+  "turn_ms": 3599
+}

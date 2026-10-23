@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// 支持的 provider
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

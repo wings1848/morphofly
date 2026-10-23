@@ -15,12 +15,14 @@ tracing.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+rustls.workspace = true
 base64.workspace = true
 cpal.workspace = true
 rodio.workspace = true
 realfft.workspace = true
 hound.workspace = true
 bytes.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

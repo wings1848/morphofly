@@ -1,0 +1,10 @@
+{
+  "name": "diemeng-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "蝶梦小球渲染（原生 ES module，无打包器）",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

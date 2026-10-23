@@ -1,0 +1,9 @@
+/target
+**/target
+node_modules/
+dist/
+.env
+*.key
+credentials
+*.log
+.DS_Store

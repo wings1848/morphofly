@@ -1,0 +1,45 @@
+/* 视觉铁律（docs/UI设计提示词.md）：单色蓝、深海、安静、无硬边 */
+:root {
+  --deep: #05070d;
+  --glow: #22d3ee;
+  --pale: #e0f2fe;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body { display: grid; place-items: center; }
+canvas { display: block; cursor: pointer; }
+
+#caption {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  max-width: 88vw; padding: 6px 14px;
+  font-size: 13px; line-height: 1.5; letter-spacing: .02em;
+  color: rgba(224, 242, 254, .92);
+  background: rgba(5, 7, 13, .55);
+  border: 1px solid rgba(34, 211, 238, .18);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  opacity: 0; transition: opacity .28s ease;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
+#caption.show { opacity: 1; }
+
+#hint {
+  position: fixed; left: 50%; top: 10px; transform: translateX(-50%);
+  font-size: 11px; letter-spacing: .12em;
+  color: rgba(34, 211, 238, .38);
+  pointer-events: none;
+  transition: opacity .4s ease;
+}
+#hint.hide { opacity: 0; }
+
+/* 拖动区域：整个窗口可拖（Tauri 用 data-tauri-drag-region） */
+body { -webkit-app-region: drag; }
+canvas, #caption { -webkit-app-region: no-drag; }

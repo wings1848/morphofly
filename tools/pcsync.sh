@@ -3,7 +3,10 @@
 set -euo pipefail
 LOCAL="$(cd "$(dirname "$0")/.." && pwd)"
 REMOTE="${DIEMENG_REMOTE:-/home/wings/Code_Project/diemeng}"
+SSH_T="$(bash "$LOCAL/tools/pc_ssh.sh")"
 tar -C "$LOCAL" -czf - \
   --exclude='./target' --exclude='./.git' --exclude='./.venv' \
-  --exclude='./.env' --exclude='./*.key' --exclude='./runs/*/evidence/*.bin' \
-  . | ssh -o BatchMode=yes wings-pc "mkdir -p $REMOTE && tar -C $REMOTE -xzf - && echo synced"
+  --exclude='./.env' --exclude='./*.key' --exclude='./credentials' \
+  --exclude='./node_modules' --exclude='./runs/*/evidence/*.bin' \
+  . | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_T" \
+  "mkdir -p $REMOTE && tar -C $REMOTE -xzf - && echo synced-$REMOTE"
