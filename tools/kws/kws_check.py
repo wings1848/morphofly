@@ -32,7 +32,8 @@ BLANKS = int(os.environ.get("KWS_BLANKS", "4"))
 
 # 文件名前缀 → 期望行为
 # 以这些开头的文件「应该唤醒」，其余「不应唤醒」
-POSITIVE_PREFIXES = ("01_", "02_", "03_", "06_", "07_", "08_", "09_", "ZZ_")
+# 16/17 是 2026-10-24 新增的「带完整唤醒词」正样本（派活/中文项目名）
+POSITIVE_PREFIXES = ("01_", "02_", "03_", "06_", "07_", "08_", "09_", "16_", "17_", "ZZ_")
 
 
 def make_spotter() -> "sherpa_onnx.KeywordSpotter":
