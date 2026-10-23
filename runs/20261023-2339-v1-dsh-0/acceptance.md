@@ -36,6 +36,7 @@ tools/pcsync.sh
 | B6 | 唤醒召回 | `tools/pcrun.sh 'cargo run --features kws --example kws_check -- --model ~/.diemeng/kws-model --keywords ~/.diemeng/keywords.txt testdata/audio/'` | 100% | ✅ 9/9 |
 | B7 | 唤醒误唤醒 | 同上 | 0 | ✅ 0/8 |
 | B8 | 唤醒→聆听接缝 | `tools/pcrun.sh 'cargo run --features kws --example wake_integration'` | S0→S1→S2→S0 | ✅ |
+| **B9** | **多轮对话** | `tools/pcrun.sh '... --example multiturn_test'` | **3/3 轮 + 上下文保持** | ✅ **3/3** |
 
 ## C. 不变量
 
@@ -90,8 +91,8 @@ node --test app/frontend/test/                →   8 passed, 0 failed
 
 | 分类 | 条数 |
 |---|---|
-| 可判定条目 | **27** |
-| 通过 | **25** |
+| 可判定条目 | **28** |
+| 通过 | **26** |
 | 不通过 | **1**（D3 内存） |
 | 未验证 | **1**（真人完整验收） |
 
