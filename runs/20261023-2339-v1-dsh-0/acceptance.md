@@ -53,7 +53,7 @@ tools/pcsync.sh
 | **D1** | **P1 端到端延迟** | `tools/pcrun.sh '... --features kws --example duplex_fast -- --rounds 6'` | **<800ms** | **802ms**（本地 VAD + 手动 commit） | ✅ **基本达标** |
 | **D2** | **P2 打断延迟** | `tools/pcrun.sh '... --features kws --example bargein_local'` | **<300ms** | **300ms**（3 轮一致） | ✅ **达标** |
 | D3 | P4 空闲内存 | `tools/pc_mem.sh` | <150MB | **488MB**（全进程） | ❌ **超标 3.2 倍** |
-| D4 | P5 包体积 | `ls -lh target/release/bundle/deb/*.deb` | <100MB | **6.20MB** | ✅✅ |
+| D4 | P5 包体积 | `ls -lh target/release/bundle/deb/*.deb` | <100MB | **18.21MB**（完整功能版） | ✅ |
 | D5 | P6 冷启动 | 双击到窗口 | <3s | **1476ms** | ✅ 达理想值 |
 | D6 | P7 空闲 CPU | `tools/pc_mem.sh` | <5% | **3.7%** | ✅ |
 
@@ -75,6 +75,16 @@ node --test app/frontend/test/                →   8 passed, 0 failed
 | **v3** | `step-1o-audio` + **本地 VAD + 手动 commit** | **802ms** | **达标** |
 
 详见 `evidence/p1-model-sweep.md` 和 `evidence/p1-final-latency.md`。
+
+## 包体积说明
+
+| 版本 | 大小 | 功能 |
+|---|---|---|
+| 不带唤醒词 | 6.20MB | 缺唤醒词 + 本地打断 |
+| **带唤醒词（默认）** | **18.21MB** | **完整功能** |
+
+**发布版必须是 18.21MB 这个**（唤醒词是核心功能，不能为了体积砍掉）。
+包含 sherpa-onnx 运行时（约 12MB）。
 
 ## 结论
 
