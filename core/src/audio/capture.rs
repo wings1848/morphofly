@@ -275,28 +275,37 @@ impl LinearResampler {
         }
         out.reserve(self.estimate_out_len(n));
 
-        // 2) 线性插值
-        while self.pos < nf {
-            let i = self.pos.floor();
-            let t = (self.pos - i) as f32;
-            let s0 = if i < 0.0 {
-                self.prev
-            } else {
-                filtered[i as usize]
-            };
-            let j = i + 1.0;
-            let s1 = if j < 0.0 {
-                self.prev
-            } else if (j as usize) < n {
-                filtered[j as usize]
-            } else {
-                filtered[n - 1]
-            };
-            out.push(s0 + (s1 - s0) * t);
-            self.pos += self.step;
+        // 2) 线性插值。
+        //
+        // **关键**：只有"左右两个样本都在本块内"时才产出一个输出。
+        // 需要借下一块第一个样本的那个输出**推迟到下一块**再算 —— 这样分块处理
+        // 与一次性处理的结果逐样本完全相等（实时采集本来就是分块喂进来的）。
+        // 代价是流结束时最多丢 `step` 个样本（实时场景无所谓）。
+        if self.step > 0.0 {
+            loop {
+                let i = self.pos.floor();
+                let next = i + 1.0;
+                // next 必须 <= n-1；i 允许为 -1（借上一块的最后一个样本 prev）
+                if next > (n - 1) as f64 {
+                    break;
+                }
+                let t = (self.pos - i) as f32;
+                let s0 = if i < 0.0 {
+                    self.prev
+                } else {
+                    filtered[i as usize]
+                };
+                let s1 = if next < 0.0 {
+                    self.prev
+                } else {
+                    filtered[next as usize]
+                };
+                out.push(s0 + (s1 - s0) * t);
+                self.pos += self.step;
+            }
         }
 
-        // 3) 坐标系平移到下一块
+        // 3) 坐标系平移到下一块（pos 现在可能为负 = 下一个输出点落在上一块末尾之后）
         self.pos -= nf;
         self.prev = filtered[n - 1];
     }
@@ -548,6 +557,14 @@ pub struct AudioCapture {
     last_error: Arc<Mutex<Option<String>>>,
     stream: Mutex<Option<cpal::Stream>>,
     format: Mutex<Option<CaptureFormat>>,
+    /// 便捷消费端：一个常驻 broadcast 订阅者 + std mpsc 转发器。
+    ///
+    /// 目的是让调用方不必自己管 `broadcast::Receiver`（它没有 `recv_timeout`），
+    /// 直接 `cap.recv_timeout(Duration)` 就能同步阻塞取帧，适合 CLI 示例与测试。
+    simple_rx: Mutex<Option<std::sync::mpsc::Receiver<Vec<i16>>>>,
+    forwarder: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 转发线程的停车开关（stop 时置 true 让线程退出）。
+    forward_stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for AudioCapture {
@@ -584,6 +601,83 @@ impl AudioCapture {
             last_error: Arc::new(Mutex::new(None)),
             stream: Mutex::new(None),
             format: Mutex::new(None),
+            simple_rx: Mutex::new(None),
+            forwarder: Mutex::new(None),
+            forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// 便捷构造 + 启动：[`Self::new`] 后立刻 [`Self::start`]。
+    ///
+    /// # Errors
+    /// 同 [`Self::start`]（无麦克风时返回 [`AudioError::NoInputDevice`]，**不 panic**）。
+    ///
+    /// ```no_run
+    /// # use diemeng_core::audio::capture::AudioCapture;
+    /// let cap = AudioCapture::start_default().expect("需要麦克风");
+    /// let frame = cap.recv_timeout(std::time::Duration::from_millis(500)).unwrap();
+    /// assert_eq!(frame.len(), 320);
+    /// cap.stop();
+    /// ```
+    pub fn start_default() -> Result<Self, AudioError> {
+        let cap = Self::new();
+        cap.start_with_forwarder()?;
+        Ok(cap)
+    }
+
+    /// 启动采集，并启动 std mpsc 转发线程（[`Self::recv_timeout`] 依赖它）。
+    ///
+    /// [`Self::start`] 只开 cpal 流 + broadcast；本方法额外挂一个转发器。
+    pub fn start_with_forwarder(&self) -> Result<(), AudioError> {
+        self.start()?;
+
+        let need_forwarder = lock_unpoisoned(&self.forwarder).is_none();
+        if need_forwarder {
+            let mut rx = self.tx.subscribe();
+            let (tx, std_rx) = std::sync::mpsc::channel();
+            let stop = self.forward_stop.clone();
+            stop.store(false, Ordering::Release);
+            let handle = std::thread::Builder::new()
+                .name("diemeng-capture-forward".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        match rx.blocking_recv() {
+                            Ok(frame) => {
+                                // 消费端不读也算丢弃，继续转发不阻塞采集线程
+                                if tx.send(frame).is_err() {
+                                    break;
+                                }
+                            }
+                            // broadcast 落后（消费太慢）或通道关闭：继续尝试
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                })
+                .map_err(|e| AudioError::Device(format!("启动采集转发线程失败: {e}")))?;
+            *lock_unpoisoned(&self.simple_rx) = Some(std_rx);
+            *lock_unpoisoned(&self.forwarder) = Some(handle);
+        }
+        Ok(())
+    }
+
+    /// 同步阻塞取一帧（最多等 `timeout`）。
+    ///
+    /// 需要先调用 [`Self::start_default`] 或 [`Self::start_with_forwarder`]；
+    /// 未启动转发器时直接返回超时错误（不会 panic）。
+    ///
+    /// # Errors
+    /// - `RecvTimeoutError::Timeout`：超时。
+    /// - `RecvTimeoutError::Disconnected`：采集已停止。
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<i16>, std::sync::mpsc::RecvTimeoutError> {
+        let guard = lock_unpoisoned(&self.simple_rx);
+        match guard.as_ref() {
+            Some(rx) => rx.recv_timeout(timeout),
+            // 未启动转发器：等价于超时
+            None => Err(std::sync::mpsc::RecvTimeoutError::Timeout),
         }
     }
 
@@ -715,7 +809,7 @@ impl Drop for AudioCapture {
 }
 
 /// 用具体的样本类型构建 cpal 输入流。
-fn build_input_stream<T>(
+fn build_stream_typed<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     sample_format: SampleFormat,
@@ -773,7 +867,7 @@ fn build_input_stream(
     macro_rules! dispatch {
         ($($fmt:pat => $ty:ty),* $(,)?) => {
             match sample_format {
-                $($fmt => build_input_stream::<$ty>(
+                $($fmt => build_stream_typed::<$ty>(
                     device, config, sample_format, pipeline, tx, stats, last_error,
                 ),)*
                 other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
@@ -865,9 +959,9 @@ mod tests {
         assert_eq!(0.25f32.to_f32_sample(), 0.25);
         assert_eq!(0.25f64.to_f32_sample(), 0.25);
         // 24bit
-        assert_eq!(cpal::I24::from_sample(0i16).to_f32_sample(), 0.0);
-        assert!((cpal::I24::from_sample(16384i16).to_f32_sample() - 0.5).abs() < 1e-3);
-        assert!((cpal::U24::from_sample(16384i16).to_f32_sample() - 0.5).abs() < 1e-3);
+        assert_eq!(<cpal::I24 as cpal::FromSample<i16>>::from_sample_(0i16).to_f32_sample(), 0.0);
+        assert!((<cpal::I24 as cpal::FromSample<i16>>::from_sample_(16384i16).to_f32_sample() - 0.5).abs() < 1e-3);
+        assert!((<cpal::U24 as cpal::FromSample<i16>>::from_sample_(16384i16).to_f32_sample() - 0.5).abs() < 1e-3);
     }
 
     // ---------- 重采样 ----------
@@ -947,7 +1041,8 @@ mod tests {
         let input = sine(1000.0, 16_000, 160, 0.8);
         let mut out = Vec::new();
         r.process(&input, &mut out);
-        assert_eq!(out.len(), 320);
+        // 流式语义：末尾需要"下一块第一个样本"的输出会被推迟，最多少 2 个（1/step）
+        assert!((out.len() as i64 - 320).abs() <= 2, "len={}", out.len());
         // 峰值幅度应保持（线性插值不改变包络）
         let pp_in = peak_to_peak(&input);
         let pp_out = peak_to_peak(&out);
@@ -1022,10 +1117,20 @@ mod tests {
     #[test]
     fn assembler_carries_partial_remainder() {
         let mut a = FrameAssembler::new(320);
-        assert!(a.push(&vec![1i16; 700]).len() == 2);
-        assert_eq!(a.pending_len(), 60);
-        let frames = a.push(&vec![2i16; 60]);
+        // 700 = 2 整帧(640) + 60 余量
+        assert_eq!(a.push(&vec![1i16; 700]).len(), 2);
+        assert_eq!(a.pending_len(), 60, "余量必须带到下一次调用");
+
+        // 再补 60 只有 120，还不够一帧（这正是不丢样本的证明）
+        assert!(a.push(&vec![2i16; 60]).is_empty());
+        assert_eq!(a.pending_len(), 120);
+
+        // 补满剩下 200 → 凑出第 3 帧，且前 60 个是 1、后 260 个是 2（顺序与边界正确）
+        let frames = a.push(&vec![2i16; 200]);
         assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 320);
+        assert!(frames[0][..60].iter().all(|&x| x == 1), "余量顺序错乱");
+        assert!(frames[0][60..].iter().all(|&x| x == 2));
         assert_eq!(a.pending_len(), 0);
         assert_eq!(a.frame_samples(), 320);
         a.reset();

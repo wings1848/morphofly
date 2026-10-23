@@ -115,10 +115,10 @@ impl SampleRing {
 
     /// 弹出一个最旧样本。
     pub fn pop(&mut self) -> Option<f32> {
-        if self.len == 0 {
+        let cap = self.buf.len();
+        if self.len == 0 || cap == 0 {
             return None;
         }
-        let cap = self.buf.len();
         // 最旧元素位于 write - len（模 cap）
         let read = (self.write + cap - self.len) % cap;
         let v = self.buf[read];
@@ -153,6 +153,9 @@ impl SampleRing {
     /// 只读窥视，不消费。返回按时间顺序排列的最多 `max` 个样本。
     pub fn peek(&self, max: usize) -> Vec<f32> {
         let cap = self.buf.len();
+        if cap == 0 {
+            return Vec::new();
+        }
         let n = self.len.min(max);
         let start = (self.write + cap - self.len) % cap;
         (0..n).map(|i| self.buf[(start + i) % cap]).collect()
@@ -165,7 +168,7 @@ mod tests {
 
     #[test]
     fn 新环是空的() {
-        let r = SampleRing::new(8);
+        let mut r = SampleRing::new(8);
         assert_eq!(r.capacity(), 8);
         assert_eq!(r.len(), 0);
         assert!(r.is_empty());

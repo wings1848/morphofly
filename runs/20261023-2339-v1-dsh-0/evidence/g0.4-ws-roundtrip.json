@@ -1,0 +1,14 @@
+{
+  "audio_bytes": 88320,
+  "audio_frames": 22080,
+  "connect_ms": 124,
+  "endpoint": "wss://api.stepfun.com/v1/realtime?model=stepaudio-3-realtime-preview",
+  "errors": [],
+  "first_audio_ms": 429,
+  "model": "stepaudio-3-realtime-preview",
+  "send_ms": 1998,
+  "sent_samples": 29952,
+  "session_id": "01a169b3a21177f2aa8430af79a4d393",
+  "stop": "completed",
+  "transcript": "在呢，有什么事儿？"
+}

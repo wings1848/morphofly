@@ -189,13 +189,22 @@ pub struct TurnDetection {
 
 impl Default for TurnDetection {
     fn default() -> Self {
-        // 文档默认 prefix 500ms / silence 100ms。对话场景 100ms 太急，容易把一句话切碎，
-        // 这里抬到 500ms（可在配置里继续调）。
+        // 2026-10-24 实测（wings-pc，testdata/audio/04_ack_zai.mp3 走 WS）：
+        //  - energy_awakeness_threshold **默认 2500 太高**：用正常音量 TTS 音频推流，
+        //    VAD 完全不触发（收不到 speech_started），等 45s 也没有任何 response。
+        //  - 调到 500 后立刻出现完整链路：
+        //    speech_started → speech_stopped → committed → response.created
+        //    → audio_transcript.delta → response.audio.delta(12 段) → response.done(completed)
+        //  - silence_duration_ms 100ms 太急会切碎一句话；400–500ms 合适。
+        //  - turn_detection.type 只接受 "server_vad"，传 "none" 会被拒：
+        //    error "only server_vad is supported"。
+        //  - server_vad 开着时客户端**不能**手动 commit：
+        //    error "commit when server vad"。轮次完全由服务端 VAD 驱动。
         Self {
             kind: "server_vad".into(),
-            prefix_padding_ms: Some(500),
-            silence_duration_ms: Some(500),
-            energy_awakeness_threshold: None,
+            prefix_padding_ms: Some(300),
+            silence_duration_ms: Some(450),
+            energy_awakeness_threshold: Some(500),
         }
     }
 }

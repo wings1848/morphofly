@@ -6,25 +6,30 @@
 //! - 下行 PCM 常见 24kHz（Qwen / StepFun），播放侧接受任意采样率，由 rodio 转到设备采样率。
 //! - 播放队列必须可**立即清空**（不变量 I4，barge-in 打断的前提）。
 //!
-//! 分层（每层的真机调用都在无音频设备的机器上"可编译 + 返回 Err 而不是 panic"）：
+//! 分层（每层的真机调用在没有音频设备的机器上都"可编译 + 返回 Err 而不是 panic"）：
 //!
 //! | 文件 | 职责 | 无设备可测部分 |
 //! |---|---|---|
 //! | [`capture`] | cpal 采集 → 下混 → 重采样 → 分帧 | 下混 / 重采样 / 分帧（纯函数） |
-//! | [`playback`] | rodio 0.23 播放、追加任意采样率 PCM、`stop_now()`、队列深度 | 队列计量 / i16→f32 |
+//! | [`playback`] | rodio 0.23 播放、追加任意采样率 PCM、`stop_now()`、队列深度 | 队列计量 / 流式 source |
 //! | [`ring`] | 有界环形缓冲（播放侧 200–500ms 抗抖动） | 全部 |
 
 pub mod capture;
 pub mod playback;
 pub mod ring;
 
-pub use capture::{
-    AudioCapture, CaptureConfig, CaptureFormat, CapturePipeline, LinearResampler,
-};
-pub use playback::{
-    AudioPlayer, QueueMeter, DOWNLINK_SAMPLE_RATE, JITTER_MAX_MS, JITTER_MIN_MS, JITTER_TARGET_MS,
-};
+pub use capture::{AudioCapture, CaptureConfig, CaptureFormat, CapturePipeline, LinearResampler};
+pub use playback::{AppendConverter, AudioPlayer, OutputFormat, PlaybackQueue, RingSource};
 pub use ring::SampleRing;
+
+/// 下行（TTS）音频的 nominal 采样率：Qwen / StepFun 的 pcm16 输出常见 24kHz。
+pub const DOWNLINK_SAMPLE_RATE: u32 = 24_000;
+
+/// 播放侧抗抖动缓冲下限（毫秒）。设计值见 `docs/开发方案.md` 4.3：200–500ms。
+pub const JITTER_MIN_MS: u32 = 200;
+
+/// 播放侧抗抖动缓冲上限（毫秒）。超出即丢最旧（用户等不到的音频没有保留价值）。
+pub const JITTER_MAX_MS: u32 = 500;
 
 /// 音频层统一错误。
 ///
@@ -56,12 +61,17 @@ pub fn i16_to_f32(sample: i16) -> f32 {
 }
 
 /// f32 → i16，超出 `[-1.0, 1.0]` 的部分饱和裁剪，NaN → 0。
+///
+/// 采用**对称满量程**约定：乘 32768 后裁剪到 `[-32768, 32767]`。
+/// 这样与 [`i16_to_f32`]（除以 32768）严格互逆 —— 任意 i16 都能往返回到原值，
+/// 不产生 ±1 的量化偏差；`-1.0` 映射到 i16 的下限 `-32768`，`1.0` 映射到上限 `32767`。
 #[inline]
 pub fn f32_to_i16(sample: f32) -> i16 {
     if sample.is_nan() {
         return 0;
     }
-    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
+    let scaled = (sample.clamp(-1.0, 1.0) * 32768.0).round();
+    scaled.clamp(-32768.0, 32767.0) as i16
 }
 
 /// i16 PCM 切片 → f32 向量（mono，逐样本）。
@@ -92,7 +102,7 @@ mod tests {
     use crate::{FRAME_BYTES, FRAME_SAMPLES, UPLINK_SAMPLE_RATE};
 
     #[test]
-    fn 上行格式常量与开发方案一致() {
+    fn uplink_constants_match_design() {
         assert_eq!(UPLINK_SAMPLE_RATE, 16_000);
         assert_eq!(FRAME_SAMPLES, 320);
         assert_eq!(FRAME_BYTES, 640);
@@ -101,30 +111,38 @@ mod tests {
     }
 
     #[test]
-    fn i16_f32_往返转换() {
+    fn jitter_constants_match_design() {
+        // 开发方案 4.3：播放侧 ring buffer 200–500ms 余量
+        assert_eq!(JITTER_MIN_MS, 200);
+        assert_eq!(JITTER_MAX_MS, 500);
+        assert_eq!(DOWNLINK_SAMPLE_RATE, 24_000);
+    }
+
+    #[test]
+    fn i16_f32_roundtrip() {
         assert_eq!(i16_to_f32(0), 0.0);
         assert_eq!(i16_to_f32(-32768), -1.0);
         assert!((i16_to_f32(32767) - 0.999_969_7).abs() < 1e-6);
         assert_eq!(f32_to_i16(0.0), 0);
         assert_eq!(f32_to_i16(1.0), 32767);
-        assert_eq!(f32_to_i16(-1.0), -32767);
-        // 除满量程端点外应逐位回到原值
-        for s in [-30000i16, -1234, 0, 7, 1234, 30000] {
+        assert_eq!(f32_to_i16(-1.0), -32768);
+        // 全量程逐位往返：i16→f32→i16 必须恒等（对称缩放的不变量）
+        for s in i16::MIN..=i16::MAX {
             assert_eq!(f32_to_i16(i16_to_f32(s)), s, "sample={s}");
         }
     }
 
     #[test]
-    fn f32_to_i16_饱和裁剪与NaN() {
+    fn f32_to_i16_saturates_and_handles_nan() {
         assert_eq!(f32_to_i16(2.0), 32767);
-        assert_eq!(f32_to_i16(-2.0), -32767);
+        assert_eq!(f32_to_i16(-2.0), -32768);
         assert_eq!(f32_to_i16(f32::INFINITY), 32767);
-        assert_eq!(f32_to_i16(f32::NEG_INFINITY), -32767);
+        assert_eq!(f32_to_i16(f32::NEG_INFINITY), -32768);
         assert_eq!(f32_to_i16(f32::NAN), 0);
     }
 
     #[test]
-    fn rms_计算() {
+    fn rms_math() {
         // 满量程方波 ≈ 1.0
         let square: Vec<i16> = (0..FRAME_SAMPLES)
             .map(|i| if i % 2 == 0 { 32767 } else { -32768 })
@@ -134,7 +152,7 @@ mod tests {
         // 半量程恒值 = 0.5
         assert!((rms_i16(&vec![16384i16; FRAME_SAMPLES]) - 0.5).abs() < 1e-4);
 
-        // 空帧安全
+        // 空帧 / 全零安全
         assert_eq!(rms_i16(&[]), 0.0);
         assert_eq!(rms_i16(&[0i16; FRAME_SAMPLES]), 0.0);
 
@@ -144,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn pcm16_to_f32_批量转换() {
+    fn pcm16_to_f32_batch() {
         let out = pcm16_to_f32(&[0, 16384, -32768]);
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], 0.0);

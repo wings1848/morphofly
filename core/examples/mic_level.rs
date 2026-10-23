@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
             Err(_) => continue,
         }
     }
-    cap.stop();
+    let _ = cap.stop();
 
     let avg = if frames > 0 { (sum_rms / frames as f64) as f32 } else { 0.0 };
     println!(
