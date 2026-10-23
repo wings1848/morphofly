@@ -1,3 +1,3 @@
 //! 任务表。
 pub mod store;
-pub use store::{Task, TaskStatus, TaskStore};
+pub use store::{spoken_summary, Task, TaskStatus, TaskStore};

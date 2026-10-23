@@ -74,6 +74,8 @@ pub struct DshConfig {
     pub command: Vec<String>,
     /// 默认工作目录
     pub default_cwd: String,
+    /// 单个任务最长执行时间（秒），超时自动取消
+    pub task_timeout_secs: u64,
 }
 
 impl Default for DshConfig {
@@ -81,6 +83,7 @@ impl Default for DshConfig {
         Self {
             command: vec!["dsh".into(), "--profile".into(), "acp".into()],
             default_cwd: std::env::var("HOME").unwrap_or_else(|_| ".".into()),
+            task_timeout_secs: 3600,
         }
     }
 }

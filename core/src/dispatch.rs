@@ -1,0 +1,301 @@
+//! 工具分发：把语音模型的 4 个函数调用变成真实动作。
+//!
+//! 这是「语音前台」和「任务执行层」之间的唯一接缝。
+//! 铁律：这里只能做「转交」，不能自己规划、不能读文件、不能跑命令 ——
+//! 那些能力全在 DSH 那边。
+
+use crate::dsh::DshBridge;
+use crate::tasks::{spoken_summary, TaskStore, TaskStatus};
+use crate::tools::{self, APPEND_REQUIREMENT, CANCEL_TASK, DELEGATE_TASK, QUERY_PROGRESS};
+use anyhow::{Context, Result};
+use serde_json::Value;
+use std::sync::Arc;
+
+/// 工具执行结果：`speech` 会被语音模型念出来
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResult {
+    /// 给语音模型的口语化答复（会被 TTS 说出来）
+    pub speech: String,
+    /// 结构化数据（写进 function_call_output）
+    pub data: Value,
+}
+
+/// 工具分发器
+pub struct Dispatcher {
+    store: Arc<tokio::sync::Mutex<TaskStore>>,
+    bridge: Arc<DshBridge>,
+    default_dir: String,
+}
+
+impl Dispatcher {
+    pub fn new(
+        store: Arc<tokio::sync::Mutex<TaskStore>>,
+        bridge: Arc<DshBridge>,
+        default_dir: String,
+    ) -> Self {
+        Self { store, bridge, default_dir }
+    }
+
+    /// 分发一次工具调用。name 不在 4 个里 → Err（不变量 I1）。
+    pub async fn dispatch(&self, name: &str, args: &str) -> Result<ToolResult> {
+        if !tools::TOOL_NAMES.contains(&name) {
+            anyhow::bail!("未知工具 {name}：语音模型只允许 4 个工具");
+        }
+        let v: Value = if args.trim().is_empty() {
+            Value::Object(Default::default())
+        } else {
+            serde_json::from_str(args).with_context(|| format!("工具 {name} 参数不是合法 JSON: {args}"))?
+        };
+
+        match name {
+            DELEGATE_TASK => self.delegate(&v).await,
+            QUERY_PROGRESS => self.query_progress(&v).await,
+            CANCEL_TASK => self.cancel(&v).await,
+            APPEND_REQUIREMENT => self.append(&v).await,
+            _ => anyhow::bail!("未实现 {name}"),
+        }
+    }
+
+    /// 1. 派活
+    async fn delegate(&self, v: &Value) -> Result<ToolResult> {
+        let task = v
+            .get("task")
+            .and_then(|x| x.as_str())
+            .context("delegate_task 缺少 task 字段")?
+            .trim()
+            .to_string();
+        anyhow::ensure!(!task.is_empty(), "task 不能为空");
+        // 验收 A6：任务描述必须自包含，不能有指代
+        let dir = v
+            .get("dir")
+            .and_then(|x| x.as_str())
+            .unwrap_or(&self.default_dir)
+            .to_string();
+        let urgent = v.get("urgent").and_then(|x| x.as_bool()).unwrap_or(false);
+
+        let t = {
+            let mut s = self.store.lock().await;
+            s.create(&task, &dir)?
+        };
+        let id = t.id.clone();
+
+        // 异步交给 DSH，不阻塞语音
+        let bridge = self.bridge.clone();
+        let store = self.store.clone();
+        let task_clone = task.clone();
+        let id2 = id.clone();
+        tokio::spawn(async move {
+            let _ = store.lock().await.set_status(&id2, TaskStatus::Running);
+            match bridge.run_task(&task_clone, &dir).await {
+                Ok(summary) => {
+                    let mut s = store.lock().await;
+                    let _ = s.set_summary(&id2, &clean_for_speech(&summary));
+                    let _ = s.set_status(&id2, TaskStatus::Done);
+                }
+                Err(e) => {
+                    let mut s = store.lock().await;
+                    let _ = s.set_summary(&id2, &clean_for_speech(&format!("出错了：{e}")));
+                    let _ = s.set_status(&id2, TaskStatus::Failed);
+                }
+            }
+        });
+
+        let speech = if urgent {
+            format!("好，这就去办，任务号 {}。", short_id(&id))
+        } else {
+            format!("好，记下了，任务号 {}。干完我跟你说。", short_id(&id))
+        };
+        Ok(ToolResult {
+            speech,
+            data: serde_json::json!({ "task_id": id, "status": "running" }),
+        })
+    }
+
+    /// 2. 查进度
+    async fn query_progress(&self, v: &Value) -> Result<ToolResult> {
+        let s = self.store.lock().await;
+        let id = v.get("task_id").and_then(|x| x.as_str());
+        match id {
+            Some(id) => match s.get(id) {
+                Some(t) => Ok(ToolResult {
+                    speech: spoken_summary(t),
+                    data: serde_json::to_value(t)?,
+                }),
+                None => Ok(ToolResult {
+                    speech: format!("没找到任务 {}。", id),
+                    data: serde_json::json!({"error": "not_found"}),
+                }),
+            },
+            None => {
+                let active = s.active();
+                let speech = if active.is_empty() {
+                    "现在手头没有在跑的任务。".to_string()
+                } else {
+                    let parts: Vec<String> = active
+                        .iter()
+                        .take(3)
+                        .map(|t| format!("{} 是{}", short_id(&t.id), t.status.spoken()))
+                        .collect();
+                    format!("现在有 {} 个任务：{}。", active.len(), parts.join("，"))
+                };
+                Ok(ToolResult {
+                    speech,
+                    data: serde_json::to_value(&active)?,
+                })
+            }
+        }
+    }
+
+    /// 3. 取消
+    async fn cancel(&self, v: &Value) -> Result<ToolResult> {
+        let id = v
+            .get("task_id")
+            .and_then(|x| x.as_str())
+            .context("cancel_task 缺少 task_id")?
+            .to_string();
+        let mut s = self.store.lock().await;
+        if s.get(&id).is_none() {
+            return Ok(ToolResult {
+                speech: format!("没找到任务 {id}。"),
+                data: serde_json::json!({"error": "not_found"}),
+            });
+        }
+        s.set_status(&id, TaskStatus::Cancelled)?;
+        Ok(ToolResult {
+            speech: format!("好，{} 我已经让它停了。", short_id(&id)),
+            data: serde_json::json!({ "task_id": id, "status": "cancelled" }),
+        })
+    }
+
+    /// 4. 追加要求
+    async fn append(&self, v: &Value) -> Result<ToolResult> {
+        let id = v
+            .get("task_id")
+            .and_then(|x| x.as_str())
+            .context("append_requirement 缺少 task_id")?
+            .to_string();
+        let extra = v
+            .get("extra")
+            .and_then(|x| x.as_str())
+            .context("append_requirement 缺少 extra")?
+            .trim()
+            .to_string();
+        let mut s = self.store.lock().await;
+        if s.get(&id).is_none() {
+            return Ok(ToolResult {
+                speech: format!("没找到任务 {id}。"),
+                data: serde_json::json!({"error": "not_found"}),
+            });
+        }
+        s.append_requirement(&id, &extra)?;
+        Ok(ToolResult {
+            speech: format!("行，我给它补上了：{extra}"),
+            data: serde_json::json!({ "task_id": id, "appended": extra }),
+        })
+    }
+}
+
+/// 把长任务号缩短成好念的形式
+fn short_id(id: &str) -> String {
+    id.rsplit('_').next().unwrap_or(id).to_string()
+}
+
+/// 清洗成可以念的话：去掉 markdown / 代码块 / 路径 / URL（验收 D5）
+pub fn clean_for_speech(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_code = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            continue;
+        }
+        // 去掉行首 markdown 标记
+        let mut l = t.trim_start_matches(['#', '>', '-', '*', ' ']).to_string();
+        // 去掉粗体/斜体标记（**x** → x，*x* → x，__x__ → x）
+        while l.contains("**") {
+            l = l.replacen("**", "", 1);
+        }
+        while l.contains("__") {
+            l = l.replacen("__", "", 1);
+        }
+        // 去掉行内反引号内容（通常是路径/命令）
+        while let (Some(a), Some(b)) = (l.find('`'), l.rfind('`')) {
+            if a < b {
+                l = format!("{}{}", &l[..a], &l[b + 1..]);
+            } else {
+                break;
+            }
+        }
+        // 去掉 URL
+        let mut cleaned = String::new();
+        for word in l.split_whitespace() {
+            if word.starts_with("http://") || word.starts_with("https://") {
+                continue;
+            }
+            if !cleaned.is_empty() {
+                cleaned.push(' ');
+            }
+            cleaned.push_str(word);
+        }
+        if !cleaned.trim().is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(cleaned.trim());
+        }
+        // 只留前 2 句，太长的话 TTS 念不完
+        if out.chars().count() > 120 {
+            break;
+        }
+    }
+    let mut s: String = out.chars().take(160).collect();
+    if s.is_empty() {
+        s = "干完了。".into();
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_for_speech_strips_markdown() {
+        let raw = "## 完成情况\n\n我已经把 **README** 补好了。\n\n```bash\ncargo test\n```\n\n详见 https://example.com/x 这个链接。";
+        let c = clean_for_speech(raw);
+        assert!(!c.contains("```"), "不能有代码块: {c}");
+        assert!(!c.contains('#'), "不能有 markdown 标题: {c}");
+        assert!(!c.contains("**"), "不能有粗体: {c}");
+        assert!(!c.contains("https://"), "不能有 URL: {c}");
+        assert!(c.contains("README"));
+    }
+
+    #[test]
+    fn clean_for_speech_removes_inline_code_and_paths() {
+        let c = clean_for_speech("我改了 `src/main.rs` 和 `/home/wings/x` 两个地方");
+        assert!(!c.contains('`'), "不能有反引号: {c}");
+        assert!(!c.contains("src/main.rs"), "路径不该念出来: {c}");
+    }
+
+    #[test]
+    fn clean_for_speech_truncates_long_text() {
+        let long = "这是一句很长的话。".repeat(50);
+        let c = clean_for_speech(&long);
+        assert!(c.chars().count() <= 160, "必须截断，实际 {}", c.chars().count());
+    }
+
+    #[test]
+    fn clean_for_speech_empty_becomes_something() {
+        assert_eq!(clean_for_speech(""), "干完了。");
+        assert_eq!(clean_for_speech("```\ncode\n```"), "干完了。");
+    }
+
+    #[test]
+    fn short_id_is_readable() {
+        assert_eq!(short_id("task_20261024_0120_001"), "001");
+    }
+}
