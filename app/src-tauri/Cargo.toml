@@ -8,8 +8,14 @@ license.workspace = true
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = []
+# 唤醒词常驻监听（依赖 diemeng-core/kws → sherpa-onnx 静态库）
+kws = ["diemeng-core/kws"]
+
 [dependencies]
-diemeng-core.workspace = true
+# 唤醒词需要 --features kws（sherpa-onnx 静态库，本机缺 libstdc++ 时不要开）
+diemeng-core = { workspace = true, features = [] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

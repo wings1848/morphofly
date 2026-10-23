@@ -180,6 +180,56 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
     });
 }
 
+/// 启动唤醒词常驻监听（仅在 `--features kws` 时编译）。
+///
+/// 接法：KWS 命中 → 状态机 S0 --WakeWord--> S1 → 连云端 → S2。
+/// 这里只做「命中即唤醒」；真正连云端在阶段 1 的 duplex 链路里。
+#[cfg(feature = "kws")]
+fn spawn_wake_listener(machine: Arc<Mutex<SessionMachine>>) {
+    use diemeng_core::kws::{wake_stimulus_for, KwsConfig, WakeEvent, WakeListener};
+
+    let cfg = KwsConfig::default();
+    if let Err(e) = cfg.validate() {
+        tracing::warn!(
+            error = %e,
+            "唤醒词没启用（模型/关键词文件缺失）。见 docs/唤醒词.md 的一次性准备步骤"
+        );
+        return;
+    }
+    let m = machine.clone();
+    match WakeListener::start(cfg, move |ev: WakeEvent| {
+        let WakeEvent::Detected { keyword } = ev;
+        let m = m.clone();
+        // 状态机是 tokio Mutex，回调在 KWS 线程里，用 block_on 拿一下
+        tauri::async_runtime::block_on(async move {
+            let mut guard = m.lock().await;
+            if let Some(stim) = wake_stimulus_for(guard.state()) {
+                match guard.handle(stim) {
+                    Ok(_) => tracing::info!(%keyword, state = guard.state().as_str(), "🔊 唤醒"),
+                    Err(e) => tracing::warn!(error = %e, "唤醒迁移失败"),
+                }
+            }
+        });
+    }) {
+        Ok(l) => {
+            tracing::info!("唤醒词常驻监听已启动（喊「小蝶」试试）");
+            // 泄漏到进程结束：App 生命周期内一直监听
+            std::mem::forget(l);
+        }
+        Err(e) => tracing::error!(error = %e, "唤醒词启动失败"),
+    }
+}
+
+#[cfg(not(feature = "kws"))]
+fn spawn_wake_listener(_machine: Arc<Mutex<SessionMachine>>) {
+    tracing::info!("唤醒词未编译进来（用 --features kws 打开）");
+}
+
+/// 演示模式（DIEMENG_DEMO_STATES）下不启动 KWS，避免抢麦克风
+fn demo_states_placeholder() -> bool {
+    std::env::var("DIEMENG_DEMO_STATES").map(|v| v != "0").unwrap_or(false)
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -204,6 +254,12 @@ fn main() {
     let demo_audio = std::env::var("DIEMENG_DEMO_AUDIO")
         .map(|v| v != "0")
         .unwrap_or(true);
+    // 唤醒词常驻监听（需要 --features kws）
+    let enable_kws = std::env::var("DIEMENG_KWS").map(|v| v != "0").unwrap_or(true);
+    if enable_kws && !demo_states_placeholder() {
+        spawn_wake_listener(machine.clone());
+    }
+
     // 视觉巡检（仅 QA 用，见 spawn_state_walker 文档）
     let demo_states = std::env::var("DIEMENG_DEMO_STATES").map(|v| v != "0").unwrap_or(false);
     if demo_states {

@@ -38,5 +38,14 @@ default = []
 # 唤醒词常驻监听（需要 C++ 运行时 + 会下 30MB 预编译库）
 kws = ["dep:sherpa-onnx"]
 
+# 唤醒词相关的 example 需要 kws feature 才能编译
+[[example]]
+name = "kws_check"
+required-features = ["kws"]
+
+[[example]]
+name = "wake_integration"
+required-features = ["kws"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
