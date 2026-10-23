@@ -10,6 +10,8 @@
 //!
 //! **不在这里碰音频**（core 里碰），**不在这里拿 Key**（core 里拿）。
 
+mod voice;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,6 +25,7 @@ use tokio::sync::Mutex;
 struct AppState {
     machine: Arc<Mutex<SessionMachine>>,
     caption: Arc<Mutex<String>>,
+    cfg: Arc<diemeng_core::Config>,
 }
 
 #[tauri::command]
@@ -167,6 +170,7 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
 
             let st = { machine.lock().await.state() };
             if st.as_str() != last_state {
+                tracing::info!(state = st.as_str(), prev = %last_state, "推状态给前端");
                 last_state = st.as_str().to_string();
                 let (glow, radius, speed) = st.visual();
                 let payload = serde_json::json!({
@@ -174,7 +178,74 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
                     "caption": st.label(),
                     "visual": { "glow": glow, "radius": radius, "speed": speed }
                 });
-                let _ = app.emit("state", payload);
+                if let Err(e) = app.emit("state", payload) {
+                    tracing::warn!(error = %e, "推状态失败");
+                }
+            }
+        }
+    });
+}
+
+/// 语音会话守护：一进通话态就建会话，离开就拆。
+///
+/// 这条循环是「S1 → 连云端 → S2」的实现：
+/// - 看到 S1 → 建 VoiceSession → 成功后 handle(Connected) → S2
+/// - 看到离开通话态 → 关会话、回 S0
+fn spawn_session_guard(
+    app: AppHandle,
+    machine: Arc<Mutex<SessionMachine>>,
+    cfg: Arc<diemeng_core::Config>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut current: Option<voice::VoiceSession> = None;
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let st = { machine.lock().await.state() };
+
+            // 需要建会话？（S1 且还没有）
+            if voice::should_open_session(st) && current.is_none() {
+                tracing::info!("建立语音会话…");
+                match voice::VoiceSession::open(&cfg).await {
+                    Ok(sess) => {
+                        {
+                            let mut m = machine.lock().await;
+                            let _ = m.handle(Stimulus::Connected);
+                            tracing::info!(state = m.state().as_str(), "会话已建立");
+                        }
+                        // 频谱 → 前端
+                        let app2 = app.clone();
+                        let machine2 = machine.clone();
+                        let sess_for_run = sess;
+                        let machine3 = machine2.clone();
+                        // run 会阻塞到会话结束，所以 spawn 出去
+                        let app3 = app2.clone();
+                        let handle = tauri::async_runtime::spawn(async move {
+                            let r = sess_for_run
+                                .run(machine3.clone(), move |bins, rms| {
+                                    let _ = app3.emit(
+                                        "spectrum",
+                                        serde_json::json!({ "bins": bins, "rms": rms }),
+                                    );
+                                })
+                                .await;
+                            if let Err(e) = r {
+                                tracing::warn!(error = %e, "会话异常结束");
+                            }
+                            let stats = sess_for_run.stats();
+                            tracing::info!(?stats, "会话结束");
+                            sess_for_run.shutdown();
+                        });
+                        let _ = handle;
+                        // 注意：会话对象已经 move 进 run 任务，current 不再持有
+                        // 下一轮如果看到 S0 就什么也不做（会话自己会退出）
+                        current = None;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "建立语音会话失败");
+                        let mut m = machine.lock().await;
+                        let _ = m.handle(Stimulus::ConnectionFailed);
+                    }
+                }
             }
         }
     });
@@ -238,7 +309,7 @@ fn main() {
         )
         .init();
 
-    let cfg = Config::load().unwrap_or_default();
+    let cfg = std::sync::Arc::new(Config::load().unwrap_or_default());
     tracing::info!(
         provider = %cfg.realtime.provider,
         model = %cfg.realtime.model,
@@ -260,6 +331,19 @@ fn main() {
         spawn_wake_listener(machine.clone());
     }
 
+    // 自动点击（仅 QA：绕开 X11 点击不达 WebView 的问题，直接驱动状态机）
+    if std::env::var("DIEMENG_AUTOCLICK").map(|v| v != "0").unwrap_or(false) {
+        let m = machine.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let mut g = m.lock().await;
+            match g.handle(Stimulus::Click) {
+                Ok(_) => tracing::info!(state = g.state().as_str(), "自动点击 → 唤醒"),
+                Err(e) => tracing::warn!(error = %e, "自动点击失败"),
+            }
+        });
+    }
+
     // 视觉巡检（仅 QA 用，见 spawn_state_walker 文档）
     let demo_states = std::env::var("DIEMENG_DEMO_STATES").map(|v| v != "0").unwrap_or(false);
     if demo_states {
@@ -271,11 +355,13 @@ fn main() {
         .manage(AppState {
             machine: machine.clone(),
             caption: Arc::new(Mutex::new(String::new())),
+            cfg: cfg.clone(),
         })
         .invoke_handler(tauri::generate_handler![orb_click, orb_state, set_caption, poke])
         .setup(move |app| {
             let handle = app.handle().clone();
-            spawn_pump(handle, machine.clone(), demo_audio);
+            spawn_pump(handle.clone(), machine.clone(), demo_audio);
+            spawn_session_guard(handle, machine.clone(), cfg.clone());
             if let Some(win) = app.get_webview_window("orb") {
                 let _ = win.show();
             }
