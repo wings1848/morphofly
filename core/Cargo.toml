@@ -47,5 +47,13 @@ required-features = ["kws"]
 name = "wake_integration"
 required-features = ["kws"]
 
+[[example]]
+name = "vad_check"
+required-features = ["kws"]
+
+[[example]]
+name = "bargein_local"
+required-features = ["kws"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

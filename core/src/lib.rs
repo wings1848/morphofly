@@ -15,6 +15,8 @@ pub mod realtime;
 pub mod session;
 pub mod spectrum;
 pub mod tasks;
+#[cfg(feature = "kws")]
+pub mod vad;
 pub mod tools;
 
 pub use config::Config;
