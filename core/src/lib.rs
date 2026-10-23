@@ -9,6 +9,8 @@ pub mod audio;
 pub mod config;
 pub mod dispatch;
 pub mod dsh;
+#[cfg(feature = "kws")]
+pub mod kws;
 pub mod realtime;
 pub mod session;
 pub mod spectrum;

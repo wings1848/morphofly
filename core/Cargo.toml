@@ -22,7 +22,21 @@ rodio.workspace = true
 realfft.workspace = true
 hound.workspace = true
 bytes.workspace = true
+
 tracing-subscriber.workspace = true
+
+# 唤醒词：常驻 KWS。默认 static 特性会从 GitHub 下 ~30MB 预编译库。
+#
+# 它是 **可选依赖**：
+# - 本机（Debian 13 云主机）缺 libstdc++，静态链接失败，所以默认不开；
+# - wings-pc（开发机）有完整工具链，`cargo test --features kws` 打开即可。
+# 这样「纯逻辑单测」永远能跑，唤醒词能力在真机验证。
+sherpa-onnx = { version = "2.0", optional = true }
+
+[features]
+default = []
+# 唤醒词常驻监听（需要 C++ 运行时 + 会下 30MB 预编译库）
+kws = ["dep:sherpa-onnx"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
