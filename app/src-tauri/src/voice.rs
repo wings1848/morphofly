@@ -113,11 +113,17 @@ impl VoiceSession {
             let mut rx = mic2.subscribe();
             let mut spectrum = Spectrum::with_default_window();
             let mut idle_frames = 0u64;
-            // ★ 本地 VAD：打断的触发器。不等云端 speech_started（那要 1.6s）
+            // ★ 本地 VAD：两个用途
+            //   1. 打断（用户说话 → 立刻停播）
+            //   2. 判定「说完了」→ 立刻 commit（不等服务端 VAD 的 1.95s）
             #[cfg(feature = "kws")]
             let vad = diemeng_core::vad::LocalVad::new(&diemeng_core::vad::VadConfig::default()).ok();
             #[cfg(feature = "kws")]
             let mut vad_cooldown = 0u32;
+            // 「说完」判定：有声后连续 N 帧静音就 commit
+            let mut had_voice = false;
+            let mut silence_after_voice = 0u32;
+            let mut committed_this_turn = false;
             loop {
                 if stop2.load(Ordering::Relaxed) {
                     break;
@@ -149,6 +155,21 @@ impl VoiceSession {
                                         });
                                     }
                                 }
+                            }
+                        }
+                        // ★ 本地判定「说完了」→ 立刻 commit（这是 802ms 的关键）
+                        if rms > 0.02 {
+                            had_voice = true;
+                            silence_after_voice = 0;
+                            committed_this_turn = false;
+                        } else if had_voice {
+                            silence_after_voice += 1;
+                            // 200ms 静音 = 10 帧
+                            if !committed_this_turn && silence_after_voice >= 10 {
+                                committed_this_turn = true;
+                                let _ = client2.commit();
+                                let _ = client2.create_response();
+                                tracing::info!("本地判定说完 → commit");
                             }
                         }
                         if let Err(_) = client2.send_audio(&frame) {
