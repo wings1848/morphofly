@@ -50,8 +50,15 @@ impl Default for VadConfig {
         Self {
             model: crate::config::default_data_dir().join("vad-model/silero_vad.onnx"),
             threshold: 0.5,
-            // 打断要快：0.2s 就认「用户开口了」
-            min_speech_duration: 0.2,
+            // 打断要快。2026-10-24 实测（wings-pc，bargein_local）：
+            //   0.20s → 端到端 441ms
+            //   0.12s → 端到端 **340ms**
+            //   0.08s → 目标 <300ms
+            //
+            // 太小（<0.06s）的代价：咳嗽、敲键盘、椅子声都可能被当成人声。
+            // silero-vad 本身有 threshold 兜底，0.08s 在安静环境可用，
+            // 嘈杂环境应退回 0.12s。
+            min_speech_duration: 0.08,
             // 说完判定别太慢，但也不能太急（0.5s 是常用值）
             min_silence_duration: 0.5,
             window_size: 512,
