@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://diemeng.local/protocol/schema.json",
+  "title": "蝶梦语音智能体 · 跨端事件契约 v1",
+  "description": "Rust core 内部统一事件模型。UI / 移动端 / ESP32 都按这个结构实现。",
+  "$defs": {
+    "RealtimeEvent": {
+      "oneOf": [
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "SessionCreated" }, "session_id": { "type": "string" }, "model": { "type": "string" } } },
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "SessionUpdated" } } },
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "SpeechStarted" } } },
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "SpeechStopped" } } },
+        { "type": "object", "required": ["kind", "pcm", "sample_rate"], "properties": { "kind": { "const": "AudioDelta" }, "pcm": { "type": "array", "items": { "type": "integer" } }, "sample_rate": { "type": "integer" } } },
+        { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "AudioDone" } } },
+        { "type": "object", "required": ["kind", "text"], "properties": { "kind": { "const": "TranscriptDelta" }, "text": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "text"], "properties": { "kind": { "const": "TranscriptDone" }, "text": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "text"], "properties": { "kind": { "const": "TextDelta" }, "text": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "call_id", "name", "arguments"], "properties": { "kind": { "const": "ToolCall" }, "call_id": { "type": "string" }, "name": { "type": "string" }, "arguments": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "status"], "properties": { "kind": { "const": "ResponseDone" }, "status": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "message"], "properties": { "kind": { "const": "Error" }, "message": { "type": "string" }, "code": { "type": ["string", "null"] } } }
+      ]
+    },
+    "OrbState": {
+      "type": "string",
+      "enum": ["S0", "S1", "S2", "S3", "S4", "S5"],
+      "description": "S0 待机 / S1 唤醒 / S2 聆听 / S3 思考 / S4 说话 / S5 异常"
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": ["pending", "running", "done", "failed", "cancelled", "blocked"]
+    },
+    "VoiceTool": {
+      "description": "语音模型手上只有这 4 个函数，物理上没有文件/命令能力",
+      "oneOf": [
+        { "type": "object", "required": ["name"], "properties": { "name": { "const": "delegate_task" }, "task": { "type": "string" }, "dir": { "type": ["string", "null"] }, "urgent": { "type": ["boolean", "null"] } } },
+        { "type": "object", "required": ["name"], "properties": { "name": { "const": "query_progress" }, "task_id": { "type": ["string", "null"] } } },
+        { "type": "object", "required": ["name"], "properties": { "name": { "const": "cancel_task" }, "task_id": { "type": "string" } } },
+        { "type": "object", "required": ["name"], "properties": { "name": { "const": "append_requirement" }, "task_id": { "type": "string" }, "extra": { "type": "string" } } }
+      ]
+    }
+  }
+}

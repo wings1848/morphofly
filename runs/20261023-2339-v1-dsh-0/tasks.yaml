@@ -1,0 +1,61 @@
+# 任务 DAG（标准档）。每个任务 ≤1 个写入目录，gate = 可执行命令。
+run: 20261023-2339-v1-dsh-0
+foundation_commit: "interfaces: Cargo workspace + protocol/schema.json"
+waves:
+  - wave: 1
+    parallel: 3
+    tasks:
+      - id: T1
+        title: 音频层（cpal 采集 + rodio 播放 + 环形缓冲）
+        write_scope: core/src/audio/
+        owner: teammate-audio
+        gate: "cargo test -p diemeng-core audio:: && cargo run -p diemeng-core --example mic_level -- --seconds 2"
+        depends: []
+      - id: T2
+        title: 实时语音协议层（统一事件 + StepFun WS 客户端 + provider 适配）
+        write_scope: core/src/realtime/
+        owner: teammate-realtime
+        gate: "cargo test -p diemeng-core realtime:: && cargo run -p diemeng-core --example ws_roundtrip -- testdata/audio/04_ack_zai.mp3"
+        depends: []
+      - id: T3
+        title: 状态机 + 任务表 + 配置（纯逻辑）
+        write_scope: "core/src/session/, core/src/tasks/, core/src/config.rs"
+        owner: lead
+        gate: "cargo test -p diemeng-core session:: tasks:: config::"
+        depends: []
+  - wave: 2
+    parallel: 3
+    tasks:
+      - id: T4
+        title: DSH ACP 客户端（spawn + JSON-RPC + 流式文本 + 取消）
+        write_scope: core/src/dsh/
+        owner: lead
+        gate: "cargo test -p diemeng-core dsh:: && cargo run -p diemeng-core --example delegate -- 'list files'"
+        depends: [T3]
+      - id: T5
+        title: 频谱（realfft → 64 bin + RMS）
+        write_scope: core/src/spectrum.rs
+        owner: lead
+        gate: "cargo test -p diemeng-core spectrum::"
+        depends: [T1]
+      - id: T6
+        title: Tauri 壳 + IPC 命令 + 前端小球
+        write_scope: "app/"
+        owner: teammate-app
+        gate: "tools/pcrun.sh 'cd app && cargo build -p diemeng-app' && tools/pcscreenshot.sh"
+        depends: [T3]
+  - wave: 3
+    parallel: 2
+    tasks:
+      - id: T7
+        title: examples 探针（mic_level / play_wav / ws_roundtrip / spectrum_json / duplex / delegate）
+        write_scope: core/examples/
+        owner: lead
+        gate: "cargo build --examples"
+        depends: [T1, T2, T4, T5]
+      - id: T8
+        title: 真机集成验证 + 证据归档
+        write_scope: "runs/*/evidence/"
+        owner: lead
+        gate: "全部 A0-*/A1-* 判定命令有输出"
+        depends: [T7, T6]

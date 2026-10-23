@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "run_id": "20261023-2339-v1-dsh-0",
+  "created_at": "2026-10-23T23:39:02+08:00",
+  "goal": "蝶梦语音智能体 V1：喊「小蝶」唤醒，语音派活给 DSH，任务完成主动语音汇报（阶段0 接缝先全绿）",
+  "tier": "standard",
+  "project_type": "desktop-app",
+  "human_mode": "inspect",
+  "stage": "S0",
+  "status": "running",
+  "owner": {
+    "agent": "agent",
+    "session_id": "",
+    "claimed_at": "2026-10-23T23:39:02+08:00",
+    "lease_until": "2026-10-23T23:39:02+08:00"
+  },
+  "attempts": {
+    "S0": 1
+  },
+  "loops": {
+    "used": 0,
+    "max": 3,
+    "last_fail_stage": null
+  },
+  "gates": {
+    "G0": {
+      "status": "pass",
+      "evidence": "intake.md",
+      "sha256": "c7fd33b3905cf7b24afd8b3ece62457b7eac4ec5a5135b2057756600e846b694",
+      "at": "2026-10-23T23:40:49+08:00",
+      "note": "根目录 ~/Code_Project/diemeng 已 git init；档位 standard / 类型 desktop-app / 模式 inspect 已记录"
+    }
+  },
+  "human": {},
+  "budget": {
+    "minutes_cap": 480,
+    "minutes_used": 0,
+    "tokens": 0,
+    "tokens_cap": 500000,
+    "fanout_cap": 8,
+    "fanout_used": 0
+  },
+  "blocked_by": [],
+  "next_action": "S0 闸门已过：devflow set-stage S1",
+  "artifacts": {
+    "progress": "progress.md"
+  }
+}
