@@ -1,71 +1,92 @@
-# verify-report · 独立核验
+# verify-report · 阶段 0–4 验收报告（含独立审计整改）
 
-**日期**：2026-10-24
-**范围**：阶段 0（7 个接缝）+ 阶段 1（双工链路、小球视觉）+ 阶段 2（派活）+ 阶段 3（主动汇报）+ 阶段 4（唤醒词实测）
-**核验者**：lead 自测 + 待 subagent 独立复核
+**锚定 commit**：`7f7204f`
+**日期**：2026-10-24 03:35 (+08:00)
+**开发者自测**：lead
+**独立复核**：subagent（审计报告见本文件 §6）
 
-## 1. 复现命令与结果（全部本机/真机亲跑）
+## 1. 一句话结论
 
-| # | 命令 | 期望 | 实测 | 结论 |
-|---|---|---|---|---|
-| V1 | `source tools/dev-env.sh && cargo test -p diemeng-core --lib` | 0 failed | **169 passed** | ✅ |
-| V2 | `node --test app/frontend/test/` | 0 failed | **8 passed** | ✅ |
-| V3 | `tools/pcrun.sh 'cargo run --example mic_level -- --seconds 3'` | 150 帧 / 48000 采样 | 150 帧 / 48000 | ✅ |
-| V4 | `--example ws_roundtrip -- testdata/audio/04_ack_zai.mp3` | 收到音频+字幕 | first_audio 429ms / 88320 字节 /「在呢，有什么事儿？」 | ✅ |
-| V5 | `--example delegate` | end_turn + 非空 | end_turn / 3.6s / 151 字 | ✅ |
-| V6 | `--example duplex -- --input-file 04_ack_zai.mp3` | 播到云端音频 | 38400 帧播放 | ✅ |
-| V7 | `--example voice_task -- --file 17_cmd_chinese_project.mp3` | 派活 + 主动汇报 | 「干完了：app，core，docs…」 | ✅ |
-| V8 | `--example wake_word -- --file 01_wake_short.mp3` | S0→S1→S2→S0 | 完整循环 | ✅ |
-| V9 | `tools/pcrun.sh 'cargo run ---example delegate'` + ACP 探针 | sessionId | 9059de17-… | ✅ |
-| V10 | `tools/pc_states.sh` | 六态可辨 | 截图 6 张 + 差异测试 | ✅ |
-| V11 | KWS Python 实测 | 召回 ≥95%、误唤醒 <1 | 9/9、0/8 | ✅ |
-| V12 | `tools/pcrun.sh 'cd app/src-tauri && cargo build'` | 0 error | Finished | ✅ |
+**核心链路能跑通**（说句话 → 派活 → DSH 执行 → 主动汇报），
+**但 P1 端到端延迟不达标**（实测 1.8–3.3 秒，要求 <800ms），
+**阶段 4 的 Rust 侧常驻唤醒词未实现**。
 
-## 2. 不变量核对
+## 2. 有证据的结论
 
-| # | 不变量 | 判定方式 | 结果 |
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 阶段 0 七接缝 | ✅ 全绿（含审计新增「真的出声」） | `evidence/g0.*` |
+| 双工链路 | ✅ 播放 38400 帧，物理 sink 录音峰值 32000 | `evidence/g1.1-duplex.md`、`evidence/g0.3-playback-physical.md` |
+| 六态小球 | ✅ S0–S5 全有，肉眼可辨 | `evidence/screenshots/states-grid-all6.png` |
+| 派活给 DSH | ✅ 工具调用 → 任务 Done | `evidence/g2.2-voice-tool-call.md` |
+| 主动汇报 | ✅ 不等用户问，自己开口 | `evidence/g3.1-active-report.md` |
+| 唤醒词识别率 | ✅ 召回 9/9、误唤醒 0/8（Python 侧） | `evidence/g4.1-kws-recall.md` |
+| **P1 延迟** | ❌ **不达标** 3256ms | `evidence/p1-latency-HONEST.md` |
+
+## 3. 复现命令（每条都验证过能跑）
+
+```bash
+cd ~/Code_Project/diemeng && source tools/dev-env.sh
+cargo test -p diemeng-core --lib          # 171 passed, 0 failed
+node --test app/frontend/test/            # 8 passed, 0 failed
+python3 tools/probe_acp.py                # session_id + agent_text_len>0 + end_turn（连跑3次稳定）
+tools/pcsync.sh && tools/pcrun.sh 'cargo run -q -p diemeng-core --example mic_level -- --seconds 3'
+tools/pcrun.sh 'set -a; . ~/.diemeng/credentials; set +a; cargo run -q -p diemeng-core --example voice_task -- --file testdata/audio/17_cmd_chinese_project.mp3'
+```
+
+## 4. 不变量
+
+| # | 不变量 | 结论 |
+|---|---|---|
+| I1 | 只有 4 个工具 | ✅ 单测有效（审计做了变异测试：加第 5 个立刻红） |
+| I2 | Key 不在前端 | ✅ 审计独立扫 app/core/protocol/docs/tools + 二进制 + git 历史，0 命中 |
+| I3 | 两条链路独立 | ✅ 语音轮次先结束（10865ms），任务后台跑完再主动汇报 |
+| I4 | 播放队列可即时清空 | ✅ 有 2 个单测覆盖（`queue_stop_now_is_immediate_i4` 等）<br>⚠️ 原证据里的「773ns」不可复现，已删除 |
+| I5 | 上行格式 | ✅ 每帧 320 采样 = 640 字节 |
+
+## 5. 未完成（诚实清单）
+
+1. **P1 延迟不达标**：1.8–3.3s，且 `silence_duration_ms` 对 StepFun 不生效
+2. **Rust 侧常驻 KWS 未实现**（Python 侧已验证识别率）
+3. **打断（barge-in）未在真实播放中测过**（D3）
+4. **真实鼠标点击小球未自动化验证**（B1-3）
+5. **AEC 未做**（阶段 4.5）
+6. **release 打包未做**（阶段 5），内存/包体积未知（D4）
+7. **真人完整验收未做**：需要用户本人戴耳机跑一次全流程
+
+## 6. 独立审计发现的问题与整改（全部已处理）
+
+| # | 审计问题 | 严重度 | 整改 |
 |---|---|---|---|
-| I1 | 语音模型只有 4 个工具 | `tools::assert_tool_invariant` + 单测 + 运行时断言 | ✅ |
-| I2 | API Key 不在前端产物 | 密钥只从 env/credentials 读；前端源码 0 命中 | ✅ |
-| I3 | 语音/任务两条链路独立 | 语轮 10865ms 先结束、任务后完成并主动汇报 | ✅ |
-| I4 | 播放队列可即时清空 | `stop_now() 773ns` | ✅ |
-| I5 | 上行 16k/mono/i16/20ms | 每帧 320 采样 = 640 字节（单测 + 真机） | ✅ |
+| 1 | 验收表 12 行只有 2 行判定过，2 条命令跑不通 | 🔴 高 | **重写 acceptance.md**：27 条可判定命令，全部验证过；补 `play_wav.rs`；duplex 参数统一 |
+| 2 | 首音频 429ms 不稳定（双峰 ~430ms / ~5.4s） | 🔴 高 | **重测并推翻**：真实延迟 1.8–3.3s，新写 `p1-latency-HONEST.md`；旧的 `latency_bench` 标注为「口径错误，勿用于下结论」 |
+| 3 | 六态证据只有 4 态，S5 从未到达 | 🟡 中 | **修 S5 状态机 bug**（`ever_connected`）+ 修巡检器 + 重拍六态（含 epoch 对齐） |
+| 4 | S5 逻辑缺口（S0 断线不跳 S5） | 🟡 中 | **真 bug，已修** + 2 个新单测 |
+| 5 | ACP 探针竞态（agent_text 恒为 0） | 🟡 中 | **重写探针**：响应按 id 分队列 + 通知独立队列；连跑 3 次稳定 |
+| 6 | 773ns 不可复现 | 🟡 中 | 从所有证据里删除该数字，改为「有 2 个单测覆盖清空行为」 |
+| 7 | 音频路由是 snd_aloop 虚拟回环 | 🔴 高 | **新增 pc_audio_route.sh + docs/音频路由.md**；切物理 sink + monitor 录音峰值 32000 证实真出声；清理测试残留 null sink |
+| 8 | 仓库审计期间被持续修改 | 🟡 中 | 本报告锚定 commit `7f7204f` |
 
-## 3. 已完成（有证据）
+## 7. 需要用户决策（阻塞项）
 
-阶段 0：0.1–0.7 全部 ✅（`evidence/g0.*`）
-阶段 1：双工链路、小球六态、点击进出、字幕、延迟记录 ✅（`evidence/g1.*`）
-阶段 2：4 工具 + 任务表 + DSH 桥 + 结果清洗 ✅（`evidence/g2.*`）
-阶段 3：主动汇报 ✅（`evidence/g3.1`）
-阶段 4：KWS 实测 + 状态机接缝 ✅（`evidence/g4.*`，约 50% 完成度）
+### 决策 1：P1 延迟怎么办？
 
-## 4. 未完成项（诚实列出）
+| 选项 | 代价 | 预期效果 |
+|---|---|---|
+| A. 换阿里云百炼 Qwen | 需要 DashScope key（用户提供） | 官方口径首音频 1.37s，且支持手动 commit，**可能压到 1s 内** |
+| B. 放宽验收标准到 <3s | 零成本 | 与「像打电话」的产品定位冲突 |
+| C. 继续调 StepFun | 时间不确定 | 实测 `silence_duration_ms` 不生效，空间有限 |
+| **D. 先问 StepFun 是否支持客户端 VAD + 手动 commit** | 一条工单的时间 | 若支持可压到 300–500ms |
 
-### 必须在 V1 前补的
-1. **Rust 侧常驻 KWS**：现在只有 Python 侧验证，`sherpa-onnx` Rust 绑定未引入
-2. **真麦克风 + 真扬声器的 100 次延迟采样**（验收 P1 正式口径，现在只有单次/文件回放）
-3. **打断实测**：播放时对着麦克风喊停，量 stop 延迟（P2）
-4. **点击小球的真实鼠标验证**（现在只有命令与状态机单测）
-5. **AEC**（阶段 4.5）：外放时自我打断问题未验证
-6. **打包分发**（阶段 5）：`cargo tauri build` 没跑过 release
+**推荐 D → A**：先确认协议能力，再决定要不要换 provider。
 
-### 已知缺陷
-1. **英文项目名对中文 ASR 不友好**：`diemeng` 被听成 `daimian`/`diamond`/`aimeng`（实测 3 次都没对）
-   - 已有缓解：指令加「已知项目表 + 不确定必须追问」+ dispatcher 目录校验
-   - 根本解法：中文别名（说「蝶梦」），或 ASR 热词
-2. **26ms 的「说完到开口」延迟口径存疑**：StepFun 是全双工边想边说模型，
-   不能和单向轮次模型直接比。真实端到端要用真人对话采样。
-3. **任务超时 3600s 是拍脑袋值**，没有实测过长任务。
+### 决策 2：项目名怎么念？
 
-### 未验证的环境
-- Windows / macOS 完全没碰（计划阶段 5）
-- Linux 只在 wings-pc 单机上验证过
+实测「diemeng」被中文 ASR 听成 `daimian`/`diamond`/`aimeng`（3 次全错）。
+「蝶梦」100% 正确。
 
-## 5. 结论
+**推荐**：产品对用户只说中文名「蝶梦」，英文名只用于代码/仓库。
 
-**阶段 0 闸门：通过。方案骨架成立。**
-**阶段 1–3 核心体验：通过（文件回放版），真人版待补。**
-**阶段 4：可行，未完成。**
+## 8. 是否可交付 V1
 
-**是否可交付 V1：否。** 距离「打开电脑、不按键、喊一声、关屏、听汇报」还差：
-releease 打包、真机 100 次采样、Rust 侧 KWS 常驻。
+**否。** 距离交付还差：P1 延迟达标（或验收标准放宽）、release 打包、真人完整验收。
