@@ -1,0 +1,11 @@
+# 本机磁盘紧张（59G，构建产物动辄 4G+），把 target 放到 /tmp 之外的独立盘位。
+# 但这台机器只有一块盘，所以关键手段是：debug 用增量构建要慎用，定期 cargo clean。
+#
+# 更有效的做法：用 mold/lld 加速链接 + 只构建需要的 crate。
+[build]
+# 增量编译对本项目收益不大（每次都是全量测试），关掉能省 30-50% 磁盘
+incremental = false
+
+[target.x86_64-unknown-linux-gnu]
+# 用 lld 加速链接（wings-pc 有 lld；本机没有时 rustc 会自动回退）
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
