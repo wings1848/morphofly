@@ -99,7 +99,10 @@ pub enum ClientCommand {
     #[serde(rename = "session.update")]
     SessionUpdate { session: SessionConfig },
     /// 创建/更新会话配置（原始 JSON，保留 `"turn_detection": null` 这类「显式 null」语义）
-    #[serde(rename = "session.update")]
+    ///
+    /// 注意：不能也用 `#[serde(rename = "session.update")]`，否则和上面那个变体撞名
+    /// （serde 会报 unreachable pattern，且序列化行为未定义）。
+    /// 这个变体在 `client_command_json` 里手工序列化。
     RawSessionUpdate { session: Value },
     /// 追加一段上行音频（base64 的 pcm16）
     #[serde(rename = "input_audio_buffer.append")]
@@ -233,6 +236,11 @@ pub fn parse_server_event_with_rate(raw: &str, sample_rate: u32) -> Option<Realt
 
 /// 客户端命令 → 线上 JSON
 pub fn client_command_json(cmd: &ClientCommand) -> Value {
+    // RawSessionUpdate 需要保留 `"turn_detection": null` 这种显式 null 语义，
+    // 不能走 derive（SessionConfig 的 skip_serializing_if 会整个省略字段）。
+    if let ClientCommand::RawSessionUpdate { session } = cmd {
+        return json!({ "type": "session.update", "session": session });
+    }
     serde_json::to_value(cmd).unwrap_or_else(|e| {
         // 理论上不可能失败（全是简单结构），真失败了也不能 panic 掉整条语音链路
         tracing::error!(error = %e, "客户端命令序列化失败");
@@ -269,6 +277,30 @@ pub fn decode_pcm16_base64(b64: &str) -> Option<Vec<i16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归测试：RawSessionUpdate 必须真的发出 `"turn_detection": null`
+    /// （这是压低延迟的唯一手段，服务端区分「字段缺失」和「字段为 null」）
+    #[test]
+    fn raw_session_update_keeps_explicit_null() {
+        let cmd = ClientCommand::RawSessionUpdate {
+            session: json!({"modalities": ["audio"], "turn_detection": Value::Null}),
+        };
+        let v = client_command_json(&cmd);
+        assert_eq!(v["type"], "session.update");
+        let td = &v["session"]["turn_detection"];
+        assert!(td.is_null(), "必须真的是 null，不是被省略");
+        let text = serde_json::to_string(&v).unwrap();
+        assert!(text.contains("\"turn_detection\":null"), "序列化后要能看到 null: {text}");
+    }
+
+    /// 对照：普通 SessionUpdate 的 turn_detection=None 会被整个省略（这是设计，不是 bug）
+    #[test]
+    fn normal_session_update_omits_none_turn_detection() {
+        let mut sc = SessionConfig::from_realtime_config(&crate::config::RealtimeConfig::default());
+        sc.turn_detection = None;
+        let v = client_command_json(&ClientCommand::SessionUpdate { session: sc });
+        assert!(v["session"].get("turn_detection").is_none(), "None 应被省略");
+    }
 
     /// 契约测试：我们的 kind 字符串必须和 protocol/schema.json 里的一模一样。
     #[test]

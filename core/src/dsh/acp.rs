@@ -90,7 +90,7 @@ impl DshClient {
             });
         }
 
-        let mut client = Self {
+        let client = Self {
             child,
             stdin,
             next_id: AtomicI64::new(1),
