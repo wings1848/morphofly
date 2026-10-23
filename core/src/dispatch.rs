@@ -73,6 +73,16 @@ impl Dispatcher {
             .to_string();
         let urgent = v.get("urgent").and_then(|x| x.as_bool()).unwrap_or(false);
 
+        // 目录必须真实存在。语音识别经常把项目名听错（实测「diemeng」→「/daimian」），
+        // 与其让 DSH 在空目录里瞎跑，不如立刻回一句让它复述确认。
+        if !std::path::Path::new(&dir).is_dir() {
+            let hint = suggest_dir(&dir, &self.default_dir);
+            return Ok(ToolResult {
+                speech: format!("{hint} 我没敢直接开工，你确认一下是哪个目录？"),
+                data: serde_json::json!({ "error": "dir_not_found", "dir": dir, "hint": hint }),
+            });
+        }
+
         let t = {
             let mut s = self.store.lock().await;
             s.create(&task, &dir)?
@@ -195,6 +205,46 @@ impl Dispatcher {
     }
 }
 
+/// 目录不存在时给一句有信息量的话：列出可能的候选
+fn suggest_dir(bad: &str, default_dir: &str) -> String {
+    let base = std::path::Path::new(default_dir);
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(base) {
+        // 用听错的名字做模糊匹配：公共子串长度 >= 2 就算候选
+        let needle: Vec<char> = bad
+            .trim_matches('/')
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect();
+        for e in rd.flatten() {
+            if !e.path().is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let n: Vec<char> = name.chars().collect();
+            // 简单判定：任一方向包含，或有 2 个以上相同字符
+            let common = n.iter().filter(|c| needle.contains(c)).count();
+            if name.contains(bad.trim_matches('/')) || needle.windows(2).any(|w| name.contains(&w.iter().collect::<String>())) || common >= 3 {
+                candidates.push(name);
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.is_empty() {
+        format!("路径「{}」不存在。", bad)
+    } else {
+        format!(
+            "路径「{}」不存在，你是说 {} 吗？",
+            bad,
+            candidates.iter().take(3).cloned().collect::<Vec<_>>().join(" 还是 ")
+        )
+    }
+}
+
 /// 把长任务号缩短成好念的形式
 fn short_id(id: &str) -> String {
     id.rsplit('_').next().unwrap_or(id).to_string()
@@ -292,6 +342,12 @@ mod tests {
     fn clean_for_speech_empty_becomes_something() {
         assert_eq!(clean_for_speech(""), "干完了。");
         assert_eq!(clean_for_speech("```\ncode\n```"), "干完了。");
+    }
+
+    #[test]
+    fn suggest_dir_says_not_found_for_garbage() {
+        let s = suggest_dir("/definitely/not/here/xyz", "/tmp");
+        assert!(s.contains("不存在"));
     }
 
     #[test]

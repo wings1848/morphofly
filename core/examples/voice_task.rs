@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
 
         let t0 = std::time::Instant::now();
         let mut tool_calls: Vec<(String, String, String)> = Vec::new();
+        let mut dispatched: Vec<String> = Vec::new();
         loop {
             let ev = tokio::select! {
                 r = ev_rx.recv() => match r { Ok(e)=>e, Err(_)=>break },
@@ -95,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
                             match dispatcher.dispatch(&name, &args).await {
                                 Ok(r) => {
                                     println!("[voice_task] → 会说：{}", r.speech);
+                                    if let Some(id) = r.data.get("task_id").and_then(|x| x.as_str()) {
+                                        dispatched.push(id.to_string());
+                                    }
                                     client.send_function_call_output(&call_id, &r.speech)?;
                                 }
                                 Err(e) => {
@@ -124,7 +128,65 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        println!("[voice_task] 事件循环结束，tool_calls={}", tool_calls.len());
+        println!("[voice_task] 事件循环结束，已派 {} 个任务", dispatched.len());
+
+        // ---- 阶段 3：主动汇报 ----
+        // 任务干完后，不等用户问，主动把结果说出来。
+        // 这正是产品定义里最硬的一条：「派活后不主动询问，等它自己说」。
+        if !dispatched.is_empty() {
+            println!("[voice_task] 等任务完成，然后主动汇报…");
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                let mut finished: Option<(String, String, String)> = None;
+                {
+                    let s = store.lock().await;
+                    for id in &dispatched {
+                        if let Some(t) = s.get(id) {
+                            if t.status.is_terminal() {
+                                finished = Some((t.id.clone(), t.status.spoken().to_string(), t.summary.clone()));
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some((id, spoken, summary)) = finished {
+                    let report = format!("{spoken}：{summary}");
+                    println!("[voice_task] 🔔 主动汇报（{id}）：{report}");
+                    // 通过 conversation.item.create 把汇报写进会话，再让它开口
+                    client.send_item(serde_json::json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text":
+                            format!("（系统通知，不是用户说的话）后台任务有新结果，请用一句话转告我：{report}")}]
+                    }))?;
+                    client.create_response()?;
+
+                    // 等它把这句话说完
+                    let t_wait = tokio::time::Instant::now() + Duration::from_secs(20);
+                    loop {
+                        let ev = match tokio::time::timeout_at(t_wait, ev_rx.recv()).await {
+                            Err(_) | Ok(Err(_)) => break,
+                            Ok(Ok(e)) => e,
+                        };
+                        match ev {
+                            RealtimeEvent::TranscriptDelta { text } => print!("{text}"),
+                            RealtimeEvent::ResponseDone { status } => {
+                                println!("\n[voice_task] 汇报完毕 status={status}");
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    println!("[voice_task] ✅ 派活 → 执行 → **主动**语音汇报 全链路通");
+                    break;
+                }
+                if tokio::time::Instant::now() > deadline {
+                    println!("[voice_task] ⚠️ 等任务超时");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
         client.close();
     }
 
