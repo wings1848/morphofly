@@ -55,5 +55,9 @@ required-features = ["kws"]
 name = "bargein_local"
 required-features = ["kws"]
 
+[[example]]
+name = "duplex_fast"
+required-features = ["kws"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

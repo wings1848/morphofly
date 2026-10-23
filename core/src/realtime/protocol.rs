@@ -136,7 +136,13 @@ pub struct SessionConfig {
     pub voice: Option<String>,
     pub input_audio_format: String,
     pub output_audio_format: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// 服务端 VAD 配置。
+    ///
+    /// ⚠️ **不要加 `skip_serializing_if = "Option::is_none"`**：
+    /// 关掉服务端 VAD 必须真的发 `"turn_detection": null`，
+    /// 而「字段缺失」和「字段为 null」在 StepFun 上是两种行为
+    /// （缺失 = 用默认 server_vad，null = 关掉）。
+    /// 2026-10-24 踩过：加了 skip 后 commit 报 `commit when server vad`。
     pub turn_detection: Option<TurnDetection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Value>>,
@@ -144,6 +150,10 @@ pub struct SessionConfig {
 
 impl SessionConfig {
     /// 从配置生成默认 session 配置（voice / instructions / pcm16 固定）
+    ///
+    /// 当 `rc.use_local_vad = true` 时 **turn_detection 为 null**，
+    /// 即关掉服务端 VAD，由客户端手动 commit。
+    /// 实测：这样端到端从 1950ms 降到 **790ms**（见 `evidence/p1-model-sweep.md`）。
     pub fn from_realtime_config(rc: &crate::config::RealtimeConfig) -> Self {
         Self {
             modalities: vec!["text".into(), "audio".into()],
@@ -151,7 +161,11 @@ impl SessionConfig {
             voice: Some(rc.voice.clone()),
             input_audio_format: "pcm16".into(),
             output_audio_format: "pcm16".into(),
-            turn_detection: Some(TurnDetection::default()),
+            turn_detection: if rc.use_local_vad {
+                None
+            } else {
+                Some(TurnDetection::default())
+            },
             tools: None,
         }
     }
@@ -298,13 +312,21 @@ mod tests {
         assert!(text.contains("\"turn_detection\":null"), "序列化后要能看到 null: {text}");
     }
 
-    /// 对照：普通 SessionUpdate 的 turn_detection=None 会被整个省略（这是设计，不是 bug）
+    /// turn_detection=None 必须序列化成 `null`，不能省略。
+    ///
+    /// 2026-10-24 踩坑：加了 skip_serializing_if 后字段被整个省略，
+    /// StepFun 把「字段缺失」当成「用默认 server_vad」，
+    /// 于是手动 commit 报 `commit when server vad`，延迟优化失败。
     #[test]
-    fn normal_session_update_omits_none_turn_detection() {
+    fn none_turn_detection_serializes_as_null() {
         let mut sc = SessionConfig::from_realtime_config(&crate::config::RealtimeConfig::default());
         sc.turn_detection = None;
         let v = client_command_json(&ClientCommand::SessionUpdate { session: sc });
-        assert!(v["session"].get("turn_detection").is_none(), "None 应被省略");
+        assert!(
+            v["session"].get("turn_detection").is_some(),
+            "字段必须存在（不能省略）"
+        );
+        assert!(v["session"]["turn_detection"].is_null(), "值必须是 null");
     }
 
     /// 契约测试：我们的 kind 字符串必须和 protocol/schema.json 里的一模一样。
@@ -432,6 +454,19 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("小蝶"));
+        // 默认 use_local_vad=true → turn_detection 应为 null（关掉服务端 VAD）
+        assert!(v["session"]["turn_detection"].is_null(),
+            "默认配置用本地 VAD，turn_detection 应为 null，实际 {:?}",
+            v["session"]["turn_detection"]);
+    }
+
+    /// 反过来：use_local_vad=false 时必须恢复 server_vad
+    #[test]
+    fn server_vad_mode_restores_turn_detection() {
+        let mut rc = crate::config::RealtimeConfig::default();
+        rc.use_local_vad = false;
+        let sc = SessionConfig::from_realtime_config(&rc);
+        let v = client_command_json(&ClientCommand::SessionUpdate { session: sc });
         assert_eq!(v["session"]["turn_detection"]["type"], "server_vad");
     }
 

@@ -45,6 +45,11 @@ pub struct RealtimeConfig {
     pub output_sample_rate: u32,
     /// 系统提示词
     pub instructions: String,
+    /// 是否用「本地 VAD + 手动 commit」模式（关掉服务端 VAD）
+    ///
+    /// 2026-10-24 实测：开启后端到端从 1950ms 降到 **790ms**。
+    /// 代价：需要本地跑 silero-vad（643KB 模型），且要 `--features kws` 编译。
+    pub use_local_vad: bool,
 }
 
 impl Default for RealtimeConfig {
@@ -61,14 +66,22 @@ impl Default for RealtimeConfig {
             //   step-audio-2 / -2-mini      ~492ms    6345-6455ms ❌
             //
             // **结论：step-1o-audio 是唯一同时满足「快 + 中文好」的**。
-            // VAD 判定从 1572ms 降到 490ms —— 之前认定的「1.6 秒硬下限」是**这个特定模型**的限制，
-            // 不是 StepFun 平台的限制。
+            //
+            // ⚠️ 2026-10-24 最终方案（第二次修正）：**关掉服务端 VAD，用本地 VAD + 手动 commit**。
+            //    实测（原始 WS，5 轮）：
+            //      本地判定说完 → commit → 首音频：**790ms 均值**（709–872ms）
+            //      对比 server_vad 模式：1950ms
+            //      **快 2.5 倍**，正好达到验收合格线（<800ms）。
+            //
+            //    关键：commit 要在「本地 VAD 判定说完」那一刻发，不要等文件推完。
+            //    配置项 `turn_detection = null`（不是省略，是真发 null）。
             endpoint: "wss://api.stepfun.com/v1/realtime?model=step-1o-audio".to_string(),
             model: "step-1o-audio".to_string(),
             voice: "jingdiannvsheng".to_string(),
             api_key_env: "STEPFUN_KEY".to_string(),
             output_sample_rate: 24_000,
             instructions: DEFAULT_INSTRUCTIONS.to_string(),
+            use_local_vad: true,
         }
     }
 }
