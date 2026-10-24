@@ -173,8 +173,27 @@ impl Default for Config {
     }
 }
 
+/// 用户数据目录（配置、凭据、日志）。
+///
+/// Windows 上没有 `HOME`，只有 `USERPROFILE`；某些服务账号连
+/// `USERPROFILE` 都没有。以前只读 `HOME`，在 Windows 上会退化成
+/// 「当前工作目录下的 .diemeng」—— 用户双击启动时的 CWD 是什么都有可能，
+/// 配置就「丢」了（其实是写到别处去了）。
 pub fn default_data_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".diemeng")
+    data_dir_from(|k| std::env::var_os(k))
+}
+
+/// 从环境变量推导数据目录（抽出来是为了能测，不用改进程环境）。
+fn data_dir_from(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+    for key in ["MORPHOFLY_DATA_DIR_HOME", "HOME", "USERPROFILE"] {
+        if let Some(v) = get(key) {
+            if !v.is_empty() {
+                return PathBuf::from(v).join(".diemeng");
+            }
+        }
+    }
+    // 实在没有家目录：用当前目录，至少能跑起来（并在日志里看得出来）
+    PathBuf::from(".").join(".diemeng")
 }
 
 /// 应用自带资源目录（AppImage / deb 安装后放模型的地方）。
@@ -374,6 +393,43 @@ pub fn ensure_data_dir(cfg: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows 上没有 HOME，只有 USERPROFILE —— 必须能正确取到。
+    #[test]
+    fn data_dir_works_without_home() {
+        use std::ffi::OsString;
+        let d = data_dir_from(|k| match k {
+            "USERPROFILE" => Some(OsString::from("C:\\Users\\wings")),
+            _ => None,
+        });
+        assert!(d.ends_with(".diemeng"), "{d:?}");
+        // 不能断言 starts_with("C:")：在 Linux 上 "C:\\Users\\wings" 是**一个**
+        // 路径组件，starts_with 按组件比较会失败。这个测试跑在哪个平台都得过，
+        // 所以只断言「用了 USERPROFILE 的内容」。
+        assert!(
+            d.to_string_lossy().contains("wings"),
+            "该用 USERPROFILE 的值: {d:?}"
+        );
+    }
+
+    /// HOME 优先于 USERPROFILE（Linux / Git Bash 场景）。
+    #[test]
+    fn data_dir_prefers_home() {
+        use std::ffi::OsString;
+        let d = data_dir_from(|k| match k {
+            "HOME" => Some(OsString::from("/home/wings")),
+            "USERPROFILE" => Some(OsString::from("C:\\Users\\wings")),
+            _ => None,
+        });
+        assert_eq!(d, std::path::PathBuf::from("/home/wings/.diemeng"));
+    }
+
+    /// 两个都没有时不能 panic，也不能返回绝对路径的垃圾。
+    #[test]
+    fn data_dir_falls_back_without_panic() {
+        let d = data_dir_from(|_| None);
+        assert!(d.ends_with(".diemeng"));
+    }
 
     #[test]
     fn default_config_is_stepfun() {

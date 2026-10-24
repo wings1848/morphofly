@@ -675,6 +675,7 @@ const TIP_WIDTH: u32 = 360;
 /// 安全条件：只有同时存在 `WAYLAND_DISPLAY` 和 `DISPLAY`（说明有 XWayland）才切，
 /// 纯 Wayland 无 XWayland 的机器保持原样（至少能启动）。
 /// 想手动覆盖就设 `GDK_BACKEND` 或 `MORPHOFLY_NO_X11=1`。
+#[cfg(target_os = "linux")]
 fn force_x11_backend() {
     if std::env::var_os("GDK_BACKEND").is_some() || std::env::var_os("MORPHOFLY_NO_X11").is_some() {
         return;
@@ -686,6 +687,10 @@ fn force_x11_backend() {
         tracing::info!("Wayland 会话：强制 GDK_BACKEND=x11（否则无法定位/置顶）");
     }
 }
+
+/// Windows / macOS 不需要这层：它们的窗口管理器本来就允许客户端定位和置顶。
+#[cfg(not(target_os = "linux"))]
+fn force_x11_backend() {}
 
 fn main() {
     // ★ 必须最先执行：GTK 在第一次连显示服务器时就定后端，晚了没用。
