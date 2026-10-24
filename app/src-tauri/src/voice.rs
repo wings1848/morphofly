@@ -198,8 +198,13 @@ impl VoiceSession {
                                        // ⚠️ 200ms（10 帧）太短 —— 用户反馈 + 真机日志都证明：一句话中间
                                        // 稍微换气就会被切成两段，第二段拿着「已提交」的缓冲去 create_response，
                                        // 服务端回 `ongoing response already exists`（这条 WARN 在日志里刷过）。
-                                       // 改成 400ms（20 帧）：正常换气不会切句，代价是「说完」判定慢 200ms。
-            const NEED_SILENCE: u32 = 20;
+                                       //
+                                       // 有 VAD 时不用等这么久：VAD 自己已经有 0.5s 静音挂起（min_silence_duration），
+                                       // 「说完」的防抖已经由它做了，这里只要几帧确认就 commit。
+            #[cfg(feature = "kws")]
+            const NEED_SILENCE: u32 = 3; // 60ms（真正的静音判定在 VAD 里）
+            #[cfg(not(feature = "kws"))]
+            const NEED_SILENCE: u32 = 20; // 400ms（纯 RMS 兜底，必须等够）
             loop {
                 if stop2.load(Ordering::Relaxed) {
                     break;
@@ -217,26 +222,39 @@ impl VoiceSession {
                         // 云端一个字都收不到，自然也没有回复；日志上却一切正常
                         // （只有「本地 VAD 判定人声」，没有「本地判定开口」）。
                         // 实测依据：5 分钟录音里最响的 1 秒 RMS=0.0182，底噪中位 0.00275。
-                        // VAD 对同样这些帧能判成人声，所以「开口 / 说完」以 VAD 为准；
-                        // 没有 VAD 的构建（--no-default-features）才退回 RMS。
+                        //
+                        // ⚠️ 2026-10-25 第二次踩坑：`LocalVad::push()` 返回的是
+                        // **上升沿**（只在「刚开始说话」那一帧为 true），不是「这一帧有人声」。
+                        // 拿它当「连续 3 帧有声」的判据永远不成立 —— 所以还要取
+                        // `is_speaking()`（当前是否在说话，带 VAD 自己的静音挂起）。
+                        // 两个都要：
+                        //   - `vad_edge`：只有上升沿 → 打断（一次开口只触发一次）
+                        //   - `vad_voice`：当前在说话 → 「说完」状态机
                         #[cfg(feature = "kws")]
-                        let vad_voice = match vad.as_ref() {
+                        let (vad_edge, vad_voice) = match vad.as_ref() {
                             Some(v) => {
                                 let f32s: Vec<f32> =
                                     frame.iter().map(|&s| s as f32 / 32768.0).collect();
-                                v.push(&f32s)
+                                let edge = v.push(&f32s);
+                                (edge, v.is_speaking())
                             }
-                            None => rms > VOICE_RMS,
+                            None => {
+                                let on = rms > VOICE_RMS;
+                                (on, on)
+                            }
                         };
                         #[cfg(not(feature = "kws"))]
-                        let vad_voice = rms > VOICE_RMS;
+                        let (vad_edge, vad_voice) = {
+                            let on = rms > VOICE_RMS;
+                            (on, on)
+                        };
                         // ★ 本地 VAD 先停，再推流（顺序不能反）
                         #[cfg(feature = "kws")]
                         {
                             // 冷却：刚打断完 800ms 内不重复触发
                             if vad_cooldown > 0 {
                                 vad_cooldown = vad_cooldown.saturating_sub(1);
-                            } else if vad_voice {
+                            } else if vad_edge {
                                 let queued = player_in_push.queued_frames();
                                 // 「回复还在进行」也要算打断 —— 只看播放队列会漏：
                                 // 音频边播边收，队列可能刚好空，但云端这一轮还没结束。
