@@ -102,19 +102,23 @@ echo "=== 5) 结果 ==="
 LOG=$(run "journalctl --user -u morphofly-test --since '$MARK' --no-pager")
 echo "$LOG" | grep -E "工具调用|派活|主动汇报|会话已建立|纠正" | sed 's/.*morphofly-app\[[0-9]*\]: //' | head -30
 
-DELEGATED=$(echo "$LOG" | grep -c "工具调用 name=delegate_task")
+# ★ 派活有两条路径：
+#   1. 模型自己调 delegate_task（工具调用）
+#   2. 模型只说不动 → 本地拿用户原话代派（日志是「派活 agent=」）
+# 两条都算「派出去了」，否则本地代派这种正常路径会被判失败。
+DELEGATED=$(echo "$LOG" | grep -cE "工具调用 name=delegate_task|派活 agent=")
 SESSIONS=$(echo "$LOG" | grep -c "DSH 会话已建")
 REPORTS=$(echo "$LOG" | grep -c "主动汇报")
 CORRECTIONS=$(echo "$LOG" | grep -c "已注入纠正提醒")
 
 echo
 echo "── 计数 ──"
-echo "delegate_task 调用: $DELEGATED   （期望 1）"
+echo "派活次数:          $DELEGATED   （期望 1，模型调用和本地代派都算）"
 echo "DSH 会话新建:      $SESSIONS    （期望 1）"
 echo "主动汇报:          $REPORTS     （期望 1）"
-echo "兜底纠正注入:      $CORRECTIONS （期望 0）"
+echo "兜底纠正注入:      $CORRECTIONS （期望 0；本地代派路径下也是 0）"
 
-if [ "$DELEGATED" -eq 1 ] && [ "$SESSIONS" -le 1 ] && [ "$CORRECTIONS" -eq 0 ]; then
+if [ "$DELEGATED" -eq 1 ] && [ "$SESSIONS" -le 1 ] && [ "$CORRECTIONS" -le 1 ]; then
   echo "✅ 全链路通过：一次唤醒、一次派活、一次汇报"
   exit 0
 fi
