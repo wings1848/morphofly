@@ -314,6 +314,16 @@ async def main() -> int:
                     continue
             print(f"  音频: {audio} （{audio.stat().st_size // 2 / 16000:.2f}s）")
             actual = await run_real(case, audio)
+
+            # ★ 唤醒负例的特殊处理：真实产品里本地 KWS 是第一道门，
+            # 不命中就根本不会连云端。但 e2e_drive 本机编不了 --features kws
+            # （缺 libstdc++），所以这里如实标注「未验证 KWS 层」。
+            if case.get("cat") == "唤醒负例" and not actual.get("kws_blocked"):
+                actual["_note"] = (
+                    "本次没走 KWS 前置门（本机缺 libstdc++ 编不了 kws feature），"
+                    "所以这里的「误唤醒」是云端 ASR 层面的，"
+                    "真实产品里 KWS 会先拦一道。"
+                )
         else:
             actual = await run_mock(case)
 
