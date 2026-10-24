@@ -30,6 +30,14 @@ pub enum RealtimeEvent {
     AudioDelta { pcm: Vec<i16>, sample_rate: u32 },
     /// 本轮音频流结束
     AudioDone,
+    /// **用户**说的话（云端 ASR 转写）。
+    ///
+    /// 2026-10-25 实测澄清：StepFun 其实一直在发这个
+    /// （`conversation.item.input_audio_transcription.delta/.completed`），
+    /// 只是我们以前在解析层直接丢掉了 —— 于是「宿主拿不到用户原话」，
+    /// 连带「模型不肯调工具时没法在本地帮它派活」这个死结解不开。
+    /// 现在收下来：`is_final=false` 是增量，`true` 是整句。
+    UserTranscript { text: String, is_final: bool },
     /// 模型说的话（字幕用）。StepFun 要读 `response.audio_transcript.delta`
     TranscriptDelta { text: String },
     /// 本轮模型话说完，`text` 是完整一句
@@ -61,6 +69,7 @@ impl RealtimeEvent {
             RealtimeEvent::SpeechStopped => "SpeechStopped",
             RealtimeEvent::AudioDelta { .. } => "AudioDelta",
             RealtimeEvent::AudioDone => "AudioDone",
+            RealtimeEvent::UserTranscript { .. } => "UserTranscript",
             RealtimeEvent::TranscriptDelta { .. } => "TranscriptDelta",
             RealtimeEvent::TranscriptDone { .. } => "TranscriptDone",
             RealtimeEvent::TextDelta { .. } => "TextDelta",
@@ -74,6 +83,7 @@ impl RealtimeEvent {
     pub fn text(&self) -> Option<&str> {
         match self {
             RealtimeEvent::TranscriptDelta { text }
+            | RealtimeEvent::UserTranscript { text, .. }
             | RealtimeEvent::TranscriptDone { text }
             | RealtimeEvent::TextDelta { text } => Some(text.as_str()),
             _ => None,

@@ -285,6 +285,12 @@ impl VoiceSession {
             let mut user_spoke = false;
             // 本轮模型说的话（判断「像不像在装忙」）
             let mut assistant_reply = String::new();
+            // ★ 用户原话（云端 ASR 转写，2026-10-25 才开始接）。
+            //
+            // 它的用途是**救场**：模型有时候嘴上说「好，查着呢」却不调工具，
+            // 光靠再问它一次不一定管用。有了原话，我们就可以直接拿这句话
+            // 去调 delegate_task —— 用户说了什么就派什么，不依赖模型自觉。
+            let mut user_said = String::new();
             // 一次用户说话最多纠正一次，防止无限打断
             let mut correction_sent = false;
             loop {
@@ -342,6 +348,7 @@ impl VoiceSession {
                         // 只有这里能重置，`ResponseDone` 不能（一个请求跨多个 response）。
                         user_spoke = true;
                         user_spoke_local.store(false, Ordering::Relaxed);
+                        user_said.clear();
                         tool_calls_this_turn = 0;
                         pending_tool_results = 0;
                         assistant_reply.clear();
@@ -350,6 +357,15 @@ impl VoiceSession {
                     }
                     RealtimeEvent::SpeechStopped => {
                         speech_started = Some(std::time::Instant::now());
+                    }
+                    RealtimeEvent::UserTranscript { text, is_final } => {
+                        // 增量就往后追加；整句就整句替换（云端可能修正前文）
+                        if is_final {
+                            user_said = text;
+                        } else {
+                            user_said.push_str(&text);
+                        }
+                        tracing::debug!(final_ = is_final, said = %user_said, "用户转写");
                     }
                     RealtimeEvent::TranscriptDelta { text } | RealtimeEvent::TextDelta { text } => {
                         // 这是**模型说的话**（`response.audio_transcript.delta` / `response.text.delta`），
@@ -386,6 +402,39 @@ impl VoiceSession {
                             );
 
                             correction_sent = true;
+
+                            // ★★ 首选：本地直接代派（不依赖模型自觉）。
+                            //
+                            // 用户说了什么我们已经有原话（云端转写），
+                            // 模型嘴上说「好，查着呢」却不调工具 = 假装干活，
+                            // 这时候与其再求它一次（实测时好时坏、还要多等 5 秒），
+                            // 不如直接拿原话去调 delegate_task。
+                            let said = user_said.trim().to_string();
+                            if said.len() >= 2 {
+                                tracing::warn!(
+                                    said = %said,
+                                    reply = %assistant_reply,
+                                    "模型只说不做 → 本地用用户原话代派"
+                                );
+                                let d = dispatcher.clone();
+                                let dir_hint = tool_dir_hint(&dispatcher).await;
+                                let dir_hint = dir_hint.trim_matches('"').to_string();
+                                let args = serde_json::json!({
+                                    "task": said,
+                                    "dir": dir_hint,
+                                })
+                                .to_string();
+                                tokio::spawn(async move {
+                                    match d.dispatch("delegate_task", &args).await {
+                                        Ok(r) => tracing::info!(speech = %r.speech, "本地代派成功"),
+                                        Err(e) => tracing::warn!(error = %e, "本地代派失败"),
+                                    }
+                                });
+                                assistant_reply.clear();
+                                continue;
+                            }
+
+                            // 没有原话（比如云端没发转写）→ 退回「再求它一次」
                             // ★ 把「可以直接用的 dir」写进提醒里。
                             //
                             // 真机实测：只写「立刻调用 delegate_task」时模型还是不调 ——

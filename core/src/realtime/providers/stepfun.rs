@@ -103,9 +103,31 @@ pub fn parse_event(raw: &str, sample_rate: u32) -> Option<RealtimeEvent> {
             Some(RealtimeEvent::Error { message, code })
         }
 
+        // ★ 用户说的话（云端 ASR）。
+        //   2026-10-25 实测：StepFun 确实会发这两个事件；以前当「不关心」丢掉，
+        //   导致宿主永远拿不到用户原话。（旧注释里写的「统一事件模型没有用户侧转写」
+        //   是错的 —— 现在加上了。）
+        "conversation.item.input_audio_transcription.delta" => {
+            let text = v.get("delta").and_then(Value::as_str)?.to_string();
+            Some(RealtimeEvent::UserTranscript {
+                text,
+                is_final: false,
+            })
+        }
+        "conversation.item.input_audio_transcription.completed" => {
+            let text = v
+                .get("transcript")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some(RealtimeEvent::UserTranscript {
+                text,
+                is_final: true,
+            })
+        }
+
         // 明确丢弃：文档里存在但统一事件模型 v1 没有对应位置
-        "conversation.item.input_audio_transcription.completed"
-        | "conversation.item.created"
+        "conversation.item.created"
         | "conversation.item.deleted"
         | "input_audio_buffer.committed"
         | "input_audio_buffer.cleared"
@@ -321,6 +343,36 @@ mod tests {
         assert_eq!(p(raw), Some(RealtimeEvent::AudioDone));
     }
 
+    /// 回归：用户转写事件必须映射出来，不能丢。
+    ///
+    /// 2026-10-25 之前的注释写着「统一事件模型 v1 没有用户侧转写，所以丢弃」——
+    /// 结果宿主永远拿不到用户原话，模型不肯调工具时毫无办法。
+    /// 实测 StepFun 是会发的，只是我们没接。
+    #[test]
+    fn parse_user_transcription_events() {
+        let delta = r#"{"type":"conversation.item.input_audio_transcription.delta",
+                        "item_id":"item_1","delta":"帮我看看"}"#;
+        let ev = parse_event(delta, 16_000).expect("delta 事件要映射出来");
+        assert_eq!(
+            ev,
+            RealtimeEvent::UserTranscript {
+                text: "帮我看看".into(),
+                is_final: false
+            }
+        );
+
+        let done = r#"{"type":"conversation.item.input_audio_transcription.completed",
+                       "item_id":"item_1","transcript":"帮我看看蝶梦项目的 README"}"#;
+        let ev = parse_event(done, 16_000).expect("completed 事件要映射出来");
+        assert_eq!(
+            ev,
+            RealtimeEvent::UserTranscript {
+                text: "帮我看看蝶梦项目的 README".into(),
+                is_final: true
+            }
+        );
+    }
+
     #[test]
     fn transcript_delta_and_done() {
         let raw = r#"{"type":"response.audio_transcript.delta","item_id":"msg_002","output_index":0,"delta":"Hello, how can I a"}"#;
@@ -480,10 +532,18 @@ mod tests {
     }
 
     #[test]
-    fn input_transcription_is_ignored_for_now() {
-        // 统一事件模型 v1 没有用户侧转写事件；明确丢弃而不是 panic
+    fn input_transcription_is_mapped_not_ignored() {
+        // 2026-10-25 更正：以前这个测试断言「丢弃」，理由是「统一事件模型没有
+        // 用户侧转写」。实测 StepFun 会发，而且它是「模型不调工具时本地派活」的
+        // 唯一信息来源 —— 丢弃等于自断一条腿。
         let raw = r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"msg_003","content_index":0,"transcript":"你好"}"#;
-        assert_eq!(p(raw), None);
+        assert_eq!(
+            p(raw),
+            Some(RealtimeEvent::UserTranscript {
+                text: "你好".into(),
+                is_final: true
+            })
+        );
     }
 
     #[test]
