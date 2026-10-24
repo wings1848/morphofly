@@ -104,6 +104,47 @@ impl DshBridge {
         bridge
     }
 
+    /// 在已复用的进程上切换模型（供 set_context 调用）。
+    ///
+    /// 返回 `Ok(())` 表示请求已发出；真正生效与否要看下一轮回复。
+    /// 如果当前没有空闲进程，返回错误 —— 调用方应告诉用户「先派个活再切」。
+    pub async fn set_model(&self, model: &str) -> Result<()> {
+        let mut idle = self.idle.lock().await;
+        let Some((agent, client)) = idle.as_mut() else {
+            anyhow::bail!("当前没有活跃的 agent 进程");
+        };
+        let agent = agent.clone();
+
+        // 任务结束后 session 会被关掉（close_session），
+        // 但用户会「先派活、再换模型」—— 这时需要重新开一个 session。
+        if client.session_id_blocking().is_none() {
+            tracing::info!("切模型前先补建会话");
+            client
+                .new_session(&self.default_cwd)
+                .await
+                .context("切模型时建会话失败")?;
+        }
+
+        // 校验：模型必须在可选列表里，否则 DSH 会报 unknown model option
+        let available = client.config_option_values("model").await;
+        if let Some((_, vals)) = &available {
+            if !vals.is_empty() && !vals.iter().any(|v| v == model) {
+                anyhow::bail!("{} 不支持模型 {model}，可用：{}", agent, vals.join(", "));
+            }
+        }
+        client.set_config_option("model", model).await
+    }
+
+    /// 调试用：看当前 session 的模型可选项
+    pub async fn debug_model_options(&self) -> Option<(String, Vec<String>)> {
+        let mut idle = self.idle.lock().await;
+        let (_, client) = idle.as_mut()?;
+        if client.session_id_blocking().is_none() {
+            client.new_session(&self.default_cwd).await.ok()?;
+        }
+        client.config_option_values("model").await
+    }
+
     /// 某个 agent 名字对应的启动命令。未知名字返回 None。
     pub fn command_for(&self, agent: &str) -> Option<&Vec<String>> {
         self.agents.get(agent)
