@@ -45,6 +45,41 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::load()?;
     morphofly_core::config::ensure_data_dir(&cfg)?;
 
+    // ★ 先过本地唤醒词 —— 这是真实产品的第一道门。
+    //
+    // 不加这一步，测试就变成「直接连云端」，
+    // 谐音（小蝶儿/蝴蝶）会被云端 ASR 骗过去，误报成「误唤醒」。
+    // 但真实产品里本地 KWS 不命中就**根本不会连云端**。
+    #[cfg(feature = "kws")]
+    {
+        let kws_cfg = morphofly_core::kws::KwsConfig::default();
+        match morphofly_core::kws::detect_in_file(&kws_cfg, std::path::Path::new(&file)) {
+            Ok(hits) if hits.is_empty() => {
+                // 本地没听到唤醒词 → 真实产品不会唤醒
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "wake": false,
+                        "tool_calls": [],
+                        "reply": "",
+                        "asked_confirm": false,
+                        "elapsed_ms": 0,
+                        "speaking_done": false,
+                        "error": null,
+                        "kws_blocked": true,
+                    })
+                );
+                return Ok(());
+            }
+            Ok(hits) => {
+                eprintln!("[e2e] 本地唤醒命中: {hits:?}");
+            }
+            Err(e) => {
+                eprintln!("[e2e] KWS 检测失败（继续）: {e}");
+            }
+        }
+    }
+
     let store = Arc::new(Mutex::new(TaskStore::open(&cfg.task_store_path())?));
     let bridge = Arc::new(DshBridge::from_config(&cfg));
     let dispatcher = Arc::new(Dispatcher::new(
