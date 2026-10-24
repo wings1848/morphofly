@@ -6,7 +6,7 @@
   "tier": "standard",
   "project_type": "desktop-app",
   "human_mode": "inspect",
-  "stage": "S0",
+  "stage": "S6",
   "status": "running",
   "owner": {
     "agent": "agent",
@@ -15,14 +15,28 @@
     "lease_until": "2026-10-24T17:38:42+08:00"
   },
   "attempts": {
-    "S0": 1
+    "S0": 1,
+    "S1": 1,
+    "S2": 1,
+    "S3": 1,
+    "S4": 1,
+    "S5": 1,
+    "S6": 1
   },
   "loops": {
     "used": 0,
     "max": 3,
     "last_fail_stage": null
   },
-  "gates": {},
+  "gates": {
+    "G5": {
+      "status": "pass",
+      "evidence": "evidence/scout-full.md",
+      "sha256": "be3f1099113b83f15cf786b5f0cb6eb7481610e51d8186073e7f2acd06053bb6",
+      "at": "2026-10-24T17:39:06+08:00",
+      "note": "侦察完成（2 份 subagent 报告 + 我抽样复核 4 条关键结论）；201 测试全绿"
+    }
+  },
   "human": {},
   "budget": {
     "minutes_cap": 480,
@@ -33,7 +47,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S0：跑 G0 并落证据（devflow gate G0 pass --evidence <文件>）",
+  "next_action": "S6：跑 G6 并落证据（devflow gate G6 pass --evidence <文件>）",
   "artifacts": {
     "progress": "progress.md"
   }

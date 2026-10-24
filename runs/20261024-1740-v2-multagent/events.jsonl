@@ -1,1 +1,8 @@
 {"ts": "2026-10-24T17:38:42+08:00", "seq": 1, "stage": "S0", "actor": "agent", "type": "run_started", "goal": "V2：多 agent 支持 + AEC + UI/UX 打磨 + 修复 5 个现存缺陷", "tier": "standard", "project_type": "desktop-app", "human_mode": "inspect", "status": "running", "attempts": {"S0": 1}}
+{"ts": "2026-10-24T17:39:01+08:00", "seq": 2, "stage": "S1", "actor": "agent", "type": "stage_enter", "from": "S0", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T17:39:01+08:00", "seq": 3, "stage": "S2", "actor": "agent", "type": "stage_enter", "from": "S1", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T17:39:01+08:00", "seq": 4, "stage": "S3", "actor": "agent", "type": "stage_enter", "from": "S2", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T17:39:01+08:00", "seq": 5, "stage": "S4", "actor": "agent", "type": "stage_enter", "from": "S3", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T17:39:01+08:00", "seq": 6, "stage": "S5", "actor": "agent", "type": "stage_enter", "from": "S4", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T17:39:01+08:00", "seq": 7, "stage": "S6", "actor": "agent", "type": "stage_enter", "from": "S5", "status": "running", "attempt": 1}
+{"ts": "2026-10-24T17:39:06+08:00", "seq": 8, "stage": "S6", "actor": "agent", "type": "gate_pass", "gate": "G5", "status": "pass", "evidence": "evidence/scout-full.md", "sha256": "be3f1099113b83f15cf786b5f0cb6eb7481610e51d8186073e7f2acd06053bb6", "at": "2026-10-24T17:39:06+08:00", "note": "侦察完成（2 份 subagent 报告 + 我抽样复核 4 条关键结论）；201 测试全绿"}
