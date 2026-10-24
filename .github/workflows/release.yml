@@ -1,0 +1,111 @@
+name: Release
+
+# 打 tag（v*）时自动构建 Linux 安装包并附加到 Release。
+# 这样产物由 CI 生成，可复现，且不依赖任何人的本机环境。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:   # 允许手动触发（测试用）
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: 构建 Linux 包
+    runs-on: ubuntu-22.04   # 用 22.04 而非 24.04：glibc 2.35 基线更老，兼容性更好
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf \
+            libasound2-dev libpulse-dev pkg-config \
+            libfuse2 file
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 构建 Tauri 包
+        # target-cpu 由 .cargo/config.toml 固定为 x86-64-v2，
+        # 保证产物能在老 CPU（无 AVX）上跑。
+        run: |
+          cd app
+          cargo tauri build
+
+      - name: 校验产物 CPU 基线
+        # 防止有人误删 .cargo/config.toml 的 target-cpu 设置，
+        # 导致产物只能在支持 AVX 的机器上跑（wings-gpd 就是这么崩的）。
+        run: |
+          BIN=$(find target/release -maxdepth 1 -name 'morphofly-app' -o -maxdepth 1 -name 'diemeng-app' | head -1)
+          echo "二进制: $BIN"
+          # objdump 找 AVX 指令（vaddps/vmulps/ygetbv 等）
+          if objdump -d "$BIN" 2>/dev/null | grep -qE '\bv(add|mul|sub|div|max|min)[ps][sd]?\b|\bvzeroupper\b'; then
+            echo "::error::二进制包含 AVX 指令，在不支持 AVX 的 CPU 上会 SIGILL"
+            exit 1
+          fi
+          echo "✅ 未发现 AVX 指令"
+
+      - name: 检查产物大小
+        run: |
+          echo "=== 产物 ==="
+          ls -lh target/release/bundle/deb/*.deb target/release/bundle/appimage/*.AppImage 2>/dev/null
+          DEB=$(find target/release/bundle/deb -name '*.deb' | head -1)
+          SIZE=$(stat -c%s "$DEB")
+          echo "deb 大小: $((SIZE / 1048576)) MB"
+          if [ "$SIZE" -gt $((100 * 1048576)) ]; then
+            echo "::error::deb 超过 100MB 限制"
+            exit 1
+          fi
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: morphofly-linux-x86_64
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+          retention-days: 30
+
+      - name: 创建 Release（仅打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            **Debian/Ubuntu**
+            ```bash
+            sudo dpkg -i morphofly_*_amd64.deb
+            ```
+
+            **任意 Linux（AppImage，自包含）**
+            ```bash
+            chmod +x 蝶梦-*_amd64.AppImage
+            ./蝶梦-*_amd64.AppImage
+            ```
+
+            ## 首次配置
+
+            ```bash
+            mkdir -p ~/.diemeng
+            echo 'STEPFUN_KEY=你的key' > ~/.diemeng/credentials
+            chmod 600 ~/.diemeng/credentials
+            ```
+
+            AppImage 已自带唤醒词和 VAD 模型，deb 需要单独下载模型（见 README）。
+
+            ## 兼容性
+
+            产物按 **x86-64-v2** 基线编译（SSE4.2 + POPCNT），
+            兼容 2010 年后的所有 x86_64 CPU。不支持 AVX 的老机器也能跑。
