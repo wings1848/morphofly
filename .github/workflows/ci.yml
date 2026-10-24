@@ -21,7 +21,7 @@ jobs:
         os: [ubuntu-24.04]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装系统依赖（Tauri 2 + 音频）
         run: |
@@ -68,7 +68,7 @@ jobs:
     name: 测试（含唤醒词）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装系统依赖
         run: |
@@ -88,7 +88,7 @@ jobs:
     name: 密钥扫描
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # 全历史，扫历史里的泄漏
 
@@ -115,7 +115,7 @@ jobs:
     name: 构建检查
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装系统依赖
         run: |
