@@ -22,7 +22,7 @@
 # ## 怎么造出「模型正在说话」
 #
 # gpd 没有实体音箱，用虚拟 sink（mfsink）喂音频：先唤醒，再灌一句
-# 「请用很慢的语速从一数到五十」（模型会念很久），S4 一出现就灌「停一下」。
+# 「从一数到一百」（短指令、长回答：模型会连续念很久），S4 一出现就灌「停一下」。
 #
 # 用法：tools/verify_bargein.sh [--dry-run]
 # 退出码：0 通过 / 1 失败 / 2 跳过（设备不在线 / 服务没跑）
@@ -35,8 +35,8 @@ WAKE_WAV=/tmp/bargein-wake.wav
 ASK_WAV=/tmp/bargein-ask.wav
 STOP_WAV=/tmp/bargein-stop.wav
 WAKE_TEXT="小蝶"
-ASK_TEXT="请用很慢的语速从一数到五十，每个数字之间停一下"
-STOP_TEXT="停一下"
+ASK_TEXT="从一数到一百"
+STOP_TEXT="停"
 SERVICE=morphofly-test
 MAX_DELAY_MS=6000      # 总延迟只做上限保护（虚拟音源链路可能很慢）
 MAX_REACT_MS=300       # 产品反应时间：VAD 判定人声 → 停播
@@ -96,6 +96,9 @@ EPOCH=$(run 'date +%s')
 [ -n "${EPOCH:-}" ] || fail "拿不到 gpd 时间戳"
 
 jlog() { run "journalctl --user -u $SERVICE --since @$EPOCH --no-pager -o cat" | strip_ansi; }
+# 快速取尾部：只有几十行，ssh+journalctl 0.5s 级，
+# 用来轮询「现在是不是 S4」——整段日志每次 1-2 秒，等它返回模型都说完话了（踩过）
+jtail() { run "journalctl --user -u $SERVICE -n 6 --no-pager -o cat" | strip_ansi; }
 jwait() { # $1=最多等几秒 $2=grep 模式
   local n=$1 i=0
   while [ "$i" -lt "$n" ]; do
@@ -120,19 +123,50 @@ say "唤醒成功，会话已建立"
 run "nohup timeout 40 paplay --device=$SINK $ASK_WAV >/dev/null 2>&1 &" ||
   fail "注入长问句失败"
 say "已后台注入问句「$ASK_TEXT」"
-jwait 40 'state="S4"' || {
+s4_ready=0
+for _ in $(seq 1 120); do
+  if jtail | grep -q 'state="S4"'; then s4_ready=1; break; fi
+  sleep 0.3
+done
+[ "$s4_ready" = 1 ] || {
   printf '[bargein] 40 秒内没进 S4，最近的状态/转写：\n' >&2
   jlog | grep -E '推状态|用户转写|工具调用|派活' | tail -12 | sed 's/^/  /' >&2
   fail "模型没开口，无法验证打断"
 }
-sleep 0.5 # 让音频真的进播放队列（打断判据是 queued_frames > 0）
 say "模型开始说话（S4）"
 
-# ── 6) 注入打断语音，用 gpd 本机时间戳（跨机时钟不可比）──
-INJECT=$(run "T=\$(date +%s%3N); timeout 15 paplay --device=$SINK $STOP_WAV; echo \"INJECT_MS=\$T\"")
-INJECT_MS=$(printf '%s\n' "$INJECT" | sed -n 's/^INJECT_MS=//p' | head -1)
-[ -n "${INJECT_MS:-}" ] || fail "注入打断语音失败：$INJECT"
-say "已注入「$STOP_TEXT」（gpd 时钟 ${INJECT_MS}ms）"
+# ── 6) 注入打断语音（可能要多灌几次：模型一句话之间有停顿，
+#        那时播放队列是空的，本地 VAD 不会打断）
+INJECT_MS=""
+ATTEMPT=0
+while [ "$ATTEMPT" -lt 5 ]; do
+  ATTEMPT=$((ATTEMPT + 1))
+  # 只在「模型正在说」时灌（S4）。等不到就跳过这次 ——
+  # 灌在静音里只会让模型把「停一下」当成新问题，干扰下一轮（踩过）。
+  if ! jtail | grep -q 'state="S4"'; then
+    ok=0
+    for _ in $(seq 1 20); do
+      if jtail | grep -q 'state="S4"'; then ok=1; break; fi
+      sleep 0.2
+    done
+    if [ "$ok" != 1 ]; then
+      say "等不到模型开口（S4），跳过这次注入"
+      continue
+    fi
+  fi
+  INJECT=$(run "T=\$(date +%s%3N); timeout 15 paplay --device=$SINK $STOP_WAV; echo \"INJECT_MS=\$T\"")
+  INJECT_MS=$(printf '%s\n' "$INJECT" | sed -n 's/^INJECT_MS=//p' | head -1)
+  [ -n "${INJECT_MS:-}" ] || fail "注入打断语音失败：$INJECT"
+  say "第 ${ATTEMPT} 次注入「$STOP_TEXT」（gpd 时钟 ${INJECT_MS}ms）"
+  # 灌完等 2 秒看有没有打断
+  hit=0
+  for _ in $(seq 1 20); do
+    if jtail | grep -q '本地 VAD 打断'; then hit=1; break; fi
+    sleep 0.1
+  done
+  [ "$hit" = 1 ] && break
+  say "这次没打断（多半是当时队列空/在句子间隙），再来一次"
+done
 
 # ── 7) 找打断日志，算延迟（__REALTIME_TIMESTAMP 单位微秒）──
 HIT_MS=""

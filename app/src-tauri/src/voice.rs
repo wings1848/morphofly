@@ -161,7 +161,11 @@ impl VoiceSession {
             let mut silent_run = 0u32; // 连续静音帧数
             const VOICE_RMS: f32 = 0.02; // 有声阈值
             const NEED_VOICE: u32 = 3; // 连续 3 帧（60ms）才算真开口
-            const NEED_SILENCE: u32 = 10; // 连续 10 帧（200ms）才算说完
+                                       // ⚠️ 200ms（10 帧）太短 —— 用户反馈 + 真机日志都证明：一句话中间
+                                       // 稍微换气就会被切成两段，第二段拿着「已提交」的缓冲去 create_response，
+                                       // 服务端回 `ongoing response already exists`（这条 WARN 在日志里刷过）。
+                                       // 改成 400ms（20 帧）：正常换气不会切句，代价是「说完」判定慢 200ms。
+            const NEED_SILENCE: u32 = 20;
             loop {
                 if stop2.load(Ordering::Relaxed) {
                     break;
@@ -182,13 +186,24 @@ impl VoiceSession {
                                     vad_cooldown = vad_cooldown.saturating_sub(1);
                                 } else if v.push(&f32s) {
                                     let queued = player_in_push.queued_frames();
+                                    // 「回复还在进行」也要算打断 —— 只看播放队列会漏：
+                                    // 音频边播边收，队列可能刚好空，但云端这一轮还没结束。
+                                    // 2026-10-25 用户反馈：回复进行中又来新一句时，
+                                    // 旧实现是硬发 create_response，被服务端拒
+                                    // （`ongoing response already exists`）。
+                                    let responding = {
+                                        let m = machine_in_push.lock().await;
+                                        matches!(m.state(), OrbState::S3 | OrbState::S4)
+                                    };
                                     // 单独打一行「VAD 判定人声」：验收脚本要用它量
                                     // 「检测到人声 → 停播」的真实反应时间
                                     // （虚拟音源注入到被采集之间还有几百毫秒，
                                     //   那是环境延迟，不该算进产品反应里）。
-                                    tracing::debug!(queued, "本地 VAD 判定人声");
-                                    if queued > 0 {
-                                        player_in_push.stop_now();
+                                    tracing::debug!(queued, responding, "本地 VAD 判定人声");
+                                    if queued > 0 || responding {
+                                        if queued > 0 {
+                                            player_in_push.stop_now();
+                                        }
                                         // ★ 修缺陷 #5：还要告诉云端别生成了。
                                         // 之前只停本地播放，云端继续跑 —— 浪费 token，
                                         // 而且缓存的音频会让它「刚停又接着说」。
@@ -199,7 +214,8 @@ impl VoiceSession {
                                         vad_cooldown = 40; // 40 帧 * 20ms = 800ms
                                         tracing::info!(
                                             queued,
-                                            "⚡ 本地 VAD 打断（已通知云端停止生成）"
+                                            responding,
+                                            "⚡ 打断：停播 + 取消当前回复（记一次打断）"
                                         );
                                         // ⚠️ 这里**不能** block_on。
                                         //
@@ -242,9 +258,26 @@ impl VoiceSession {
                             match talk {
                                 Talk::Speaking if silent_run >= NEED_SILENCE => {
                                     talk = Talk::Cooldown;
+                                    // 兜底：如果这一轮回复还挂着（VAD 没来得及取消 /
+                                    // 打断路径没走到），先取消再开新轮。
+                                    // 硬发 create_response 会被服务端拒：
+                                    // `ongoing response already exists`（真机日志抓到过）。
+                                    let still_responding = {
+                                        let m = machine_in_push.lock().await;
+                                        matches!(m.state(), OrbState::S3 | OrbState::S4)
+                                    };
+                                    if still_responding {
+                                        let _ = client2.cancel_response();
+                                        tracing::info!(
+                                            "⚡ 上一轮回复还没结束 → 先取消，再开新一轮（不重复计数，打断已在开口时记过）"
+                                        );
+                                    }
                                     let _ = client2.commit();
                                     let _ = client2.create_response();
-                                    tracing::info!("本地判定说完 → commit");
+                                    tracing::info!(
+                                        cancelled_previous = still_responding,
+                                        "本地判定说完 → commit"
+                                    );
                                 }
                                 Talk::Cooldown if silent_run >= NEED_SILENCE * 3 => {
                                     // 静音够久（600ms），回到待命
@@ -354,14 +387,21 @@ impl VoiceSession {
                     RealtimeEvent::SpeechStarted => {
                         // ★ barge-in：本地先停，不等云端确认
                         let queued = player2.queued_frames();
+                        // 「回复还在进行」也算一次打断（可能是思考中还没出声）。
+                        let responding = matches!(m.state(), OrbState::S3 | OrbState::S4);
                         player2.stop_now();
                         // ★ 修缺陷 #5：云端已经知道用户开口了，但当前这轮生成
                         // 可能还在继续。显式取消，别浪费 token。
                         if let Err(e) = c_ev.cancel_response() {
                             tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
                         }
-                        if queued > 0 {
+                        if queued > 0 || responding {
                             interruptions.fetch_add(1, Ordering::Relaxed);
+                            tracing::info!(
+                                queued,
+                                responding,
+                                "⚡ 云端 SpeechStarted 打断（barge-in，记一次打断）"
+                            );
                         }
                         speech_started = Some(std::time::Instant::now());
                         // ★ 新的一次用户说话 → 重置「这一轮」的统计。
