@@ -80,8 +80,26 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # ★ 2026-10-24 修：这个 job 之前一直红，报
+      #   `could not find native static library sherpa-onnx-c-api`
+      #
+      # 原因：sherpa-onnx-sys 的 build.rs 把预编译库缓存在
+      # target/sherpa-onnx-prebuilt/，而 rust-cache 会把 target/ 一起缓存。
+      # 恢复出来可能是「有目录没库文件」的半残状态，build.rs 看到缓存就不再下载，
+      # 于是链接期找不到 .a。清掉让它重新下载。
+      - name: 清掉 sherpa 预编译缓存（半残缓存会导致链接失败）
+        run: rm -rf target/sherpa-onnx-prebuilt
+
       - name: 唤醒词测试
         run: cargo test -p morphofly-core --features kws --lib
+
+      - name: 诊断（失败时可看出库到底在不在）
+        if: failure()
+        run: |
+          echo "--- target/sherpa-onnx-prebuilt ---"
+          find target/sherpa-onnx-prebuilt -maxdepth 3 2>/dev/null | head -40
+          echo "--- 静态库 ---"
+          find target/sherpa-onnx-prebuilt -name '*.a' 2>/dev/null | head -20
 
   # ── 密钥扫描（防止误提交）──
   secret-scan:
