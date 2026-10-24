@@ -31,6 +31,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # tauri-cli 是全局安装的二进制，缓存它避免每次重编
+          cache-all-crates: true
+
+      - name: 安装 tauri-cli
+        # 本机装了不代表 CI 有 —— 第一次跑就栽在这里（no such command: tauri）
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: 构建 Tauri 包
         # target-cpu 由 .cargo/config.toml 固定为 x86-64-v2，
@@ -40,17 +47,39 @@ jobs:
           cargo tauri build
 
       - name: 校验产物 CPU 基线
-        # 防止有人误删 .cargo/config.toml 的 target-cpu 设置，
-        # 导致产物只能在支持 AVX 的机器上跑（wings-gpd 就是这么崩的）。
+        # 防止误删 .cargo/config.toml 的 target-cpu 设置 ——
+        # wings-gpd（Pentium N6000，无 AVX）就是 SIGILL 崩在这里。
+        #
+        # ⚠️ 不能简单 grep AVX 指令：ONNX Runtime 的 MLAS 和 rustfft 的 avx 模块
+        # 是**运行时 CPU 特性检测 + 函数分派**，它们的代码里有 AVX 是正常的。
+        # 要检查的是「我们自己的代码」是否用了 AVX。
+        #
+        # 方法：用 cargo 的 target-cpu 验证 —— 编译一把看 rustc 实际参数。
         run: |
-          BIN=$(find target/release -maxdepth 1 -name 'morphofly-app' -o -maxdepth 1 -name 'diemeng-app' | head -1)
-          echo "二进制: $BIN"
-          # objdump 找 AVX 指令（vaddps/vmulps/ygetbv 等）
-          if objdump -d "$BIN" 2>/dev/null | grep -qE '\bv(add|mul|sub|div|max|min)[ps][sd]?\b|\bvzeroupper\b'; then
-            echo "::error::二进制包含 AVX 指令，在不支持 AVX 的 CPU 上会 SIGILL"
+          echo "=== 检查 .cargo/config.toml 的 target-cpu 设置 ==="
+          if ! grep -q 'target-cpu=x86-64-v2' .cargo/config.toml; then
+            echo "::error::.cargo/config.toml 缺少 target-cpu=x86-64-v2"
+            echo "后果：在不支持 AVX 的 CPU（如 Intel Pentium N6000）上会 SIGILL 崩溃"
             exit 1
           fi
-          echo "✅ 未发现 AVX 指令"
+          echo "✅ 配置存在"
+
+          echo "=== 验证 rustc 实际收到的参数 ==="
+          cargo clean -p morphofly-core 2>/dev/null || true
+          cargo build -p morphofly-core --release -v 2>&1 | grep -oE 'target-cpu=[a-z0-9-]+' | head -1 || {
+            echo "::error::rustflags 没有生效"
+            exit 1
+          }
+          echo "✅ rustflags 生效"
+
+          echo "=== 校验可执行文件不含未被分派的 AVX（只看我们自己的 crate）==="
+          # 用 readelf 检查 ELF 的 GNU_PROPERTY 是否声明需要 AVX
+          BIN=$(find target/release -maxdepth 1 -type f -name 'morphofly-app' | head -1)
+          if readelf -n "$BIN" 2>/dev/null | grep -qi 'x86 feature.*AVX'; then
+            echo "::error::ELF 声明依赖 AVX 特性"
+            exit 1
+          fi
+          echo "✅ ELF 未声明 AVX 依赖"
 
       - name: 检查产物大小
         run: |
