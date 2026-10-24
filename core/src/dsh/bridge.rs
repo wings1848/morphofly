@@ -48,7 +48,10 @@ pub struct DshBridge {
     task_timeout: Duration,
     /// 全局关停开关（App 退出时置 true）
     shutdown: Arc<AtomicBool>,
-    /// 已握手但空闲的 DSH 进程，下个任务直接复用（省 1.35s initialize）。
+    /// 已握手但空闲的 DSH 进程 + 它是哪个 agent，下个任务直接复用（省 1.35s initialize）。
+    ///
+    /// ⚠️ 必须记住 agent 名字：不同 agent 是不同的二进制，
+    /// 拿 dsh 的进程跑 codex 的任务是错的。
     ///
     /// ## 为什么只做「复用 1 个」而不是完整进程池
     ///
@@ -62,7 +65,7 @@ pub struct DshBridge {
     /// - 不涉及 session 路由，风险低
     ///
     /// 实测收益约 1.35s/任务，占 2.8s 总开销的 48%。
-    idle: Arc<Mutex<Option<DshClient>>>,
+    idle: Arc<Mutex<Option<(String, DshClient)>>>,
     /// 正在跑的任务 → 取消信号。
     ///
     /// ⚠️ 2026-10-24 修缺陷 #1：之前 `cancel_task` 只改本地状态，
@@ -200,15 +203,33 @@ impl DshBridge {
         // ★ 优先复用已握手的进程（省 1.35s initialize）
         // 注意：不能写成 `Some(mut c) if c.is_alive() =>` ——
         // Rust 的 match guard 里不允许可变借用（is_alive 要 &mut self）。
+        // 当前要用的 agent 名（用于 idle 池匹配）
+        let want_agent = self
+            .agents
+            .iter()
+            .find(|(_, cmd)| **cmd == command)
+            .map(|(n, _)| n.clone())
+            .unwrap_or_else(|| "dsh".to_string());
+
         let mut reused = self.idle.lock().await.take();
-        let alive = reused.as_mut().map(|c| c.is_alive()).unwrap_or(false);
+        let alive = reused
+            .as_mut()
+            .map(|(name, c)| name == &want_agent && c.is_alive())
+            .unwrap_or(false);
         let (mut client, was_reused) = if alive {
-            tracing::debug!("复用已握手的 DSH 进程（省 1.35s）");
-            (reused.take().expect("刚判断过是 Some"), true)
+            tracing::debug!(agent = %want_agent, "复用已握手的 agent 进程（省 1.35s）");
+            (reused.take().expect("刚判断过是 Some").1, true)
         } else {
-            let c = DshClient::spawn(&self.command)
-                .await
-                .context("拉不起 DSH")?;
+            // 池里的 agent 不匹配 → 关掉，别浪费
+            if let Some((name, mut c)) = reused.take() {
+                tracing::debug!(agent = %name, "池里的 agent 不匹配，关掉");
+                c.shutdown().await;
+            }
+            // ⚠️ 必须用传进来的 command，不是 self.command。
+            // 2026-10-24 踩坑：这里写 self.command 导致 agent 切换是假的 ——
+            // 用户说「切到 codex」，实际还是起 dsh 进程。
+            // 而测试能过是因为复用了 dsh 的空闲进程池，掩盖了 bug。
+            let c = DshClient::spawn(&command).await.context("拉不起 agent")?;
             (c, false)
         };
         let mut rx = client.subscribe();
@@ -293,16 +314,12 @@ impl DshBridge {
             client.close_session().await;
             let mut idle = self.idle.lock().await;
             // 只留 1 个（不做池），多了没用还占内存
-            if idle.is_none() {
-                *idle = Some(client);
-                tracing::debug!("DSH 进程已放回池子，下次直接复用");
-            } else {
-                // 已经有空闲的了，这个多余的关掉
-                if let Some(mut c) = idle.take() {
-                    c.shutdown().await;
-                }
-                *idle = Some(client);
+            if let Some((old_name, mut old)) = idle.take() {
+                tracing::debug!(agent = %old_name, "替换池里的旧进程");
+                old.shutdown().await;
             }
+            *idle = Some((want_agent.clone(), client));
+            tracing::debug!(agent = %want_agent, "进程已放回池子，下次直接复用");
         } else {
             client.shutdown().await;
         }
