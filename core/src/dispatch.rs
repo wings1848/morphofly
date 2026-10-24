@@ -77,6 +77,19 @@ impl Dispatcher {
     }
 
     /// 读当前上下文（给 UI 显示「现在连着哪个 agent」用）
+    /// 当前应该在哪个目录干活：会话上下文优先，否则默认目录。
+    ///
+    /// 给「纠正提醒」用 —— 真机实测模型卡在「不知道 dir 填什么」上不肯调工具，
+    /// 所以提醒里要能给它一个确定可用的路径。
+    pub async fn current_dir(&self) -> String {
+        let ctx = self.context.lock().await;
+        if ctx.dir.is_empty() {
+            self.default_dir.clone()
+        } else {
+            ctx.dir.clone()
+        }
+    }
+
     pub async fn context(&self) -> SessionContext {
         self.context.lock().await.clone()
     }
