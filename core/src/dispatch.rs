@@ -81,6 +81,79 @@ impl Dispatcher {
         self.context.lock().await.clone()
     }
 
+    /// 语音命令兜底：从用户原话里识别「切换类」意图，宿主直接执行。
+    ///
+    /// ## 为什么需要这个
+    ///
+    /// 真机实测（2026-10-24）：用户说「切换到 codex」，
+    /// 语音模型会回「好，已切换到 codex」但**从不调 set_context 工具**。
+    /// 加纠正提示后它改成在文字里假装调用（「现在已调用 set_context，参数为...」），
+    /// 实际 tool_calls 仍然是空的。
+    ///
+    /// 这是模型的能力边界 —— 它把「切换」当成一个可以叙述的动作，
+    /// 而不是需要走工具通道的动作。提示词救不回来。
+    ///
+    /// ## 为什么可以做关键词兜底
+    ///
+    /// 「切换 agent/项目/模型」是**确定性动作**，不需要推理：
+    /// 关键词集合很小且明确。万一误判，代价是「多切了一次」，可撤销。
+    ///
+    /// 而「查目录」「改代码」这类**需要推理**的任务，仍然交给模型。
+    ///
+    /// 返回 Some(result) 表示识别到并执行了；None 表示不是切换命令。
+    pub async fn try_voice_command(&self, text: &str) -> Option<ToolResult> {
+        let t = text.trim();
+        if t.is_empty() {
+            return None;
+        }
+
+        // 必须是「切换/换到/换成/用」这类祈使词
+        let has_switch_verb = ["切换", "换到", "换成", "改用", "用一下"]
+            .iter()
+            .any(|w| t.contains(w));
+        if !has_switch_verb {
+            return None;
+        }
+
+        // 1) 切 agent
+        for (name, cmd) in [("codex", "codex"), ("dsh", "dsh")] {
+            if t.contains(name) {
+                let v = serde_json::json!({ "agent": cmd });
+                return Some(self.set_context(&v).await.unwrap_or_else(|e| ToolResult {
+                    speech: "切换失败".to_string(),
+                    data: serde_json::json!({"error": e.to_string()}),
+                }));
+            }
+        }
+
+        // 2) 切项目（走别名表）
+        if let Ok(ctx) = self.context.try_lock() {
+            let _ = ctx; // 不持锁，下面查表
+        }
+        for proj in &self.projects.project {
+            for alias in &proj.alias {
+                if t.contains(alias) {
+                    let v = serde_json::json!({ "project": alias });
+                    return Some(self.set_context(&v).await.unwrap_or_else(|e| ToolResult {
+                        speech: "切换失败".to_string(),
+                        data: serde_json::json!({"error": e.to_string()}),
+                    }));
+                }
+            }
+        }
+
+        // 3) 提到「换模型」但没说具体哪个 → 追问
+        if t.contains("模型") {
+            return Some(ToolResult {
+                speech: "换成哪个模型".to_string(),
+                data: serde_json::json!({"status": "need_model_name"}),
+            });
+        }
+
+        None
+    }
+
+
     /// 分发一次工具调用。name 不在 4 个里 → Err（不变量 I1）。
     pub async fn dispatch(&self, name: &str, args: &str) -> Result<ToolResult> {
         if !tools::TOOL_NAMES.contains(&name) {
