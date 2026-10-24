@@ -6,7 +6,8 @@ default-members = ["core"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+# 1.91 是 sonora 0.2（纯 Rust AEC3 移植）的最低要求，见下面 workspace.dependencies 的 sonora。
+rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
@@ -27,4 +28,7 @@ rodio = "0.23"
 realfft = "3.5"
 hound = "3.5"
 bytes = "1"
+# 回声消除（AEC3）：WebRTC Audio Processing 的纯 Rust 移植。
+# 选它而不是 webrtc-audio-processing：后者要 clang/meson/ninja，本机（Debian 云主机）没有。
+sonora = "0.2"
 morphofly-core = { path = "core" }

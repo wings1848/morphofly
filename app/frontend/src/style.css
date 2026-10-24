@@ -42,6 +42,24 @@ canvas { display: block; cursor: pointer; }
 /* 状态实时显示：截图自动化靠它核对 Rust→WebView 事件链是否通 */
 #hint.live { font-size: 13px; letter-spacing: .06em; color: rgba(34, 211, 238, .72); }
 
-/* 拖动区域：整个窗口可拖（Tauri 用 data-tauri-drag-region） */
-body { -webkit-app-region: drag; }
-canvas, #caption { -webkit-app-region: no-drag; }
+/* ── 拖动区 ──
+ *
+ * 窗口无边框，用户要靠拖小球移动它。
+ *
+ * 实现：一个铺满窗口的透明 div 作为拖动区，canvas 叠在它上面。
+ * 为什么不用 body 直接拖：canvas 在上面会吃掉点击，
+ * 「点一下开始说话」就失效了。
+ *
+ * ⚠️ 之前这里只有注释没有实际元素（HTML 里没有 data-tauri-drag-region），
+ * 拖动功能一直是坏的。2026-10-24 修。
+ */
+#drag-region {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+/* 画布和文字不吃拖动，保证点击能到 canvas */
+canvas, #caption, #hint {
+  position: relative;
+  z-index: 1;
+}

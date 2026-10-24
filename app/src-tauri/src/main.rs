@@ -31,6 +31,16 @@ struct AppState {
     cfg: Arc<morphofly_core::Config>,
 }
 
+/// 前端在「拖动结束」时调用，让球贴到最近的边。
+///
+/// 为什么不监听窗口 move 事件做防抖：move 事件在 Wayland 下行为不一致，
+/// 且拖动过程中频繁触发会抖。由前端在 mouseup 时主动调一次更可控。
+#[tauri::command]
+async fn snap_orb(window: WebviewWindow) -> Result<(), String> {
+    snap_to_edge(&window, SnapMode::NearestHorizontal);
+    Ok(())
+}
+
 #[tauri::command]
 async fn orb_click(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let mut m = state.machine.lock().await;
@@ -316,19 +326,61 @@ fn demo_states_placeholder() -> bool {
 /// 位置策略：右下角内缩 24px（不贴死，留出视觉呼吸）。
 /// 为什么是右下角：任务栏通常在底部，右下角是最不干扰主工作区的位置。
 fn place_orb_bottom_right(win: &WebviewWindow) {
+    snap_to_edge(win, SnapMode::BottomRight);
+}
+
+/// 贴边方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapMode {
+    /// 贴到屏幕右下角（首次启动用）
+    BottomRight,
+    /// 按当前位置贴最近的水平边（用户拖动后松手用）
+    NearestHorizontal,
+}
+
+/// 计算并设置贴边位置。
+///
+/// 用户要求：「小圆球默认显示在桌面合适位置，可自动贴边」
+///
+/// Wayland 限制：`set_position` 在纯 Wayland 下会被合成器忽略
+/// （没有全局坐标概念）。实测 wings-pc 是 KDE Wayland，
+/// 所以启动时要 `GDK_BACKEND=x11` 走 XWayland 才能贴边。
+/// 这是平台限制，不是代码问题。
+fn snap_to_edge(win: &WebviewWindow, mode: SnapMode) {
     let (Ok(Some(monitor)), Ok(size)) = (win.current_monitor(), win.outer_size()) else {
-        tracing::warn!("拿不到显示器或窗口尺寸，跳过定位");
+        tracing::warn!("拿不到显示器或窗口尺寸，跳过贴边");
         return;
     };
     let screen = monitor.size();
+    let pos = monitor.position();
     let scale = monitor.scale_factor();
-    let margin = (24.0 * scale) as i32;
-    let x = screen.width as i32 - size.width as i32 - margin;
-    let y = screen.height as i32 - size.height as i32 - margin - (48.0 * scale) as i32;
-    if let Err(e) = win.set_position(tauri::PhysicalPosition::new(x.max(0), y.max(0))) {
-        tracing::warn!(error = %e, "设置窗口位置失败");
+    let margin = (16.0 * scale) as i32;
+
+    // 水平：靠左还是靠右，看窗口现在离哪边近
+    let cur = win.outer_position().ok();
+    let go_right = match (mode, cur) {
+        (SnapMode::BottomRight, _) => true,
+        (SnapMode::NearestHorizontal, Some(p)) => {
+            let win_center = p.x + (size.width as i32) / 2;
+            let screen_center = pos.x + (screen.width as i32) / 2;
+            win_center > screen_center
+        }
+        (SnapMode::NearestHorizontal, None) => true,
+    };
+
+    let x = if go_right {
+        pos.x + screen.width as i32 - size.width as i32 - margin
     } else {
-        tracing::info!(x, y, "小球已贴到右下角");
+        pos.x + margin
+    };
+    // 垂直：贴底（避开底部任务栏，多留 48px）
+    let y = pos.y + screen.height as i32 - size.height as i32 - margin - (48.0 * scale) as i32;
+
+    let target = tauri::PhysicalPosition::new(x.max(pos.x), y.max(pos.y));
+    if let Err(e) = win.set_position(target) {
+        tracing::warn!(error = %e, "贴边失败（Wayland 下正常，需 XWayland）");
+    } else {
+        tracing::info!(x, y, right = go_right, "小球已贴边");
     }
 }
 
@@ -462,7 +514,8 @@ fn main() {
             orb_click,
             orb_state,
             set_caption,
-            poke
+            poke,
+            snap_orb
         ])
         .setup(move |app| {
             // ★ 让 core 能找到随包资源（唤醒词模型 / VAD 模型 / 关键词表）。

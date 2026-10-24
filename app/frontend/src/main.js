@@ -129,3 +129,31 @@ function frame(now) {
 }
 
 boot().finally(() => requestAnimationFrame(frame));
+
+
+// ── 拖动松手后贴边 ──
+//
+// 窗口无边框，用户拖小球到哪它就在哪。松手时让它贴到最近的边，
+// 保持桌面整洁（用户要求「可自动贴边」）。
+//
+// 注意：用 pointerup 而不是 mouseup —— 触屏和触控笔也能触发。
+document.addEventListener('pointerup', () => {
+  // 只在真的拖动过之后才贴边（避免每次点击都触发）
+  if (!dragged) return;
+  dragged = false;
+  ipc('snap_orb').catch(() => {});
+});
+
+// 记录是否在拖动（区分「点击小球」和「拖小球」）
+let dragged = false;
+let downAt = null;
+document.addEventListener('pointerdown', (e) => {
+  downAt = { x: e.clientX, y: e.clientY };
+});
+document.addEventListener('pointermove', (e) => {
+  if (!downAt) return;
+  const dx = Math.abs(e.clientX - downAt.x);
+  const dy = Math.abs(e.clientY - downAt.y);
+  // 移动超过 5px 才算拖动（否则是点击）
+  if (dx > 5 || dy > 5) dragged = true;
+});
