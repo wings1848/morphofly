@@ -182,6 +182,11 @@ impl VoiceSession {
                                     vad_cooldown = vad_cooldown.saturating_sub(1);
                                 } else if v.push(&f32s) {
                                     let queued = player_in_push.queued_frames();
+                                    // 单独打一行「VAD 判定人声」：验收脚本要用它量
+                                    // 「检测到人声 → 停播」的真实反应时间
+                                    // （虚拟音源注入到被采集之间还有几百毫秒，
+                                    //   那是环境延迟，不该算进产品反应里）。
+                                    tracing::debug!(queued, "本地 VAD 判定人声");
                                     if queued > 0 {
                                         player_in_push.stop_now();
                                         // ★ 修缺陷 #5：还要告诉云端别生成了。
@@ -196,8 +201,17 @@ impl VoiceSession {
                                             queued,
                                             "⚡ 本地 VAD 打断（已通知云端停止生成）"
                                         );
-                                        tauri::async_runtime::block_on(async {
-                                            let mut m = machine_in_push.lock().await;
+                                        // ⚠️ 这里**不能** block_on。
+                                        //
+                                        // 2026-10-25 真机首次验证打断时就炸了：
+                                        // 这段代码跑在 async 任务（push_task）里，
+                                        // `block_on` 会 panic：「Cannot start a runtime
+                                        // from within a runtime」→ 整个推流任务死掉
+                                        // → 麦克风不再推流，得等下一次建会话才恢复。
+                                        // 改成 spawn 出去通知状态机。
+                                        let m_for_vad = machine_in_push.clone();
+                                        tauri::async_runtime::spawn(async move {
+                                            let mut m = m_for_vad.lock().await;
                                             let _ = m.handle(Stimulus::UserSpeechStarted);
                                         });
                                     }

@@ -968,6 +968,13 @@ fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,diemeng=debug".into()),
         )
+        // journal / 管道里不要 ANSI 颜色码。
+        //
+        // 真机踩坑（2026-10-25）：默认 `.init()` 会写颜色码，
+        // 于是 `state="S4"` 在 journal 里变成 `\x1b[3mstate\x1b[0m\x1b[2m=\x1b[0m"S4"`，
+        // 脚本 `grep 'state="S4"'` 永远匹配不到（打断了自动化验收，查了一阵）。
+        // 只有真的在终端里跑时才上色。
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     let cfg = std::sync::Arc::new(Config::load().unwrap_or_default());
