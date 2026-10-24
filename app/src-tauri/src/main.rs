@@ -982,9 +982,18 @@ fn main() {
     //
     // 注意：VoiceSession 内部还会建自己的 Dispatcher（历史结构）。
     // 两者共享同一个 TaskStore 和 DshBridge，所以状态是一致的。
-    let store = std::sync::Arc::new(Mutex::new(
-        morphofly_core::tasks::TaskStore::open(cfg.task_store_path()).expect("打开任务表"),
-    ));
+    // 上次进程留下的「正在干」任务永远不会有结果（结果只能由还在跑的那个进程
+    // 写回来），启动时自愈成失败 + 未汇报，用户下次会话就能听到「那个活中断了」。
+    let mut task_store =
+        morphofly_core::tasks::TaskStore::open(cfg.task_store_path()).expect("打开任务表");
+    let recovered = task_store.recover_interrupted();
+    if !recovered.is_empty() {
+        tracing::warn!(
+            tasks = ?recovered,
+            "上次没跑完的任务已标记为中断（下次会话会主动汇报）"
+        );
+    }
+    let store = std::sync::Arc::new(Mutex::new(task_store));
     let bridge = std::sync::Arc::new(morphofly_core::dsh::DshBridge::from_config(&cfg));
     let store_for_guard = store.clone();
     let dispatcher = std::sync::Arc::new(morphofly_core::dispatch::Dispatcher::new(

@@ -269,6 +269,39 @@ impl TaskStore {
         self.save()
     }
 
+    /// 启动时自愈：把上次进程留下的「正在干」任务标成失败。
+    ///
+    /// 为什么需要：任务结果只能由「还在跑的那个进程」写回来。App 被关掉/崩掉/
+    /// 重启后，这些任务永远不会再有结果，会**永远卡在 running**：
+    /// 用户看到的是一直「正在干」，主动汇报也永远不会触发
+    /// （2026-10-24 真机里 `task_20261024_1827_025` 就这么卡了两天）。
+    ///
+    /// 标成失败而不是当作完成：不能替用户假装干完了；同时 `reported = false`，
+    /// 下一个会话开始时会主动说一句「那个活被中断了」，用户才知道要重派。
+    ///
+    /// 返回被改的任务 id，便于调用方打日志。
+    pub fn recover_interrupted(&mut self) -> Vec<String> {
+        let mut changed = Vec::new();
+        for t in self.tasks.iter_mut() {
+            if t.status != TaskStatus::Running {
+                continue;
+            }
+            t.status = TaskStatus::Failed;
+            if t.summary.trim().is_empty() {
+                t.summary = "被中断了（App 重启，没等到结果）".to_string();
+            }
+            // 让下一个会话主动报一句，用户才知道这个活没干成
+            t.reported = false;
+            t.updated_at_ms = now_ms();
+            changed.push(t.id.clone());
+        }
+        if !changed.is_empty() {
+            // 落盘失败不该让 App 起不来，交给调用方决定怎么处理
+            let _ = self.save();
+        }
+        changed
+    }
+
     /// 还没念过、且已经结束的任务（主动汇报的输入）。
     pub fn unreported_finished(&self) -> Vec<&Task> {
         self.tasks
@@ -402,6 +435,29 @@ mod tests {
             let t = s.create(&format!("t{i}"), "/tmp").unwrap();
             assert!(ids.insert(t.id.clone()), "id 重复: {}", t.id);
         }
+    }
+
+    #[test]
+    fn recover_interrupted_marks_running_as_failed() {
+        let mut s = tmp_store("recover");
+        let running = s.create("干个长活", "/tmp").unwrap();
+        s.set_status(&running.id, TaskStatus::Running).unwrap();
+        let done = s.create("已经好了", "/tmp").unwrap();
+        s.set_status(&done.id, TaskStatus::Done).unwrap();
+
+        let changed = s.recover_interrupted();
+        assert_eq!(changed, vec![running.id.clone()], "只应该动 running 的任务");
+
+        let t = s.get(&running.id).unwrap();
+        assert_eq!(t.status, TaskStatus::Failed);
+        assert!(!t.reported, "被中断的任务要能被主动汇报");
+        assert!(t.summary.contains("中断"), "summary 要能直接念：{}", t.summary);
+        assert_eq!(s.get(&done.id).unwrap().status, TaskStatus::Done);
+
+        // 自愈要落盘：重开一次不能再看到 running
+        let mut s2 = TaskStore::open(s.path()).unwrap();
+        assert!(s2.all().iter().all(|t| t.status != TaskStatus::Running));
+        assert!(s2.recover_interrupted().is_empty(), "第二次不该再有可改的");
     }
 
     #[test]
