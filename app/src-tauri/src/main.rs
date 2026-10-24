@@ -326,11 +326,10 @@ fn main() {
     let demo_audio = std::env::var("DIEMENG_DEMO_AUDIO")
         .map(|v| v != "0")
         .unwrap_or(true);
-    // 唤醒词常驻监听（需要 --features kws）
+    // 唤醒词常驻监听的启动挪到 .setup() 里 —— 必须在 DIEMENG_BUNDLE_DIR 设好之后，
+    // 否则 AppImage 场景下会去 ~/.diemeng 找模型（找不到就静默降级）。
     let enable_kws = std::env::var("DIEMENG_KWS").map(|v| v != "0").unwrap_or(true);
-    if enable_kws && !demo_states_placeholder() {
-        spawn_wake_listener(machine.clone());
-    }
+    let skip_kws = demo_states_placeholder();
 
     // 自动点击（仅 QA：绕开 X11 点击不达 WebView 的问题，直接驱动状态机）
     if std::env::var("DIEMENG_AUTOCLICK").map(|v| v != "0").unwrap_or(false) {
@@ -360,6 +359,24 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![orb_click, orb_state, set_caption, poke])
         .setup(move |app| {
+            // ★ 让 core 能找到随包资源（唤醒词模型 / VAD 模型 / 关键词表）。
+            //
+            // AppImage 是自包含的，用户拿到就该能用，不该先去 GitHub 下模型。
+            // Tauri 的 resource_dir() 在 Linux 上把 bundle.resources 放到
+            // /usr/lib/<product>/ （deb）或 AppDir/usr/lib/ （AppImage），
+            // 我们打的目录名是 resources/，所以拼上去。
+            if let Ok(rd) = app.path().resource_dir() {
+                let bundle = rd.join("resources");
+                let dir = if bundle.is_dir() { bundle } else { rd.clone() };
+                std::env::set_var("DIEMENG_BUNDLE_DIR", &dir);
+                tracing::info!(dir = %dir.display(), "随包资源目录");
+            }
+
+            // ★ 必须在 DIEMENG_BUNDLE_DIR 设好之后再启动唤醒词
+            if enable_kws && !skip_kws {
+                spawn_wake_listener(machine.clone());
+            }
+
             let handle = app.handle().clone();
             spawn_pump(handle.clone(), machine.clone(), demo_audio);
             spawn_session_guard(handle, machine.clone(), cfg.clone());

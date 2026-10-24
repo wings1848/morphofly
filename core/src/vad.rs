@@ -48,7 +48,8 @@ pub struct VadConfig {
 impl Default for VadConfig {
     fn default() -> Self {
         Self {
-            model: crate::config::default_data_dir().join("vad-model/silero_vad.onnx"),
+            // 先找随包资源（AppImage/deb 自带），再找用户数据目录
+            model: crate::config::find_resource("vad-model/silero_vad.onnx"),
             threshold: 0.5,
             // 打断要快。2026-10-24 实测（wings-pc，bargein_local）：
             //   0.20s → 端到端 441ms

@@ -43,9 +43,9 @@ pub struct KwsConfig {
 impl Default for KwsConfig {
     fn default() -> Self {
         Self {
-            // 默认放数据目录下，用户自己下模型
-            model_dir: crate::config::default_data_dir().join("kws-model"),
-            keywords_file: crate::config::default_data_dir().join("keywords.txt"),
+            // 先找随包资源（AppImage/deb 自带），再找用户数据目录
+            model_dir: crate::config::find_resource("kws-model"),
+            keywords_file: crate::config::find_resource("keywords.txt"),
             threshold: 0.25,
             score: 1.0,
             num_trailing_blanks: 4,

@@ -120,10 +120,28 @@ impl VoiceSession {
             let vad = diemeng_core::vad::LocalVad::new(&diemeng_core::vad::VadConfig::default()).ok();
             #[cfg(feature = "kws")]
             let mut vad_cooldown = 0u32;
-            // 「说完」判定：有声后连续 N 帧静音就 commit
-            let mut had_voice = false;
-            let mut silence_after_voice = 0u32;
-            let mut committed_this_turn = false;
+            // 「说完」判定（本地 VAD 的简化版）。
+            //
+            // 状态机：
+            //   Idle     --有声--> Speaking
+            //   Speaking --连续 K 帧静音--> 发 commit + create_response --> Cooldown
+            //   Cooldown --连续 M 帧静音--> Idle（等下一轮开口）
+            //
+            // ⚠️ 2026-10-24 踩坑：最初写成「只要 rms>0.02 就重置 committed 标志」，
+            // 结果环境底噪（风扇/键盘）让标志反复重置，一次发言触发 4 次 commit。
+            // 现在用「必须连续有声才算重新开口」——底噪过不了连续 N 帧这条线。
+            #[derive(PartialEq)]
+            enum Talk {
+                Idle,
+                Speaking,
+                Cooldown,
+            }
+            let mut talk = Talk::Idle;
+            let mut voiced_run = 0u32;   // 连续有声帧数
+            let mut silent_run = 0u32;   // 连续静音帧数
+            const VOICE_RMS: f32 = 0.02; // 有声阈值
+            const NEED_VOICE: u32 = 3;   // 连续 3 帧（60ms）才算真开口
+            const NEED_SILENCE: u32 = 10; // 连续 10 帧（200ms）才算说完
             loop {
                 if stop2.load(Ordering::Relaxed) {
                     break;
@@ -158,18 +176,36 @@ impl VoiceSession {
                             }
                         }
                         // ★ 本地判定「说完了」→ 立刻 commit（这是 802ms 的关键）
-                        if rms > 0.02 {
-                            had_voice = true;
-                            silence_after_voice = 0;
-                            committed_this_turn = false;
-                        } else if had_voice {
-                            silence_after_voice += 1;
-                            // 200ms 静音 = 10 帧
-                            if !committed_this_turn && silence_after_voice >= 10 {
-                                committed_this_turn = true;
-                                let _ = client2.commit();
-                                let _ = client2.create_response();
-                                tracing::info!("本地判定说完 → commit");
+                        if rms > VOICE_RMS {
+                            voiced_run += 1;
+                            silent_run = 0;
+                            match talk {
+                                Talk::Idle if voiced_run >= NEED_VOICE => {
+                                    talk = Talk::Speaking;
+                                    tracing::debug!("本地判定开口");
+                                }
+                                Talk::Cooldown if voiced_run >= NEED_VOICE => {
+                                    // 上一轮处理完了，用户又说了一句
+                                    talk = Talk::Speaking;
+                                    tracing::debug!("本地判定新一句开口");
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            voiced_run = 0;
+                            silent_run += 1;
+                            match talk {
+                                Talk::Speaking if silent_run >= NEED_SILENCE => {
+                                    talk = Talk::Cooldown;
+                                    let _ = client2.commit();
+                                    let _ = client2.create_response();
+                                    tracing::info!("本地判定说完 → commit");
+                                }
+                                Talk::Cooldown if silent_run >= NEED_SILENCE * 3 => {
+                                    // 静音够久（600ms），回到待命
+                                    talk = Talk::Idle;
+                                }
+                                _ => {}
                             }
                         }
                         if let Err(_) = client2.send_audio(&frame) {

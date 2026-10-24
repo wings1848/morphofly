@@ -148,6 +148,50 @@ pub fn default_data_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".diemeng")
 }
 
+/// 应用自带资源目录（AppImage / deb 安装后放模型的地方）。
+///
+/// 查找顺序（先到先得）：
+/// 1. `$DIEMENG_BUNDLE_DIR`（显式覆盖，测试用）
+/// 2. 可执行文件同级的 `resources/`（Tauri 的 resource_dir 布局）
+/// 3. 可执行文件同级的 `../resources/`（AppImage 的 AppRun 会设成 usr/bin，资源在 usr/lib）
+/// 4. 可执行文件同级的 `data/`（手动解压/开发场景）
+///
+/// 找不到就返回 None —— 调用方要回退到 `default_data_dir()`（用户自己下的模型）。
+///
+/// **为什么需要这个**：AppImage 是自包含的，用户拿到就想要能用，
+/// 不该先让他去 GitHub 下 8MB 模型再手动放进去。
+pub fn bundle_data_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("DIEMENG_BUNDLE_DIR") {
+        let pb = PathBuf::from(p);
+        if pb.is_dir() {
+            return Some(pb);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    // Tauri/deb：exe 在 /usr/bin，资源在 /usr/lib/<product> 或同级 resources/
+    for rel in ["resources", "../resources", "../lib/diemeng", "data", "../share/diemeng"] {
+        let cand = dir.join(rel);
+        if cand.is_dir() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// 定位一个随包资源：先找 bundle，再找用户数据目录。
+///
+/// `rel` 是相对路径，比如 `"kws-model"` 或 `"vad-model/silero_vad.onnx"`。
+pub fn find_resource(rel: &str) -> PathBuf {
+    if let Some(b) = bundle_data_dir() {
+        let p = b.join(rel);
+        if p.exists() {
+            return p;
+        }
+    }
+    default_data_dir().join(rel)
+}
+
 impl Config {
     /// 从默认位置加载；文件不存在则用默认值（并尝试写出模板）。
     pub fn load() -> Result<Self> {

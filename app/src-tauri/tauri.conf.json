@@ -43,6 +43,9 @@
           "libgtk-3-0"
         ]
       }
-    }
+    },
+    "resources": [
+      "resources/"
+    ]
   }
 }
