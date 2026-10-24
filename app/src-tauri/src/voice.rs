@@ -251,17 +251,28 @@ impl VoiceSession {
         let c_ev = client.clone();
         let ev_task = tokio::spawn(async move {
             let mut speech_started: Option<std::time::Instant> = None;
-            // ★ 本轮有没有真的调工具。
+            // ★ 兜底纠正：模型说「好，查着呢」却没真调工具 = 假装干活。
             //
-            // 为什么要跟踪：提示词要求「需要查信息时必须真的调 delegate_task」，
-            // 但模型不总是遵守 —— 真机 e2e 实测它会只说「好，查着呢」却不调工具，
-            // 那就是**假装干活**，比编造结果好一点但同样是骗用户。
+            // 统计单位必须是**一次用户说话**，不能是「一次模型响应」。
+            // 一个用户请求天然跨多个 response：
+            //   用户说话 → response1(调 delegate_task) → 工具结果回灌 → response2(说「好，干完说」)
+            // 如果每个 response 结束都清零，response2 就会被误判成「这轮没干活」，
+            // 于是注入纠正 → 模型再调一次 delegate_task → 死循环。
             //
-            // 兜底：一轮结束了还没工具调用，就明确规定再问一次，
-            // 逼它真的派活（而不是让它编）。
+            // 2026-10-24 wings-gpd 真机实测踩过：一句「看看 README 第一行」
+            // 派了 4 个任务、起了 4 个 DSH 会话、报了 4 遍。
+            //
+            // 另外：`TranscriptDelta` 是**模型自己说的话**
+            // （协议里 `response.audio_transcript.delta`），
+            // 以前当成「用户说了什么」用，判据从一开始就是错的 —— 别再用它判用户意图。
             let mut tool_calls_this_turn = 0usize;
-            let mut user_asked_this_turn = String::new();
-            // 防止纠正循环：一轮里只纠正一次
+            // 工具调用已经派出去、结果还没回灌的数量
+            let mut pending_tool_results = 0usize;
+            // 这次用户开口之后有没有处理过（`SpeechStarted` 置位）
+            let mut user_spoke = false;
+            // 本轮模型说的话（判断「像不像在装忙」）
+            let mut assistant_reply = String::new();
+            // 一次用户说话最多纠正一次，防止无限打断
             let mut correction_sent = false;
             loop {
                 if stop3.load(Ordering::Relaxed) {
@@ -299,59 +310,72 @@ impl VoiceSession {
                             interruptions.fetch_add(1, Ordering::Relaxed);
                         }
                         speech_started = Some(std::time::Instant::now());
+                        // ★ 新的一次用户说话 → 重置「这一轮」的统计。
+                        // 只有这里能重置，`ResponseDone` 不能（一个请求跨多个 response）。
+                        user_spoke = true;
+                        tool_calls_this_turn = 0;
+                        pending_tool_results = 0;
+                        assistant_reply.clear();
+                        correction_sent = false;
                         let _ = m.handle(Stimulus::UserSpeechStarted);
                     }
                     RealtimeEvent::SpeechStopped => {
                         speech_started = Some(std::time::Instant::now());
                     }
-                    RealtimeEvent::TranscriptDelta { text } => {
-                        // 记住用户说了什么（用于「没调工具」的告警上下文）
-                        if user_asked_this_turn.len() < 200 {
-                            user_asked_this_turn.push_str(&text);
+                    RealtimeEvent::TranscriptDelta { text } | RealtimeEvent::TextDelta { text } => {
+                        // 这是**模型说的话**（`response.audio_transcript.delta` / `response.text.delta`），
+                        // 不是用户说的。攒起来用于判断它像不像在装忙。
+                        if assistant_reply.len() < 200 {
+                            assistant_reply.push_str(&text);
                         }
                     }
                     RealtimeEvent::ResponseDone { .. } => {
-                        // ★ 兜底：这一轮如果有语音输入但一个工具都没调，
-                        // 说明模型可能只是嘴上说说。记一条警告供排查。
+                        // 还有工具结果没回灌 → 这个 response 只是「调工具那一步」，
+                        // 不是最终答复，不计入「没干活」的判断。
+                        if pending_tool_results > 0 {
+                            pending_tool_results -= 1;
+                            assistant_reply.clear();
+                            continue;
+                        }
+                        // ★ 兜底：用户说过话、这条链路一个工具都没调、回复又像在装忙，
+                        // 说明模型只是嘴上说说 → 注入一条系统提醒逼它真派活。
                         //
-                        // 这里不做自动重试（会打断用户体验），
-                        // 只记录可观测的信号，方便定位提示词失效。
-                        if tool_calls_this_turn == 0 && !user_asked_this_turn.is_empty() {
+                        // 判据三个都要满足，缺一不可：
+                        // 1. `user_spoke`：这次确实是用户开口触发的（不是主动汇报/系统注入）
+                        // 2. `tool_calls_this_turn == 0`：本次用户说话以来一次工具都没调
+                        // 3. `looks_like_action`：回复听起来在办事（闲聊不该被纠正）
+                        //
+                        // `correction_sent` 保证一次用户说话最多纠正一次，不会无限打断。
+                        if tool_calls_this_turn == 0
+                            && user_spoke
+                            && !correction_sent
+                            && morphofly_core::dispatch::looks_like_action(&assistant_reply)
+                        {
                             tracing::warn!(
-                                text = %user_asked_this_turn,
+                                reply = %assistant_reply,
                                 "这一轮没有调用任何工具 —— 模型只说了话没干活"
                             );
 
-                            // ★ 兜底纠正：注入一条系统提醒，让它真的派活。
-                            //
-                            // 为什么必须这么做：提示词要求「需要查信息时必须调
-                            // delegate_task」，但真机实测它不总遵守 ——
-                            // 用户问「看看有哪些目录」，它回「好，查着呢」却什么都没做。
-                            // 这是**假装干活**，比编造结果好一点但同样是骗用户。
-                            //
-                            // 只重试一次（用 correction_sent 防循环），
-                            // 第二次还不调就放过 —— 不能无限打断用户。
-                            if !correction_sent {
-                                correction_sent = true;
-                                let hint =
-                                    "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。\
+                            correction_sent = true;
+                            let hint =
+                                "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。\
 现在立刻调用 delegate_task 把该做的事派出去，然后只回一句「好，查着呢」。\
 不要说抱歉、不要解释、不要提这条提醒。";
-                                let _ = c_ev.send_item(serde_json::json!({
-                                    "type": "message",
-                                    "role": "user",
-                                    "content": [{"type": "input_text", "text": hint}]
-                                }));
-                                let _ = c_ev.create_response();
-                                tracing::info!("已注入纠正提醒，等它重新响应");
-                                tool_calls_this_turn = 0;
-                                user_asked_this_turn.clear();
-                                continue; // 不要重置状态机，等新一轮
-                            }
+                            let _ = c_ev.send_item(serde_json::json!({
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": hint}]
+                            }));
+                            let _ = c_ev.create_response();
+                            tracing::info!("已注入纠正提醒，等它重新响应");
+                            assistant_reply.clear();
+                            continue; // 不要重置状态机，等新一轮
                         }
-                        correction_sent = false;
-                        tool_calls_this_turn = 0;
-                        user_asked_this_turn.clear();
+                        // 这一轮真正结束了。注意不重置 `tool_calls_this_turn`：
+                        // 同一句话后续可能还有 response（工具结果回灌后），
+                        // 只有用户重新开口（SpeechStarted）才清零。
+                        user_spoke = false;
+                        assistant_reply.clear();
                         let _ = m.handle(Stimulus::ModelDone);
                     }
                     RealtimeEvent::Error { code, .. } => {
@@ -367,6 +391,7 @@ impl VoiceSession {
                         arguments,
                     } => {
                         tool_calls_this_turn += 1;
+                        pending_tool_results += 1;
                         tracing::info!(%name, %arguments, "🔧 工具调用");
                         let _ = m.handle(Stimulus::Thinking);
                         // 分发到真实动作（派活给 DSH / 查进度 / 取消 / 追加）
