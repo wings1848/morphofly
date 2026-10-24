@@ -56,9 +56,12 @@ jobs:
         run: cargo test -p morphofly-core --lib --verbose
 
       - name: 前端测试
+        # 注意：必须给 glob 或具体文件，不能只给目录 ——
+        # Node 22（CI）的 --test 不接受裸目录，会 MODULE_NOT_FOUND；
+        # Node 26（本地）能自动发现。写 glob 两边都能跑。
         run: |
           node --version
-          node --test app/frontend/test/
+          node --test 'app/frontend/test/*.test.mjs'
 
   # ── 唤醒词测试（单独 job，因为要拉 sherpa-onnx 静态库）──
   test-kws:
