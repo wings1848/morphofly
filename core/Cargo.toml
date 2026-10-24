@@ -75,6 +75,3 @@ name = "pool_bench"
 
 [[example]]
 name = "agent_switch_check"
-
-[[example]]
-name = "model_switch_check"
