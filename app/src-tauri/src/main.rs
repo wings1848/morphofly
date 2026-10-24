@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
 use morphofly_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
 use morphofly_core::Config;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tokio::sync::Mutex;
@@ -27,6 +27,9 @@ use tokio::sync::Mutex;
 struct AppState {
     machine: Arc<Mutex<SessionMachine>>,
     caption: Arc<Mutex<String>>,
+    /// 工具分发器 —— 提到全局是为了让托盘菜单等非语音入口也能调
+    /// （语音切换 agent 暂不可用，见 docs/v2/voice-switch-design.md）
+    dispatcher: Arc<morphofly_core::dispatch::Dispatcher>,
     #[allow(dead_code)] // 预留给「改配置不重启」等命令
     cfg: Arc<morphofly_core::Config>,
 }
@@ -392,7 +395,20 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示小球", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "隐藏小球", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出蝶梦", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+
+    // ── 切换 agent（语音切换暂不可用时的兜底入口）──
+    //
+    // 为什么需要它：真机实测「切换到 codex」这类语音命令，
+    // 语音模型从不调 set_context 工具（它以为说一句话就够了），
+    // 我们在宿主层也拿不到用户原话（协议没开 ASR 转写）。
+    //
+    // 所以先用菜单兜底 —— 至少能用，只是需要点一下。
+    // 等语音方案验证可行再替换。详见 docs/v2/voice-switch-design.md
+    let agent_dsh = MenuItem::with_id(app, "agent-dsh", "用 dsh 干活", true, None::<&str>)?;
+    let agent_codex = MenuItem::with_id(app, "agent-codex", "用 codex 干活", true, None::<&str>)?;
+    let switch_menu = Submenu::with_items(app, "切换 agent", true, &[&agent_dsh, &agent_codex])?;
+
+    let menu = Menu::with_items(app, &[&show, &hide, &switch_menu, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("main-tray")
         .tooltip("蝶梦 · 语音智能体")
@@ -409,6 +425,36 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 if let Some(w) = app.get_webview_window("orb") {
                     let _ = w.hide();
                 }
+            }
+            "agent-dsh" => {
+                tracing::info!("托盘菜单：切到 dsh");
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = app.state::<AppState>();
+                    match st
+                        .dispatcher
+                        .dispatch("set_context", r#"{"agent":"dsh"}"#)
+                        .await
+                    {
+                        Ok(r) => tracing::info!("切换结果: {}", r.speech),
+                        Err(e) => tracing::warn!(error = %e, "切换失败"),
+                    }
+                });
+            }
+            "agent-codex" => {
+                tracing::info!("托盘菜单：切到 codex");
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = app.state::<AppState>();
+                    match st
+                        .dispatcher
+                        .dispatch("set_context", r#"{"agent":"codex"}"#)
+                        .await
+                    {
+                        Ok(r) => tracing::info!("切换结果: {}", r.speech),
+                        Err(e) => tracing::warn!(error = %e, "切换失败"),
+                    }
+                });
             }
             "quit" => {
                 tracing::info!("托盘菜单：退出");
@@ -503,11 +549,26 @@ fn main() {
         spawn_state_walker(machine.clone());
     }
 
+    // 全局 Dispatcher —— 让托盘菜单等非语音入口也能调工具。
+    //
+    // 注意：VoiceSession 内部还会建自己的 Dispatcher（历史结构）。
+    // 两者共享同一个 TaskStore 和 DshBridge，所以状态是一致的。
+    let store = std::sync::Arc::new(Mutex::new(
+        morphofly_core::tasks::TaskStore::open(cfg.task_store_path()).expect("打开任务表"),
+    ));
+    let bridge = std::sync::Arc::new(morphofly_core::dsh::DshBridge::from_config(&cfg));
+    let dispatcher = std::sync::Arc::new(morphofly_core::dispatch::Dispatcher::new(
+        store,
+        bridge,
+        cfg.dsh.default_cwd.clone(),
+    ));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState {
             machine: machine.clone(),
             caption: Arc::new(Mutex::new(String::new())),
+            dispatcher,
             cfg: cfg.clone(),
         })
         .invoke_handler(tauri::generate_handler![
