@@ -227,10 +227,16 @@ impl Dispatcher {
         let store = self.store.clone();
         let task_clone = task.clone();
         let id2 = id.clone();
+        // 派活时锁定当前 agent（之后用户切了也不影响这个任务）
+        let agent_for_task = self.context.lock().await.agent.clone();
+        tracing::info!(agent = %agent_for_task, dir = %dir, "派活");
         tokio::spawn(async move {
             let _ = store.lock().await.set_status(&id2, TaskStatus::Running);
-            // ★ 用带 ID 的版本，这样能中途取消（修缺陷 #1）
-            match bridge.run_task_with_id(&id2, &task_clone, &dir).await {
+            // ★ 用指定 agent 的版本（多 agent 支持）+ 带 ID（可取消）
+            match bridge
+                .run_task_as(&id2, &agent_for_task, &task_clone, &dir)
+                .await
+            {
                 Ok(summary) => {
                     let mut s = store.lock().await;
                     let _ = s.set_summary(&id2, &clean_for_speech(&summary));
@@ -771,6 +777,39 @@ pub fn clean_for_speech(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 多 agent（set_context 真正生效）──
+
+    #[test]
+    fn builtin_agents_include_dsh_and_codex() {
+        let agents = crate::config::default_agents();
+        assert!(agents.contains_key("dsh"), "必须有 dsh");
+        assert!(agents.contains_key("codex"), "必须有 codex");
+        assert!(
+            agents["dsh"].iter().any(|a| a == "acp"),
+            "dsh 要带 --profile acp: {:?}",
+            agents["dsh"]
+        );
+        assert!(
+            agents["codex"].iter().any(|a| a.contains("codex-acp")),
+            "codex 走 ACP 适配器: {:?}",
+            agents["codex"]
+        );
+    }
+
+    #[test]
+    fn bridge_has_agents() {
+        let bridge = crate::dsh::DshBridge::new(
+            vec!["dsh".into()],
+            "/tmp".into(),
+            std::time::Duration::from_secs(1),
+        );
+        let names = bridge.agent_names();
+        assert!(names.contains(&"dsh".to_string()));
+        assert!(names.contains(&"codex".to_string()));
+        assert!(bridge.command_for("dsh").is_some());
+        assert!(bridge.command_for("不存在的agent").is_none());
+    }
 
     // ── find_missing_paths（三层防御第 1 层）──
 

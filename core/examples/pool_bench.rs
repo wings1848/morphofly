@@ -29,7 +29,10 @@ async fn main() -> anyhow::Result<()> {
             Ok(text) => {
                 let ms = t.elapsed().as_millis();
                 timings.push(ms);
-                println!("第 {i} 次: {ms}ms  → {}", text.trim().chars().take(20).collect::<String>());
+                println!(
+                    "第 {i} 次: {ms}ms  → {}",
+                    text.trim().chars().take(20).collect::<String>()
+                );
             }
             Err(e) => {
                 println!("第 {i} 次失败: {e}");
