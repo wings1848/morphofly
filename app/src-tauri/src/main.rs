@@ -165,26 +165,15 @@ async fn orb_drag_begin(
         _ => (half, half),
     };
 
-    // 全局指针坐标的「单位」不一定等于物理像素（tao 在 X11 上按 GDK scale 换算），
-    // 真机实测窗口 scale_factor()=1.0 而 JS dpr=1.5，两者未必一致。
-    // 反推比例 k：此刻指针一定在球上 → 指针物理位置 = 窗口位置 + 抓取偏移；
-    //   k = 指针物理位置 / cursor_position() 的读数
-    // k≈1 表示读数就是物理像素，k≈1.5 表示读数是逻辑像素。
+    // 指针坐标系：`cursor_position()` 在 tao 里已经由 GDK 的 logical 换成
+    // physical（X11 上实测返回的就是物理像素，读数 2982 == 屏幕物理坐标），
+    // 所以这里固定 k=1，不再「反推比例」。
+    //
+    // 为什么不反推：拖动开始时指针可能已经离开按下点（第一个 pointermove 才触发
+    // 拖动），反推出来的只是噪声。2026-10-25 真机踩过：噪声正好落在 [0.5,2] 里
+    // 被当成 0.76，结果拖到底只走到一半。宁可固定 1，也不要随机偏差。
     let cursor = window.cursor_position().ok();
-    let mut k = 1.0;
-    if let Some(c) = cursor {
-        let px = f64::from(pos.x) + offset_phys.0;
-        let py = f64::from(pos.y) + offset_phys.1;
-        if c.x.abs() > 1.0 && c.y.abs() > 1.0 {
-            let kx = px / c.x;
-            let ky = py / c.y;
-            let guess = (kx + ky) / 2.0;
-            tracing::info!(kx, ky, guess, "拖动：全局指针坐标单位比例");
-            if (0.5..=2.0).contains(&guess) {
-                k = guess;
-            }
-        }
-    }
+    let k = 1.0;
     tracing::info!(
         win_x = pos.x,
         win_y = pos.y,
