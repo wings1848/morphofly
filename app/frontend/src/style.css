@@ -1,4 +1,9 @@
-/* 视觉铁律（docs/UI设计提示词.md）：单色蓝、深海、安静、无硬边 */
+/* 蝶梦悬浮球 · 窗口有两种形态：
+ *   收起：148×148，画布铺满，球居中（只有球可见）
+ *   展开：360×148（Rust 的 orb_tip 命令把窗口向左撑开，右边缘钉住），
+ *         画布必须钉在右下角，球在屏幕上不动，左边 212px 是字幕气泡。
+ * 视觉铁律（docs/UI设计提示词.md）：单色蓝、深海、安静、无硬边。
+ */
 :root {
   --deep: #05070d;
   --glow: #22d3ee;
@@ -13,53 +18,105 @@ html, body {
   user-select: none;
   -webkit-user-select: none;
 }
-body { display: grid; place-items: center; }
-canvas { display: block; cursor: pointer; }
 
+/* 画布钉在窗口右下角：窗口向左展开时球不跟着动（360 悬浮窗手感） */
+body {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-end;
+}
+
+canvas {
+  display: block;
+  flex: 0 0 auto;
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+}
+
+/* ── 字幕气泡 ──
+ * 收起态：窗口只有 148px，字幕做成球下缘的小胶囊（极少出现，正常会先展开窗口）。
+ * 展开态（body.tip-open，窗口 360×148）：气泡贴在球左边，深色玻璃 + 青边 + 小尾巴。
+ */
 #caption {
-  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
-  max-width: 88vw; padding: 6px 14px;
-  font-size: 13px; line-height: 1.5; letter-spacing: .02em;
-  color: rgba(224, 242, 254, .92);
-  background: rgba(5, 7, 13, .55);
-  border: 1px solid rgba(34, 211, 238, .18);
-  border-radius: 999px;
-  backdrop-filter: blur(8px);
-  opacity: 0; transition: opacity .28s ease;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  position: fixed;
+  z-index: 1;
+  opacity: 0;
   pointer-events: none;
+  transition: opacity .28s ease;
+  color: rgba(224, 242, 254, .94);
+  background: rgba(5, 7, 13, .72);
+  border: 1px solid rgba(34, 211, 238, .26);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, .06), 0 6px 18px rgba(0, 0, 0, .35);
+
+  /* 收起态：球下缘小胶囊 */
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 8px);
+  padding: 2px 8px;
+  font-size: 9px;
+  line-height: 1.35;
+  letter-spacing: .02em;
+  border-radius: 999px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #caption.show { opacity: 1; }
 
-#hint {
-  position: fixed; left: 50%; top: 10px; transform: translateX(-50%);
-  font-size: 11px; letter-spacing: .12em;
-  color: rgba(34, 211, 238, .38);
-  pointer-events: none;
-  transition: opacity .4s ease;
+/* 展开态：左边气泡，垂直居中对着球 */
+body.tip-open #caption {
+  left: 8px;
+  right: 156px;
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: none;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 12px;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* 气泡出现时轻轻滑入，不抢戏 */
+  transition: opacity .28s ease;
 }
-#hint.hide { opacity: 0; }
-/* 状态实时显示：截图自动化靠它核对 Rust→WebView 事件链是否通 */
-#hint.live { font-size: 13px; letter-spacing: .06em; color: rgba(34, 211, 238, .72); }
+/* 指向小球的小尾巴 */
+body.tip-open #caption::after {
+  content: '';
+  position: absolute;
+  right: -4px; top: 50%;
+  width: 8px; height: 8px;
+  transform: translateY(-50%) rotate(45deg);
+  background: rgba(5, 7, 13, .72);
+  border-right: 1px solid rgba(34, 211, 238, .26);
+  border-top: 1px solid rgba(34, 211, 238, .26);
+}
+
+/* 调试状态文字：只在 ?debug=1 时显示，正常使用不出现 */
+#hint {
+  position: fixed; left: 50%; top: 2px; transform: translateX(-50%);
+  font-size: 8px; letter-spacing: .06em; white-space: nowrap;
+  color: rgba(34, 211, 238, .62);
+  pointer-events: none;
+  opacity: 0; transition: opacity .3s ease;
+  z-index: 1;
+}
+#hint.show { opacity: 1; }
 
 /* ── 拖动区 ──
- *
- * 窗口无边框，用户要靠拖小球移动它。
- *
- * 实现：一个铺满窗口的透明 div 作为拖动区，canvas 叠在它上面。
- * 为什么不用 body 直接拖：canvas 在上面会吃掉点击，
- * 「点一下开始说话」就失效了。
- *
- * ⚠️ 之前这里只有注释没有实际元素（HTML 里没有 data-tauri-drag-region），
- * 拖动功能一直是坏的。2026-10-24 修。
+ * 一个铺满窗口的透明层，canvas 在它上面（点击优先给 canvas）。
+ * Tauri 的 data-tauri-drag-region 命中这里；canvas 上的拖动由 main.js
+ * 的「移动 >5px → startDragging()」负责。
  */
 #drag-region {
   position: fixed;
   inset: 0;
   z-index: 0;
-}
-/* 画布和文字不吃拖动，保证点击能到 canvas */
-canvas, #caption, #hint {
-  position: relative;
-  z-index: 1;
 }
