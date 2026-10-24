@@ -60,12 +60,16 @@ async fn main() -> anyhow::Result<()> {
     let mic = AudioCapture::file_source(&file)?;
     let mut mic_rx = mic.subscribe();
 
+    let reply_shared = Arc::new(Mutex::new(String::new()));
     let t0 = Instant::now();
     let mut wake = false;
     let mut tool_calls: Vec<String> = Vec::new();
     let mut reply = String::new();
     let mut error: Option<String> = None;
     let mut speaking_done = false;
+    // 工具调用后服务端会再来一轮 response，
+    // 不能在第一轮 ResponseDone 就退出 —— 那样看不到工具的执行结果。
+    let mut pending_tools = 0usize;
 
     // 推流任务
     //
@@ -119,9 +123,11 @@ async fn main() -> anyhow::Result<()> {
             RealtimeEvent::ToolCall { call_id, name, arguments } => {
                 eprintln!("[e2e] 工具调用 {name} 参数: {arguments}");
                 tool_calls.push(name.clone());
+                pending_tools += 1;
                 // 真的分发（和产品行为一致）
                 let d = dispatcher.clone();
                 let c2 = client.clone();
+                let reply_slot = reply_shared.clone();
                 let n = name.clone();
                 let a = arguments.clone();
                 let cid = call_id.clone();
@@ -130,11 +136,18 @@ async fn main() -> anyhow::Result<()> {
                         Ok(r) => r.speech,
                         Err(e) => format!("没办成：{e}"),
                     };
+                    // 把工具执行结果也记进 reply，这样判定能看到拦截效果
+                    reply_slot.lock().await.push_str(&speech);
                     let _ = c2.send_function_call_output(&cid, &speech);
                     let _ = c2.create_response();
                 });
             }
             RealtimeEvent::ResponseDone { .. } => {
+                if pending_tools > 0 {
+                    // 还有工具没回灌结果，等下一轮
+                    pending_tools -= 1;
+                    continue;
+                }
                 speaking_done = true;
                 break;
             }
@@ -150,6 +163,11 @@ async fn main() -> anyhow::Result<()> {
 
     // 判断是否要求确认（看回复里有没有「要我…吗」的模式）
     let asked_confirm = reply.contains("要我") || reply.trim_end().ends_with('吗');
+
+    let tool_reply = reply_shared.lock().await.clone();
+    if reply.trim().is_empty() {
+        reply = tool_reply;
+    }
 
     let out = serde_json::json!({
         "wake": wake,

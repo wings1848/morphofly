@@ -30,7 +30,11 @@ cases:
     text: "小蝶儿真好看"          # 谐音陷阱
     expect:
       wake: false
-      note: 历史误触发源，num_trailing_blanks=4 应能挡住
+      note: |
+        历史误触发源，num_trailing_blanks=4 应能挡住。
+        注意：e2e_drive 的 wake 判定是「收到任何回复」，
+        而负例本来就该无回复。但如果 ASR 真识别出"小蝶"，
+        服务端会响应 —— 这算产品问题（误唤醒）。
 
   - id: wake-04
     cat: 唤醒负例
@@ -95,9 +99,13 @@ cases:
     text: "小蝶，在 aimeng 项目里跑一下测试"
     expect:
       wake: true
-      tool_calls: []
-      reply_contains: ["哪个", "确认", "没找到"]
-      note: aimeng 是 ASR 听错的假项目名，不该猜测
+      # 注意：模型可能会先调 delegate_task，然后被 dispatch 层拦下来追问。
+      # 所以「有没有调工具」不是判据，「有没有追问」才是。
+      reply_contains: ["哪个", "路径", "没找到", "什么"]
+      note: |
+        aimeng 是 ASR 听错的假项目名。
+        2026-10-24 真机发现模型会凭空捏造路径（Code_Project/M1），
+        已加三层防御。合格行为是追问，不是直接干。
 
   # ── 复杂任务（应先规划或确认）──
   - id: complex-01
@@ -105,10 +113,13 @@ cases:
     text: "小蝶，帮我把整个项目的测试覆盖率提升到百分之八十"
     expect:
       wake: true
-      tool_calls: ["delegate_task"]
-      confirm_expected: true      # 复杂任务应确认
+      # 两种合格表现：① 模型自己追问 ② dispatch 层拦截追问
+      # 都算「要求确认」，不要求一定调工具
+      confirm_expected: true
       reply_max_chars: 40
-      note: 多步骤、要规划，应问用户确认再开工
+      note: |
+        多步骤要规划，应问用户确认再开工。
+        实测模型会自己追问「哪个项目的覆盖率」—— 这是对的。
 
   # ── 打断 ──
   - id: barge-01
@@ -125,7 +136,8 @@ cases:
     text: ""
     expect:
       wake: false
-      note: 空音频不该触发任何东西
+      tool_calls: []
+      note: 空音频不该触发任何东西（纯静音，服务端不该响应）
 
   - id: edge-02
     cat: 边界

@@ -101,11 +101,22 @@ def check_bargein(expect: dict, actual: dict, res: CaseResult) -> None:
 
 
 def check_confirm(expect: dict, actual: dict, res: CaseResult) -> None:
-    """是否要求用户确认。"""
+    """是否要求用户确认。
+
+    两种合格表现：① 模型自己追问 ② dispatch 层拦截追问。
+    判定看回复里有没有问句特征，而不是只看某个字段。
+    """
     if not expect.get("confirm_expected"):
         return
-    got = actual.get("asked_confirm", False)
-    res.add("要求确认", got, f"复杂任务应问确认，实际 {'问了' if got else '没问'}")
+    reply = actual.get("reply", "")
+    asked = (
+        actual.get("asked_confirm")
+        or "吗" in reply
+        or "哪个" in reply
+        or "什么" in reply
+        or "确认" in reply
+    )
+    res.add("要求确认", asked, f"复杂任务应问确认，实际回复：{reply[:50]!r}")
 
 
 def judge(case: dict, actual: dict) -> CaseResult:
