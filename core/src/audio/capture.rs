@@ -1024,9 +1024,11 @@ impl AudioCapture {
             sample_format,
             pipeline,
             self.tx.clone(),
-            self.stats.clone(),
-            self.last_error.clone(),
-            self.aec.clone(),
+            StreamShared {
+                stats: self.stats.clone(),
+                last_error: self.last_error.clone(),
+                aec: self.aec.clone(),
+            },
         )?;
 
         stream
@@ -1056,6 +1058,16 @@ impl Drop for AudioCapture {
     }
 }
 
+/// 采集回调共享的旁路状态（统计 / 错误 / AEC 句柄）。
+///
+/// 打成一个结构体是为了让 [`build_stream_typed`] 的参数数量可控
+/// （8 个参数会触发 `clippy::too_many_arguments`）。
+struct StreamShared {
+    stats: Arc<CaptureStats>,
+    last_error: Arc<Mutex<Option<String>>>,
+    aec: AecHandle,
+}
+
 /// 用具体的样本类型构建 cpal 输入流。
 fn build_stream_typed<T>(
     device: &cpal::Device,
@@ -1063,14 +1075,17 @@ fn build_stream_typed<T>(
     sample_format: SampleFormat,
     mut pipeline: CapturePipeline,
     tx: tokio::sync::broadcast::Sender<Vec<i16>>,
-    stats: Arc<CaptureStats>,
-    last_error: Arc<Mutex<Option<String>>>,
-    aec: AecHandle,
+    shared: StreamShared,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: cpal::SizedSample + Send + 'static + ToF32,
 {
     let _ = sample_format; // 由 T::FORMAT 决定，保留参数便于日志
+    let StreamShared {
+        stats,
+        last_error,
+        aec,
+    } = shared;
     let mut frames: Vec<Vec<i16>> = Vec::with_capacity(8);
     let err_stats = stats.clone();
     let err_cb = move |err: cpal::Error| {
@@ -1122,15 +1137,13 @@ fn build_input_stream(
     sample_format: SampleFormat,
     pipeline: CapturePipeline,
     tx: tokio::sync::broadcast::Sender<Vec<i16>>,
-    stats: Arc<CaptureStats>,
-    last_error: Arc<Mutex<Option<String>>>,
-    aec: AecHandle,
+    shared: StreamShared,
 ) -> Result<cpal::Stream, AudioError> {
     macro_rules! dispatch {
         ($($fmt:pat => $ty:ty),* $(,)?) => {
             match sample_format {
                 $($fmt => build_stream_typed::<$ty>(
-                    device, config, sample_format, pipeline, tx, stats, last_error, aec,
+                    device, config, sample_format, pipeline, tx, shared,
                 ),)*
                 other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
             }

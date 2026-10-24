@@ -349,7 +349,11 @@ impl AecProcessor {
             return;
         }
         let mut inner = lock(&self.inner);
-        for block in samples.chunks_exact_mut(AEC_SUBFRAME_SAMPLES) {
+        // as_chunks_mut 让「块大小是 160」在类型里就成立：拿到的每个 block 都是
+        // `&mut [f32; 160]`，下游 copy_from_slice 不可能长度不匹配。
+        // `.0` 是整块部分；`.1` 是末尾不足 160 的尾巴，按文档原样放过。
+        let (blocks, _tail) = samples.as_chunks_mut::<AEC_SUBFRAME_SAMPLES>();
+        for block in blocks {
             inner.process_capture_f32_block(block);
         }
     }
@@ -362,7 +366,8 @@ impl AecProcessor {
             return;
         }
         let mut inner = lock(&self.inner);
-        for block in samples.chunks_exact_mut(AEC_SUBFRAME_SAMPLES) {
+        let (blocks, _tail) = samples.as_chunks_mut::<AEC_SUBFRAME_SAMPLES>();
+        for block in blocks {
             inner.process_capture_i16_block(block);
         }
     }
