@@ -56,6 +56,14 @@ pub struct Task {
     pub summary: String,
     #[serde(default)]
     pub agent_id: String,
+    /// 结果**已经念给用户听过**了吗？
+    ///
+    /// 必须落盘，不能只放在内存里：2026-10-24 真机实测，App 一重启
+    /// 就把 4 个历史任务的结果又从头念了一遍（`reported` 集合随进程一起没了）。
+    /// 老的任务表里没有这个字段，`serde(default)` 读成 `false`，
+    /// 于是升级后会补报一次、之后不再重复。
+    #[serde(default)]
+    pub reported: bool,
     pub created_at_ms: u128,
     pub updated_at_ms: u128,
 }
@@ -178,6 +186,7 @@ impl TaskStore {
             status: TaskStatus::Pending,
             summary: String::new(),
             agent_id: String::new(),
+            reported: false,
             created_at_ms: now_ms(),
             updated_at_ms: now_ms(),
         };
@@ -243,6 +252,31 @@ impl TaskStore {
         self.save()
     }
 
+    /// 标记「这个任务的结果已经念给用户听过了」。
+    ///
+    /// 必须落盘（`save()`），否则 App 一重启 `reported` 就全丢，历史任务会被再念一遍。
+    pub fn mark_reported(&mut self, id: &str) -> Result<()> {
+        let t = self
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .with_context(|| format!("找不到任务 {id}"))?;
+        if t.reported {
+            return Ok(());
+        }
+        t.reported = true;
+        t.updated_at_ms = now_ms();
+        self.save()
+    }
+
+    /// 还没念过、且已经结束的任务（主动汇报的输入）。
+    pub fn unreported_finished(&self) -> Vec<&Task> {
+        self.tasks
+            .iter()
+            .filter(|t| t.status.is_terminal() && !t.reported)
+            .collect()
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -281,6 +315,45 @@ mod tests {
         let t2 = s2.get(&t.id).unwrap();
         assert_eq!(t2.status, TaskStatus::Done);
         assert_eq!(t2.summary, "已经补好了");
+    }
+
+    #[test]
+    fn reported_survives_reopen() {
+        // 回归测试：App 重启后不能把历史任务的结果再念一遍。
+        // 之前的实现用一个内存 HashSet 记账，进程一重启就空 → 4 个旧任务被重念 4 遍。
+        let mut s = tmp_store("reported");
+        let t = s.create("看看 README", "/tmp").unwrap();
+        s.set_status(&t.id, TaskStatus::Done).unwrap();
+        s.set_summary(&t.id, "第一行是 MorphoFly").unwrap();
+        assert_eq!(s.unreported_finished().len(), 1, "还没念过，应该在待汇报里");
+
+        s.mark_reported(&t.id).unwrap();
+        assert!(s.unreported_finished().is_empty(), "念过之后不该再进待汇报");
+
+        let path = s.path().to_path_buf();
+        drop(s);
+        let s2 = TaskStore::open(path).unwrap();
+        assert!(
+            s2.unreported_finished().is_empty(),
+            "重启后也不能重念（reported 必须落盘）"
+        );
+    }
+
+    #[test]
+    fn old_task_json_without_reported_field_loads_as_false() {
+        // 老版本的任务表里没有 reported 字段，读进来要当 false（升级后补报一次）
+        let p =
+            std::env::temp_dir().join(format!("diemeng-test-oldjson-{}.json", std::process::id()));
+        std::fs::write(
+            &p,
+            r#"{"tasks":[{"id":"task_1","goal":"g","dir":"/tmp","status":"done",
+                 "summary":"s","created_at_ms":1,"updated_at_ms":2}],"seq":1}"#,
+        )
+        .unwrap();
+        let s = TaskStore::open(p).unwrap();
+        assert_eq!(s.all().len(), 1);
+        assert!(!s.all()[0].reported);
+        assert_eq!(s.unreported_finished().len(), 1);
     }
 
     #[test]

@@ -1,0 +1,81 @@
+# 悬浮小球窗口（置顶 / 右下角 / 360 风格）
+
+**最后更新**：2026-10-24
+
+## 一句话
+
+把蝶梦从「360×360 窗口里一个暗淡小光点」做成「紧凑的桌面悬浮小球：默认置顶、启动就在右下角」。
+
+## 三个硬限制（都实测过，别绕）
+
+### 1. Wayland 下既不能定位也不能置顶
+
+Wayland 协议不给客户端全局坐标，所以：
+- `set_position`（贴右下角）被合成器忽略
+- `alwaysOnTop` 不产生 `_NET_WM_STATE_ABOVE`
+
+实测（改之前），窗口是 `client_type: "wayland"`，位置停在屏幕正中 `(844, 374)`，
+而启动日志还写着「小球已贴边 x=3344 y=1456」——**日志说成功，实际没动**。
+
+### 2. 解法：在 Wayland 会话里强制 GTK 走 XWayland
+
+`main.rs` 里的 `force_x11_backend()`：只要同时有 `WAYLAND_DISPLAY` 和
+`DISPLAY`（说明有 XWayland），就在 GTK 初始化前设 `GDK_BACKEND=x11`。
+
+实测改之后：
+```
+_NET_WM_STATE(ATOM) = _NET_WM_STATE_ABOVE, _NET_WM_STATE_STAYS_ON_TOP,
+                      _NET_WM_STATE_SKIP_TASKBAR, _NET_WM_STATE_SKIP_PAGER
+```
+位置也对上了：`小球已贴边 x=2696 y=1304`（3072−360−16，1728−360−64）。
+
+想不动它就设环境变量 `MORPHOFLY_NO_X11=1` 或自己给 `GDK_BACKEND`。
+
+### 3. 窗口透明区照样吃鼠标事件
+
+这是「小球不能做大」的真正原因：窗口是矩形，透明的地方点不到下面的窗口。
+之前 360×360 的窗口、球只有 122px，等于在桌面盖了一张 360×360 的隐形膜。
+
+现在窗口 **148×148**，球直径约 84px（占窗口 ~57%）。
+
+## 字幕/气泡怎么放
+
+小球窗口放不下字。做法是**按需把窗口向左撑开**（`orb_tip` 命令）：
+
+- 收起：148×148
+- 展开：360×148，同时 `x -= 212`，**右边缘钉住** → 屏幕上看球没动，左边多出一块气泡
+- 前端把画布钉在窗口右下角（`align-items:flex-end; justify-content:flex-end`），
+  这样撑开/收起时球视觉上不跳
+
+为什么不另开一个窗口：多一个 WebView 大约多 30–50MB 内存，而内存是本项目的老大难（PSS 371MB）。
+
+## 验收怎么跑
+
+```bash
+tools/verify_float_ui.sh all     # 位置/置顶/尺寸/6状态截图/点击
+```
+
+逐条说明见 `runs/20261024-2208-ui-ux-360/acceptance.md`。
+
+## 视觉怎么快速迭代（不用重新编译）
+
+前端是原生 ES module，直接用无头 Chromium 渲染：
+
+```bash
+ssh wings@100.107.9.102 'cd app/frontend && nohup python3 -m http.server 8899 &'
+ssh wings@100.107.9.102 'chromium --headless=new --disable-gpu --no-sandbox \
+  --window-size=148,148 --virtual-time-budget=1500 \
+  --screenshot=/tmp/ui-S2.png "http://127.0.0.1:8899/index.html?state=S2&demo=1"'
+```
+
+`?state=S2` 强制状态、`?demo=1` 喂假频谱数据，都是给截图用的。
+**必须走 http**：`file://` 下 ES module 会被 CORS 拦掉。
+
+## 踩过的坑
+
+| 坑 | 事实 |
+|---|---|
+| 用 `ffmpeg -f x11grab` 抓桌面看小球 | 抓不到：Xwayland 客户端被合成器拿走了，整张图只有鼠标指针 |
+| 用 computer-use MCP 的 screenshot 看图 | 图片回不到本机（网关只转发文本），CLI 也只打印元数据不落盘 |
+| 以为日志「已贴边」就是贴上了 | 坐标算的是物理像素，窗口根本没动（Wayland 下 set_position 无效） |
+| 直接改前端就重新编译看效果 | 一次 release 编译 6 分钟；用无头 Chromium 是秒级 |

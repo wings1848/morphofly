@@ -12,15 +12,21 @@
       {
         "label": "orb",
         "title": "蝶梦",
-        "width": 360,
-        "height": 360,
-        "resizable": true,
+        "width": 148,
+        "height": 148,
+        "resizable": false,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "center": true,
-        "shadow": false
+        "center": false,
+        "shadow": false,
+        "minWidth": 148,
+        "minHeight": 148,
+        "maxWidth": 480,
+        "maxHeight": 148,
+        "visible": false,
+        "focus": false
       }
     ],
     "security": {
