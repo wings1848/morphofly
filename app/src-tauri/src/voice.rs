@@ -421,11 +421,13 @@ impl VoiceSession {
         });
 
         // 主动汇报：轮询任务表，任务完成就主动开口（验收 F7）
+        //
+        // ⚠️ 2026-10-24 真机踩坑：原来用内存里的 HashSet 记「哪些念过了」，
+        // App 一重启就全丢 —— 实测重启后把 4 个历史任务的结果又从头念了 4 遍。
+        // 现在改成任务表里的 `reported` 字段，跟着 JSON 一起落盘。
         let store_rep = store.clone();
         let client_rep = client.clone();
         let stop_rep = stop.clone();
-        let reported: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
-            Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
         let report_task = tokio::spawn(async move {
             loop {
                 if stop_rep.load(Ordering::Relaxed) {
@@ -434,10 +436,8 @@ impl VoiceSession {
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 let pending = {
                     let s = store_rep.lock().await;
-                    let already = reported.lock().await;
-                    s.all()
+                    s.unreported_finished()
                         .iter()
-                        .filter(|t| t.status.is_terminal() && !already.contains(&t.id))
                         .map(|t| {
                             (
                                 t.id.clone(),
@@ -448,7 +448,14 @@ impl VoiceSession {
                         .collect::<Vec<_>>()
                 };
                 for (id, spoken, summary) in pending {
-                    reported.lock().await.insert(id.clone());
+                    // 先记账再开口：宁可漏报一次，也不能重复报
+                    {
+                        let mut s = store_rep.lock().await;
+                        if let Err(e) = s.mark_reported(&id) {
+                            tracing::warn!(task = %id, error = %e, "标记已汇报失败，跳过");
+                            continue;
+                        }
+                    }
                     let line = format!(
                         "{spoken}：{}",
                         morphofly_core::dispatch::clean_for_speech(&summary)

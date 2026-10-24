@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod correction;
 pub mod dispatch;
 pub mod dsh;
 pub mod intent;

@@ -330,6 +330,53 @@ fn demo_states_placeholder() -> bool {
 /// 为什么是右下角：任务栏通常在底部，右下角是最不干扰主工作区的位置。
 fn place_orb_bottom_right(win: &WebviewWindow) {
     snap_to_edge(win, SnapMode::BottomRight);
+    // 置顶：配置里已经写了 alwaysOnTop，这里再设一次做兜底 ——
+    // 实测 XWayland 下配置项有时要等窗口映射后补一次才稳。
+    if let Err(e) = win.set_always_on_top(true) {
+        tracing::warn!(error = %e, "设置置顶失败");
+    } else {
+        tracing::info!("小球已置顶（always on top）");
+    }
+}
+
+/// 展开/收起气泡（写字幕用）。
+///
+/// 小球窗口只有 `ORB_SIZE` 那么小，放不下字幕。展开时把窗口向左撑到
+/// `TIP_WIDTH` 宽、同时 x 减小同样的量 —— 屏幕上看球没动，左边多出一块
+/// 半透明气泡。收起时原样缩回。
+///
+/// 为什么不用第二个窗口：多一个 WebView 大约多 30–50MB 内存，
+/// 而内存本来就是本项目的老大难（PSS 371MB）。
+#[tauri::command]
+async fn orb_tip(window: WebviewWindow, show: bool) -> Result<(), String> {
+    let Ok(size) = window.outer_size() else {
+        return Err("拿不到窗口尺寸".into());
+    };
+    let Ok(pos) = window.outer_position() else {
+        return Err("拿不到窗口位置".into());
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let small = (f64::from(ORB_SIZE) * scale).round() as u32;
+    let wide = (f64::from(TIP_WIDTH) * scale).round() as u32;
+    if small == 0 {
+        return Err("窗口尺寸异常".into());
+    }
+    // 已经是目标状态就别动（避免每帧抖动）
+    let target_w = if show { wide } else { small };
+    if size.width == target_w {
+        return Ok(());
+    }
+    let target_h = small.max(size.height);
+    let dx = i32::try_from(size.width).unwrap_or(0) - i32::try_from(target_w).unwrap_or(0);
+    let new_x = pos.x + dx; // 右边缘钉住不动
+    window
+        .set_size(tauri::PhysicalSize::new(target_w, target_h))
+        .map_err(|e| format!("改窗口宽失败: {e}"))?;
+    window
+        .set_position(tauri::PhysicalPosition::new(new_x, pos.y))
+        .map_err(|e| format!("移动窗口失败: {e}"))?;
+    tracing::debug!(show, target_w, new_x, "气泡窗口调整");
+    Ok(())
 }
 
 /// 贴边方式
@@ -494,7 +541,44 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 小球窗口的基准尺寸（一个边长，正方形）。见 `docs/v2/float-window.md`。
+///
+/// 为什么要小：窗口的**透明区域照样吃鼠标事件**。
+/// 之前是 360×360 而球只占 122px，等于在桌面上盖了一张 360×360 的隐形膜，
+/// 挡住下面的窗口点不到。360 悬浮窗那种紧凑小球才是对的。
+const ORB_SIZE: u32 = 148;
+/// 显示气泡（字幕）时窗口向右扩出去的宽度。
+///
+/// 展开时窗口向左长（x 减小），球本身在屏幕上**位置不变** ——
+/// 所以前端必须把画布钉在窗口右下角，这里只负责把窗口撑开。
+const TIP_WIDTH: u32 = 360;
+
+/// 在 Wayland 会话里强制 GTK 走 XWayland。
+///
+/// 为什么必须：Wayland 协议不给客户端全局坐标，所以
+/// `set_position`（贴右下角）和 `alwaysOnTop`（置顶）在纯 Wayland 下**无效** —
+/// 实测窗口停在屏幕正中、`_NET_WM_STATE` 查不到。
+/// 走 XWayland 后 `_NET_WM_STATE_ABOVE` 真的出现，定位也生效。
+///
+/// 安全条件：只有同时存在 `WAYLAND_DISPLAY` 和 `DISPLAY`（说明有 XWayland）才切，
+/// 纯 Wayland 无 XWayland 的机器保持原样（至少能启动）。
+/// 想手动覆盖就设 `GDK_BACKEND` 或 `MORPHOFLY_NO_X11=1`。
+fn force_x11_backend() {
+    if std::env::var_os("GDK_BACKEND").is_some() || std::env::var_os("MORPHOFLY_NO_X11").is_some() {
+        return;
+    }
+    let has_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let has_x11 = std::env::var_os("DISPLAY").is_some();
+    if has_wayland && has_x11 {
+        std::env::set_var("GDK_BACKEND", "x11");
+        tracing::info!("Wayland 会话：强制 GDK_BACKEND=x11（否则无法定位/置顶）");
+    }
+}
+
 fn main() {
+    // ★ 必须最先执行：GTK 在第一次连显示服务器时就定后端，晚了没用。
+    force_x11_backend();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -574,6 +658,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             orb_click,
             orb_state,
+            orb_tip,
             set_caption,
             poke,
             snap_orb
@@ -607,13 +692,17 @@ fn main() {
             }
 
             if let Some(win) = app.get_webview_window("orb") {
-                let _ = win.show();
-                // ★ 贴到右下角（用户要求「默认显示在桌面合适位置」）
-                // 稍等一帧让窗口完成创建，否则拿到的尺寸是 0
+                // ★ 先不显示，等贴好边再亮出来 —— 否则会先在屏幕正中闪一下再跳走
+                // （配置里 visible:false，这里负责显示）
                 let w2 = win.clone();
+                // ★ 贴到右下角（用户要求「默认启动在屏幕右下角」）
+                // 稍等一帧让窗口完成创建，否则拿到的尺寸是 0
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     place_orb_bottom_right(&w2);
+                    if let Err(e) = w2.show() {
+                        tracing::warn!(error = %e, "显示小球失败");
+                    }
                 });
             }
             Ok(())
