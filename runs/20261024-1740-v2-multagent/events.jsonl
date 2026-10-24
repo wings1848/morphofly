@@ -1,0 +1,1 @@
+{"ts": "2026-10-24T17:38:42+08:00", "seq": 1, "stage": "S0", "actor": "agent", "type": "run_started", "goal": "V2：多 agent 支持 + AEC + UI/UX 打磨 + 修复 5 个现存缺陷", "tier": "standard", "project_type": "desktop-app", "human_mode": "inspect", "status": "running", "attempts": {"S0": 1}}
