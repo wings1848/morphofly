@@ -5,12 +5,60 @@
 
 ## [Unreleased]
 
+### 新增（V2）
+- **多 agent 支持**：`set_context` 第 5 个工具，可切换 agent / 项目 / 模型
+  - agent 表可配置，内置 dsh 和 codex（codex 走 `@zed-industries/codex-acp` 适配器）
+  - 项目别名表 `~/.diemeng/projects.toml`，中文别名映射到真实路径
+  - 模型切换走 ACP `session/set_config_option`（值必须是 JSON 数组格式）
+- **回声消除（AEC）**：接入 sonora（纯 Rust AEC3 移植）
+  - 合成信号抑制 34.5dB，双讲人声保留 43–55%
+  - 帧长不变（320 样本内部拆 2×160 子帧），零额外延迟
+  - 可运行中开关
+- **进程复用**：任务结束后保留已握手的 DSH 进程
+  - 派发耗时 3698ms → **1102ms**（省 2.6 秒）
+- **系统托盘**：左键显示/隐藏，右键菜单（含切换 agent）
+- **小球自动贴边**：启动贴右下角，拖动松手按位置贴最近边
+- **意图确认**：复杂任务先问「要我…吗」，简单任务直接派
+- **Computer Use 接入**：`computer-use-linux` 通过 SSH 桥接到有桌面的机器
+
+### 修复（V2，10 个 bug，7 个是「假通过」）
+- **模型编造结果**：说「目录有 datasets/models/...」但那些目录不存在
+  → 重写提示词 + 代码兜底纠正
+- **模型捏造路径**：凭空生成 `/home/wings/Code_Project/M1`
+  → 三层防御，校验 task 里所有绝对路径必须存在
+- **模型假装干活**：只说「好，查着呢」但不调工具
+  → 检测到就注入系统提醒重做（只纠正一次防循环）
+- **cancel_task 不真停 DSH**：只改本地 TaskStatus
+  → oneshot 信号 + RAII 清理，真的杀进程
+- **append_requirement 不发给运行中 DSH**：只拼本地 goal
+  → 按状态区分，Running 时如实说「要停了重来吗」
+- **set_context(model) 只改字段**：bridge 里零 model 代码
+  → 真的调 ACP API，失败时如实告知
+- **set_context(agent) 只改字段**：spawn 用固定命令
+  → 按 agent 选命令 + 进程池按 agent 隔离
+- **ACP 不按 sessionId 过滤**：多会话会串台
+  → 用 await 而非 try_lock
+- **打断不停云端生成**：只 stop_now() 不 cancel_response()
+  → 两处都补上
+- **每任务 spawn 一个进程**：白等 2.8 秒
+  → 常驻进程复用
+
+### 修复（音频）
+- **cpal 优先用 PulseAudio 后端**：绕开 ALSA→PipeWire 录音流桥接 bug
+  （`PulseAudio: Unable to create stream: No such entity`）
+
+### 变更
+- 不变量 I1 从「恰好 4 个工具」改成「名字白名单 + 禁用名黑名单」
+  - 白名单保证不会多，黑名单保证 bash/read_file 等永久禁入
+- `docs/实测数据.md` 的内存口径改为 PSS（RSS 会重复计算共享库）
+
 ### 待处理
-- **内存 488MB** 超标（要求 <150MB）—— WebKitGTK 固有开销，
-  要么接受（改标准到 600MB），要么重写 UI 层为原生渲染（3–5 天）
-- 真人完整验收（需要用户戴耳机跑一遍）
-- 回声消除（AEC），当前外放会自我打断
-- ARM 平台支持（wings-gpd 是 x86_64，但其他掌机可能是 ARM）
+- **内存 371MB (PSS)** 超标（要求 <150MB）—— 需用户拍板：
+  接受现状，还是走原生重写（3–9 天，视觉会降级）
+- **语音切换 agent 不可用** —— 模型不调 set_context 工具，
+  且协议没开用户语音转写所以宿主也拿不到原话。暂用托盘菜单替代
+- **AEC 真机听觉验证** —— 需要真实人声（喊「停」能否打断）
+- ARM 平台支持
 
 ## [0.1.0] - 2026-10-24
 
