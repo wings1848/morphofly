@@ -304,6 +304,30 @@ async fn handle_message(
     let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
+    // ★ 修缺陷 #3：按 sessionId 过滤事件。
+    //
+    // StepFun 的 session/update 是**广播**给所有会话的（实测：
+    // 同一进程开两个 session，A 能看到 B 的 update）。
+    // 之前这里完全不读 params.sessionId，所有事件全进同一个通道 ——
+    // 多 agent / 多任务并发时必然串台。**这是多 agent 功能的前置必修项。**
+    //
+    // 规则：如果消息带了 sessionId 且我们知道自己期望哪个 session，
+    // 不匹配就丢弃。没带 sessionId 的消息（如全局错误）照常处理。
+    if method == "session/update" {
+        // 用 await 而不是 try_lock：try_lock 在锁竞争时会拿不到，
+        // 那样就退化成「不过滤」——正好在多会话并发时失效，是最该过滤的时候。
+        let msg_sid = params.get("sessionId").and_then(|v| v.as_str());
+        if let Some(ms) = msg_sid {
+            let my_sid = session_id.lock().await.clone();
+            if let Some(me) = my_sid {
+                if ms != me {
+                    tracing::trace!(got = %ms, want = %me, "丢弃其他会话的事件");
+                    return;
+                }
+            }
+        }
+    }
+
     match method {
         "session/update" => {
             let update = params.get("update").cloned().unwrap_or(Value::Null);

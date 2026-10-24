@@ -5,7 +5,7 @@
 //! 那些能力全在 DSH 那边。
 
 use crate::dsh::DshBridge;
-use crate::intent::{self, Complexity};
+use crate::intent;
 use crate::tasks::{spoken_summary, TaskStatus, TaskStore};
 use crate::tools::{self, APPEND_REQUIREMENT, CANCEL_TASK, DELEGATE_TASK, QUERY_PROGRESS};
 use anyhow::{Context, Result};
@@ -343,6 +343,11 @@ fn suggest_dir(bad: &str, default_dir: &str) -> String {
 }
 
 /// 把长任务号缩短成好念的形式
+/// 从任务 ID 取短号（如 `task_20261024_0120_001` → `001`）。
+///
+/// ⚠️ 现在**生产代码不再用它**（用户要求极简，任务号对用户没意义），
+/// 但保留是因为：调试日志、以及未来可能需要在界面上显示短号。
+#[allow(dead_code)]
 fn short_id(id: &str) -> String {
     id.rsplit('_').next().unwrap_or(id).to_string()
 }
