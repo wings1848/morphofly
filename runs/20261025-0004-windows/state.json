@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "run_id": "20261025-0004-windows",
+  "created_at": "2026-10-25T00:04:35+08:00",
+  "goal": "Windows 平台兼容：能编、能打包、拆掉必然挂的地雷",
+  "tier": "light",
+  "project_type": "generic",
+  "human_mode": "inspect",
+  "stage": "S4",
+  "status": "running",
+  "owner": {
+    "agent": "agent",
+    "session_id": "",
+    "claimed_at": "2026-10-25T00:04:35+08:00",
+    "lease_until": "2026-10-25T00:04:35+08:00"
+  },
+  "attempts": {
+    "S0": 1,
+    "S1": 1,
+    "S2": 1,
+    "S4": 1
+  },
+  "loops": {
+    "used": 0,
+    "max": 3,
+    "last_fail_stage": null
+  },
+  "gates": {
+    "G0": {
+      "status": "pass",
+      "evidence": "runs/20261025-0004-windows/acceptance.md",
+      "sha256": "9da051c1f98ad4b48b11f2a87816c644fff1491f463779ff0946568332f9e4d6",
+      "at": "2026-10-25T00:04:42+08:00",
+      "note": "目标/范围/做不到的部分都写明"
+    },
+    "G1": {
+      "status": "pass",
+      "evidence": "runs/20261025-0004-windows/acceptance.md",
+      "sha256": "9da051c1f98ad4b48b11f2a87816c644fff1491f463779ff0946568332f9e4d6",
+      "at": "2026-10-25T00:04:42+08:00",
+      "note": "W1-W8 都有判定命令；W9 明确写了做不到"
+    },
+    "G2": {
+      "status": "pass",
+      "evidence": "docs/v2/windows.md",
+      "sha256": "9f68b3c058e32253a9cd42f7be55435fca396354983aa410f4693000cc7a2222",
+      "at": "2026-10-25T00:04:42+08:00",
+      "note": "三个硬伤都给了事实与修法；W9 风险清单单独列"
+    }
+  },
+  "human": {},
+  "budget": {
+    "minutes_cap": 120,
+    "minutes_used": 0,
+    "tokens": 0,
+    "tokens_cap": 50000,
+    "fanout_cap": 8,
+    "fanout_used": 0
+  },
+  "blocked_by": [],
+  "next_action": "S4：跑 G4 并落证据（devflow gate G4 pass --evidence <文件>）",
+  "artifacts": {
+    "progress": "progress.md"
+  }
+}
