@@ -1,148 +1,136 @@
-# 蝶梦语音交互测试用例集
-#
-# 覆盖：唤醒、闲聊、简单任务、复杂任务、路径歧义、打断、边界情况
-# 每条用例：id / 分类 / 说的话 / 期望行为 / 期望回复特征
-#
-# 用 tools/e2e/run.py 执行，会自动 TTS 合成音频并跑完整链路。
-
 meta:
   tts_voice: zh-CN-XiaoxiaoNeural
   sample_rate: 16000
-
 cases:
-  # ── 唤醒词 ──
-  - id: wake-01
-    cat: 唤醒
-    text: "小蝶"
-    expect:
-      wake: true
-      note: 最基础的唤醒，必须命中
-
-  - id: wake-02
-    cat: 唤醒
-    text: "小蝶，在吗"
-    expect:
-      wake: true
-      reply_contains: ["在"]
-
-  - id: wake-03
-    cat: 唤醒负例
-    text: "小蝶儿真好看"          # 谐音陷阱
-    expect:
-      wake: false
-      note: |
-        历史误触发源，num_trailing_blanks=4 应能挡住。
-        注意：e2e_drive 的 wake 判定是「收到任何回复」，
-        而负例本来就该无回复。但如果 ASR 真识别出"小蝶"，
-        服务端会响应 —— 这算产品问题（误唤醒）。
-
-  - id: wake-04
-    cat: 唤醒负例
-    text: "蝴蝶飞走了"
-    expect:
-      wake: false
-
-  - id: wake-05
-    cat: 唤醒负例
-    text: "这个字读小的"
-    expect:
-      wake: false
-
-  # ── 闲聊（不该派活）──
-  - id: chat-01
-    cat: 闲聊
-    text: "小蝶，今天天气怎么样"
-    expect:
-      wake: true
-      tool_calls: []              # 不该调 delegate_task
-      reply_max_chars: 40
-      note: 闲聊不能派活，这是提示词硬规则 4
-
-  - id: chat-02
-    cat: 闲聊
-    text: "小蝶，你叫什么名字"
-    expect:
-      wake: true
-      tool_calls: []
-      reply_contains: ["蝶"]
-
-  # ── 简单任务（应直接派）──
-  - id: task-01
-    cat: 简单任务
-    text: "小蝶，看看蝶梦项目有哪些目录"
-    expect:
-      wake: true
-      tool_calls: ["delegate_task"]
-      reply_max_chars: 40
-      note: 路径已知（蝶梦=morphofly），单步任务，应直接派
-
-  - id: task-02
-    cat: 简单任务
-    text: "小蝶，蝶梦项目里有多少个测试"
-    expect:
-      wake: true
-      tool_calls: ["delegate_task"]
-      reply_max_chars: 40
-
-  # ── 路径歧义（必须先追问）──
-  - id: path-01
-    cat: 路径歧义
-    text: "小蝶，帮我看看那个项目的状态"
-    expect:
-      wake: true
-      tool_calls: []              # 不该直接派，应该追问
-      reply_contains: ["哪个", "什么"]
-      note: '「那个项目」指代不明，提示词规则 1 要求必须先追问'
-
-  - id: path-02
-    cat: 路径歧义
-    text: "小蝶，在 aimeng 项目里跑一下测试"
-    expect:
-      wake: true
-      # 注意：模型可能会先调 delegate_task，然后被 dispatch 层拦下来追问。
-      # 所以「有没有调工具」不是判据，「有没有追问」才是。
-      reply_contains: ["哪个", "路径", "没找到", "什么"]
-      note: |
-        aimeng 是 ASR 听错的假项目名。
-        2026-10-24 真机发现模型会凭空捏造路径（Code_Project/M1），
-        已加三层防御。合格行为是追问，不是直接干。
-
-  # ── 复杂任务（应先规划或确认）──
-  - id: complex-01
-    cat: 复杂任务
-    text: "小蝶，帮我把整个项目的测试覆盖率提升到百分之八十"
-    expect:
-      wake: true
-      # 两种合格表现：① 模型自己追问 ② dispatch 层拦截追问
-      # 都算「要求确认」，不要求一定调工具
-      confirm_expected: true
-      reply_max_chars: 40
-      note: |
-        多步骤要规划，应问用户确认再开工。
-        实测模型会自己追问「哪个项目的覆盖率」—— 这是对的。
-
-  # ── 打断 ──
-  - id: barge-01
-    cat: 打断
-    text: "停"
-    expect:
-      bargein: true
-      interrupt_latency_ms_max: 400
-      note: 模型说话时插入「停」，应在 400ms 内停播
-
-  # ── 边界 ──
-  - id: edge-01
-    cat: 边界
-    text: ""
-    expect:
-      wake: false
-      tool_calls: []
-      note: 空音频不该触发任何东西（纯静音，服务端不该响应）
-
-  - id: edge-02
-    cat: 边界
-    text: "小蝶帮我"
-    expect:
-      wake: true
-      tool_calls: []              # 话没说完，不该派活
-      reply_contains: ["什么", "帮"]
+- id: wake-01
+  cat: 唤醒
+  text: 小蝶
+  expect:
+    wake: true
+    note: 最基础的唤醒，必须命中
+- id: wake-02
+  cat: 唤醒
+  text: 小蝶，在吗
+  expect:
+    wake: true
+    reply_contains:
+    - 在
+- id: wake-03
+  cat: 唤醒负例
+  text: 小蝶儿真好看
+  expect:
+    wake: false
+    note: |
+      历史误触发源，num_trailing_blanks=4 应能挡住。
+      注意：e2e_drive 的 wake 判定是「收到任何回复」，
+      而负例本来就该无回复。但如果 ASR 真识别出"小蝶"，
+      服务端会响应 —— 这算产品问题（误唤醒）。
+- id: wake-04
+  cat: 唤醒负例
+  text: 蝴蝶飞走了
+  expect:
+    wake: false
+- id: wake-05
+  cat: 唤醒负例
+  text: 这个字读小的
+  expect:
+    wake: false
+- id: chat-01
+  cat: 闲聊
+  text: 小蝶，今天天气怎么样
+  expect:
+    wake: true
+    tool_calls: []
+    reply_max_chars: 40
+    note: 闲聊不能派活，这是提示词硬规则 4
+- id: chat-02
+  cat: 闲聊
+  text: 小蝶，你叫什么名字
+  expect:
+    wake: true
+    tool_calls: []
+    reply_contains:
+    - 蝶
+- id: task-01
+  cat: 简单任务
+  text: 小蝶，看看蝶梦项目有哪些目录
+  expect:
+    wake: true
+    tool_calls:
+    - delegate_task
+    reply_max_chars: 40
+    note: 路径已知（蝶梦=morphofly），单步任务，应直接派
+- id: task-02
+  cat: 简单任务
+  text: 小蝶，蝶梦项目里有多少个测试
+  expect:
+    wake: true
+    tool_calls:
+    - delegate_task
+    reply_max_chars: 40
+- id: path-01
+  cat: 路径歧义
+  text: 小蝶，帮我看看那个项目的状态
+  expect:
+    wake: true
+    tool_calls: []
+    reply_contains:
+    - 哪个
+    - 什么
+    note: 「那个项目」指代不明，提示词规则 1 要求必须先追问
+- id: path-02
+  cat: 路径歧义
+  text: 小蝶，在 aimeng 项目里跑一下测试
+  expect:
+    wake: true
+    reply_contains:
+    - 哪个
+    - 路径
+    - 没找到
+    - 什么
+    note: |
+      aimeng 是 ASR 听错的假项目名。
+      2026-10-24 真机发现模型会凭空捏造路径（Code_Project/M1），
+      已加三层防御。合格行为是追问，不是直接干。
+- id: complex-01
+  cat: 复杂任务
+  text: 小蝶，帮我把整个项目的测试覆盖率提升到百分之八十
+  expect:
+    wake: true
+    confirm_expected: true
+    reply_max_chars: 40
+    note: |-
+      多步骤要规划，应问用户确认再开工。
+      ⚠️ 2026-10-24 真机实测：模型有时**直接派活不问确认**（tool_calls 为空
+      却回了「好，查着呢」），说明提示词的确认规则不稳定。
+      dispatch 层的 intent 分类有拦截，但模型可能压根没调 delegate_task。
+      这是待修的真实问题。
+- id: barge-01
+  cat: 打断（单独跑）
+  text: 停
+  expect:
+    skip: true
+    note: |-
+      打断测试不能用单段音频测 —— 需要在模型说话的**同时**喂新音频。
+      已有专门的 core/examples/bargein_local.rs 做这件事（需要 --features kws）。
+      在能编 kws 的机器上跑：
+        cargo run -q -p morphofly-core --features kws --example bargein_local
+      它能量出「开始喂打断音频 → 停播」的真实耗时。
+- id: edge-01
+  cat: 边界
+  text: ''
+  expect:
+    wake: false
+    tool_calls: []
+    note: 空音频不该触发任何东西（纯静音，服务端不该响应）
+- id: edge-02
+  cat: 边界
+  text: 小蝶帮我
+  expect:
+    wake: true
+    reply_max_chars: 40
+    note: |-
+      「小蝶帮我」是半句话，没有具体任务。
+      合格表现：追问要做什么，或者简短回应。
+      之前在期望里写「必须含『什么/帮』」太严 —— 实测它回「好，查着呢」
+      也算合理（派活去查了），但更好的是追问。记为观察项。

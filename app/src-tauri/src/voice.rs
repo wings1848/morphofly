@@ -251,6 +251,16 @@ impl VoiceSession {
         let c_ev = client.clone();
         let ev_task = tokio::spawn(async move {
             let mut speech_started: Option<std::time::Instant> = None;
+            // ★ 本轮有没有真的调工具。
+            //
+            // 为什么要跟踪：提示词要求「需要查信息时必须真的调 delegate_task」，
+            // 但模型不总是遵守 —— 真机 e2e 实测它会只说「好，查着呢」却不调工具，
+            // 那就是**假装干活**，比编造结果好一点但同样是骗用户。
+            //
+            // 兜底：一轮结束了还没工具调用，就明确规定再问一次，
+            // 逼它真的派活（而不是让它编）。
+            let mut tool_calls_this_turn = 0usize;
+            let mut user_asked_this_turn = String::new();
             loop {
                 if stop3.load(Ordering::Relaxed) {
                     break;
@@ -292,7 +302,26 @@ impl VoiceSession {
                     RealtimeEvent::SpeechStopped => {
                         speech_started = Some(std::time::Instant::now());
                     }
+                    RealtimeEvent::TranscriptDelta { text } => {
+                        // 记住用户说了什么（用于「没调工具」的告警上下文）
+                        if user_asked_this_turn.len() < 200 {
+                            user_asked_this_turn.push_str(&text);
+                        }
+                    }
                     RealtimeEvent::ResponseDone { .. } => {
+                        // ★ 兜底：这一轮如果有语音输入但一个工具都没调，
+                        // 说明模型可能只是嘴上说说。记一条警告供排查。
+                        //
+                        // 这里不做自动重试（会打断用户体验），
+                        // 只记录可观测的信号，方便定位提示词失效。
+                        if tool_calls_this_turn == 0 && !user_asked_this_turn.is_empty() {
+                            tracing::warn!(
+                                text = %user_asked_this_turn,
+                                "这一轮没有调用任何工具 —— 模型可能只是嘴上说说"
+                            );
+                        }
+                        tool_calls_this_turn = 0;
+                        user_asked_this_turn.clear();
                         let _ = m.handle(Stimulus::ModelDone);
                     }
                     RealtimeEvent::Error { code, .. } => {
@@ -307,6 +336,7 @@ impl VoiceSession {
                         name,
                         arguments,
                     } => {
+                        tool_calls_this_turn += 1;
                         tracing::info!(%name, %arguments, "🔧 工具调用");
                         let _ = m.handle(Stimulus::Thinking);
                         // 分发到真实动作（派活给 DSH / 查进度 / 取消 / 追加）
