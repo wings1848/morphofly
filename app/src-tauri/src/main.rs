@@ -375,10 +375,10 @@ async fn orb_tip(window: WebviewWindow, show: bool) -> Result<(), String> {
     let scale = window.scale_factor().unwrap_or(1.0);
     let small = (f64::from(ORB_SIZE) * scale).round() as u32;
     let wide = (f64::from(TIP_WIDTH) * scale).round() as u32;
-    if small == 0 {
+    if small == 0 || wide <= small {
         return Err("窗口尺寸异常".into());
     }
-    // 归位点：优先用贴边时记下的，没记下就用当前位置兜底
+    // 归位点：贴边时记下的；没记下就用当前位置兜底
     let home = match get_orb_home() {
         Some(h) => h,
         None => {
@@ -386,25 +386,58 @@ async fn orb_tip(window: WebviewWindow, show: bool) -> Result<(), String> {
             (p.x, p.y)
         }
     };
-    let grow = i32::try_from(wide).unwrap_or(0) - i32::try_from(small).unwrap_or(0);
-    let (target_w, target_x) = if show {
-        (wide, home.0 - grow)
+    let target_x = if show {
+        home.0 - (wide - small) as i32
     } else {
-        (small, home.0)
+        home.0
     };
+    let target_w = if show { wide } else { small };
+
     if let Ok(size) = window.outer_size() {
         if size.width == target_w {
             return Ok(());
         }
     }
-    // 先挪位置再改尺寸：反过来窗口会先变宽伸到屏幕外，再被 KWM 拉回来
-    window
-        .set_position(tauri::PhysicalPosition::new(target_x, home.1))
-        .map_err(|e| format!("移动窗口失败: {e}"))?;
-    window
-        .set_size(tauri::PhysicalSize::new(target_w, small))
-        .map_err(|e| format!("改窗口宽失败: {e}"))?;
-    tracing::debug!(show, target_w, target_x, "气泡窗口调整");
+
+    // ★ 顺序不能反，而且两个方向还不一样 —— 2026-10-24 真机踩出来的：
+    //
+    // KWin 不允许把窗口摆到「右边缘超出屏幕」的位置：它会直接把窗口拉回
+    // x = 屏宽 - 窗宽。所以「先 set_position 再 set_size」在收起时会翻车：
+    // 窗口还是 360 宽，把 x 设成 2908 → 右边缘 3268 越界 → KWin 拉回 2712；
+    // 之后再 set_size(148)，窗口就停在 2712 而不是 2908（误差 196px）。
+    //
+    // 展开：窗口小，先左移不会越界；再长宽。
+    // 收起：先缩宽，再右移。
+    // 最后都读回实际位置纠一次，防止异步还没生效。
+    if show {
+        let _ = window.set_position(tauri::PhysicalPosition::new(target_x, home.1));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = window.set_size(tauri::PhysicalSize::new(target_w, small));
+    } else {
+        let _ = window.set_size(tauri::PhysicalSize::new(target_w, small));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = window.set_position(tauri::PhysicalPosition::new(target_x, home.1));
+    }
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // 读回校验 + 纠正一次
+    if let Ok(pos) = window.outer_position() {
+        if pos.x != target_x {
+            tracing::warn!(want = target_x, got = pos.x, "气泡位置没生效，纠正一次");
+            let _ = window.set_position(tauri::PhysicalPosition::new(target_x, home.1));
+        }
+    }
+    if let Ok(size) = window.outer_size() {
+        if size.width != target_w {
+            tracing::warn!(
+                want = target_w,
+                got = size.width,
+                "气泡宽度没生效，纠正一次"
+            );
+            let _ = window.set_size(tauri::PhysicalSize::new(target_w, small));
+        }
+    }
+    tracing::info!(show, target_w, target_x, "气泡窗口已调整");
     Ok(())
 }
 

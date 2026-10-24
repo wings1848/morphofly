@@ -81,10 +81,22 @@ echo "✅ 唤醒成功（$WOKE 次）"
 
 [ "$WAKE_ONLY" = 1 ] && { echo "=== 只测唤醒，结束 ==="; exit 0; }
 
-echo "=== 4) 注入任务语音 ==="
-sleep 2
+echo "=== 4) 等会话真的建立再说话 ==="
+# ⚠️ 2026-10-24 踩坑：原来固定 sleep 2 就灌任务语音，但建会话有时要 10+ 秒
+# （云端 WS 握手 + 机器忙），语音灌进去时还没开始听 → delegate_task 为 0，
+# 看起来像「模型没干活」，其实是我们说太早。
+READY=0
+for _ in $(seq 1 30); do
+  if run "journalctl --user -u morphofly-test --since '$MARK' --no-pager | grep -c '会话已建立'" | grep -qv '^0$'; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+if [ "$READY" = 1 ]; then echo "会话已建立"; else echo "⚠️ 30 秒内没建会话，仍然尝试说话"; fi
+sleep 1
 run "timeout 20 paplay $DEV $TASK_WAV"
-sleep 22
+sleep 24
 
 echo "=== 5) 结果 ==="
 LOG=$(run "journalctl --user -u morphofly-test --since '$MARK' --no-pager")
