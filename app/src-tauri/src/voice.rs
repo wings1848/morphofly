@@ -386,17 +386,33 @@ impl VoiceSession {
                             );
 
                             correction_sent = true;
-                            let hint =
+                            // ★ 把「可以直接用的 dir」写进提醒里。
+                            //
+                            // 真机实测：只写「立刻调用 delegate_task」时模型还是不调 ——
+                            // 它多半卡在「项目名听不准、不知道该填哪个 dir」上。
+                            // 与其让它猜，我们直接把当前项目路径喂给它。
+                            let dir_hint = tool_dir_hint(&dispatcher).await;
+                            let hint = format!(
                                 "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。\
-现在立刻调用 delegate_task 把该做的事派出去，然后只回一句「好，查着呢」。\
-不要说抱歉、不要解释、不要提这条提醒。";
-                            let _ = c_ev.send_item(serde_json::json!({
+现在立刻调用 delegate_task 把这件事派出去，dir 直接填 {dir_hint}。\
+参数格式：task 写清要查/要做什么（自包含），dir 照上面填。\
+调完只回一句「好，查着呢」。不要说抱歉、不要解释、不要提这条提醒。"
+                            );
+                            match c_ev.send_item(serde_json::json!({
                                 "type": "message",
                                 "role": "user",
                                 "content": [{"type": "input_text", "text": hint}]
-                            }));
-                            let _ = c_ev.create_response();
-                            tracing::info!("已注入纠正提醒，等它重新响应");
+                            })) {
+                                Ok(()) => {
+                                    tracing::info!(dir = %dir_hint, "已注入纠正提醒，等它重新响应")
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "注入纠正提醒失败（会话可能已断）")
+                                }
+                            }
+                            if let Err(e) = c_ev.create_response() {
+                                tracing::warn!(error = %e, "纠正后触发响应失败");
+                            }
                             assistant_reply.clear();
                             continue; // 不要重置状态机，等新一轮
                         }
@@ -553,6 +569,20 @@ pub fn should_open_session(state: OrbState) -> bool {
 }
 
 #[allow(dead_code)] // 有单测覆盖，生产路径暂时只在循环里内联判断
+
+/// 纠正提醒里要塞的「dir 填什么」。
+///
+/// 优先用当前会话上下文（set_context 设过的），否则用默认目录。
+/// 拿不到就退回一句「按已知项目表填」，别编路径。
+async fn tool_dir_hint(dispatcher: &Arc<Dispatcher>) -> String {
+    let d = dispatcher.current_dir().await;
+    if d.is_empty() {
+        "已知项目表里的路径（不知道就不填）".to_string()
+    } else {
+        format!("\"{d}\"")
+    }
+}
+
 pub fn should_close_session(state: OrbState) -> bool {
     !state.is_active_call()
 }
