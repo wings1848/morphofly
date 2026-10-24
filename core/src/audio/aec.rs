@@ -141,7 +141,6 @@ pub struct AecStats {
 #[derive(Debug)]
 struct Inner {
     apm: AudioProcessing,
-    config: AecConfig,
     /// 渲染侧重采样器（上游不是 16k 时用），`(输入采样率, 重采样器)`。
     render_resampler: Option<(u32, LinearResampler)>,
     /// 重采样后的临时缓冲。
@@ -160,7 +159,6 @@ impl Inner {
     fn new(config: AecConfig) -> Self {
         Self {
             apm: build_apm(&config),
-            config,
             render_resampler: None,
             render_conv: Vec::new(),
             render_pending: Vec::with_capacity(AEC_SUBFRAME_SAMPLES),
@@ -200,8 +198,7 @@ impl Inner {
                 None => true,
             };
             if need_rebuild {
-                self.render_resampler =
-                    Some((rate, LinearResampler::new(rate, AEC_SAMPLE_RATE)));
+                self.render_resampler = Some((rate, LinearResampler::new(rate, AEC_SAMPLE_RATE)));
             }
             self.render_conv.clear();
             if let Some((_, rs)) = self.render_resampler.as_mut() {
@@ -233,10 +230,7 @@ impl Inner {
     /// i16 版本：直接用 sonora 的交织 i16 接口，省一次 f32 往返。
     fn process_capture_i16_block(&mut self, block: &mut [i16]) {
         self.capture_i16_in.copy_from_slice(block);
-        match self
-            .apm
-            .process_capture_i16(&self.capture_i16_in, block)
-        {
+        match self.apm.process_capture_i16(&self.capture_i16_in, block) {
             Ok(()) => self.stats.capture_blocks += 1,
             Err(_) => self.stats.errors += 1,
         }
@@ -250,9 +244,7 @@ impl Inner {
 fn build_apm(config: &AecConfig) -> AudioProcessing {
     let sonora_config = SonoraConfig {
         echo_canceller: Some(EchoCanceller::default()),
-        noise_suppression: config
-            .noise_suppression
-            .then(NoiseSuppression::default),
+        noise_suppression: config.noise_suppression.then(NoiseSuppression::default),
         ..Default::default()
     };
     let stream = StreamConfig::new(AEC_SAMPLE_RATE, 1);
@@ -456,7 +448,10 @@ mod tests {
 
         /// `[-1, 1)` 均匀分布（确定性，不用外部 crate）。
         fn next_unit(&mut self) -> f32 {
-            self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let bits = (self.0 >> 33) as u32; // 31 bit
             (bits as f32 / (u32::MAX >> 1) as f32) * 2.0 - 1.0
         }

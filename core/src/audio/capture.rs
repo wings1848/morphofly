@@ -591,7 +591,6 @@ impl Default for AudioCapture {
 const CAPTURE_CHANNEL_FRAMES: usize = 128;
 
 impl AudioCapture {
-
     /// 把一段 16k mono i16 采样做成「文件源」（末尾自动补静音）。
     ///
     /// 从 `file_source` 抽出来的公共部分：裸 PCM 和压缩音频都要走这里推流。
@@ -957,6 +956,24 @@ impl AudioCapture {
         lock_unpoisoned(&self.last_error).clone()
     }
 
+    /// 当前的 AEC 实例（`None` = 关闭）。播放侧必须 tee 给**同一个**实例。
+    pub fn aec(&self) -> Option<Arc<AecProcessor>> {
+        lock_unpoisoned(&self.aec).clone()
+    }
+
+    /// 运行中开关 AEC（`None` 立即旁路，下一帧生效）。
+    ///
+    /// 用途：换耳机时 AEC 没必要（不会有声学回声），关掉能省一点 CPU
+    /// 且避免 AEC 对近端语音做任何改动。
+    pub fn set_aec(&self, aec: Option<Arc<AecProcessor>>) {
+        *lock_unpoisoned(&self.aec) = aec;
+    }
+
+    /// AEC 是否启用。
+    pub fn aec_enabled(&self) -> bool {
+        lock_unpoisoned(&self.aec).is_some()
+    }
+
     /// 打开默认输入设备并开始推送帧。重复调用是幂等的（已在跑就直接返回 `Ok`）。
     ///
     /// # Errors
@@ -1147,6 +1164,7 @@ pub(crate) fn lock_unpoisoned<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::audio::{i16_to_f32, rms_i16};
+    use crate::FRAME_BYTES;
 
     // ---------- 下混 ----------
 
@@ -1559,5 +1577,61 @@ mod tests {
         // 手工发一帧，确认订阅者能取到同样的数据
         cap.tx.send(frame.clone()).unwrap();
         assert_eq!(rx.try_recv().unwrap(), frame);
+    }
+
+    // ---------- AEC 接入 ----------
+
+    #[test]
+    fn capture_exposes_a_shared_aec_instance() {
+        // 采集侧默认挂进程级共享 AEC；播放侧 tee 的必须是同一个实例，
+        // 否则参考信号和采集信号对不上，AEC 等于没接。
+        let cap = AudioCapture::new();
+        let a = cap.aec();
+        if let Some(aec) = a {
+            // 同一个进程级实例：两次 shared() 调用返回同一个 Arc
+            assert!(cap.aec_enabled());
+            let b = super::super::aec::shared();
+            assert!(b.is_some());
+            assert!(Arc::ptr_eq(&aec, &b.unwrap()), "必须是同一个 AEC 实例");
+            // 关掉后立刻旁路
+            cap.set_aec(None);
+            assert!(!cap.aec_enabled());
+            assert!(cap.aec().is_none());
+            // 再装回去
+            cap.set_aec(Some(aec));
+            assert!(cap.aec_enabled());
+        } else {
+            // MORPHOFLY_AEC=0 的分支：关闭时也必须是干净的 None（不 panic）
+            assert!(!cap.aec_enabled());
+            assert!(!super::super::aec::shared().is_some());
+        }
+    }
+
+    #[test]
+    fn file_source_does_not_attach_aec() {
+        // 文件源是测试注入点，不该被 AEC 改动（否则 e2e 断言全乱）
+        let cap = AudioCapture::with_config(CaptureConfig::default());
+        // with_config 是真麦克风路径，会挂 AEC；file_source 才是旁路。
+        // 这里只验证文件源构造函数的行为（需要一个真实文件，跳过）——
+        // 用 spawn_pcm_source 不经过 decoder，验证它不挂 AEC。
+        let src = AudioCapture::spawn_pcm_source(vec![0i16; 640], "test");
+        let src = match src {
+            Ok(s) => s,
+            Err(_) => return, // 环境不支持（无必要依赖）时跳过
+        };
+        assert!(!src.aec_enabled(), "文件源不该挂 AEC");
+        assert_eq!(cap.config().frame_samples, FRAME_SAMPLES);
+    }
+
+    #[test]
+    fn aec_handle_processing_does_not_change_frame_length() {
+        // 接入不变量：AEC 过后帧长必须还是 320（下游 VAD / 上行推流依赖它）
+        use super::super::aec::{AecConfig, AecProcessor};
+        let aec = Arc::new(AecProcessor::new(AecConfig::default()));
+        let mut frame = vec![1234i16; FRAME_SAMPLES];
+        aec.process_capture_i16(&mut frame);
+        assert_eq!(frame.len(), FRAME_SAMPLES);
+        assert_eq!(frame.len() * 2, FRAME_BYTES);
+        assert_eq!(aec.stats().capture_blocks, 2, "320 = 2 个 10ms 子帧");
     }
 }

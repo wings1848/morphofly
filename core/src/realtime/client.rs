@@ -861,14 +861,11 @@ mod tests {
             .map(|t| t["function"]["name"].as_str().unwrap())
             .collect();
         names.sort_unstable();
-        assert_eq!(
-            names,
-            {
+        assert_eq!(names, {
             let mut expect = crate::tools::TOOL_NAMES.to_vec();
             expect.sort_unstable();
             expect
-        }
-        );
+        });
         assert!(
             msg["session"].get("voice").is_none(),
             "session.update 不能重发 voice（StepFun voice 不可变更）"

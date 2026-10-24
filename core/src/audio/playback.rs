@@ -25,6 +25,7 @@ use std::time::Duration;
 use rodio::source::Source;
 use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate};
 
+use super::aec::AecProcessor;
 use super::capture::LinearResampler;
 use super::ring::SampleRing;
 use super::{f32_to_i16, pcm16_to_f32, AudioError, DOWNLINK_SAMPLE_RATE, JITTER_MAX_MS};
@@ -314,6 +315,11 @@ pub struct AudioPlayer {
     format: OutputFormat,
     converter: Mutex<AppendConverter>,
     volume: Mutex<f32>,
+    /// 回声消除的参考信号入口（`None` = 关闭）。
+    ///
+    /// 必须和采集侧是**同一个** AEC 实例，否则参考信号对不上，等于没做。
+    /// 默认取 [`super::aec::shared()`]，可用 [`AudioPlayer::set_aec`] 运行中替换。
+    aec: Mutex<Option<Arc<AecProcessor>>>,
 }
 
 impl std::fmt::Debug for AudioPlayer {
@@ -384,6 +390,7 @@ impl AudioPlayer {
             format,
             converter: Mutex::new(AppendConverter::new()),
             volume: Mutex::new(1.0),
+            aec: Mutex::new(super::aec::shared()),
         })
     }
 
@@ -442,6 +449,22 @@ impl AudioPlayer {
             let mut conv = lock(&self.converter);
             conv.convert(pcm, sample_rate, self.nominal_rate)
         };
+        // ★ 回声消除的参考信号：把「即将送扬声器的这一路」tee 一份给 AEC。
+        //
+        //   为什么在 `append_pcm16` 而不是别处：这是**真正进扬声器**的唯一入口
+        //   （`append_pcm_f32` 最终也会走到这里），所以这里 tee 能保证参考信号
+        //   和实际播放内容严格一致 —— 在 `RingSource` 里 tee 反而更差，因为
+        //   那里取的是「队列里还有什么」，且被 stop_now 清空后参考信号会断。
+        //
+        //   为什么在 `queue.push` **之前**：AEC3 假设 render 块先于对应的
+        //   capture 块到达（它靠这个判断「这块参考信号麦克风还没听到」）。
+        //   先推队列再喂 AEC 的话，参考信号相对采集永远晚一拍。
+        //
+        //   tee 的采样率是 `nominal_rate`（通常 24k），AEC 内部会重采样到 16k
+        //   —— 它自带 `LinearResampler`，这里不用再转一次。
+        if let Some(aec) = lock(&self.aec).as_ref() {
+            aec.process_render_at(&converted, self.nominal_rate);
+        }
         self.queue.push(&converted)
     }
 

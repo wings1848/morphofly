@@ -40,8 +40,18 @@ pub const TOOL_NAMES: [&str; TOOL_COUNT] = [
 ///
 /// 这些名字即便被误加进 [`TOOL_NAMES`]，断言也会打红。
 pub const FORBIDDEN_TOOL_NAMES: [&str; 12] = [
-    "bash", "shell", "sh", "exec", "run_command", "run",
-    "read_file", "write_file", "edit", "edit_file", "ls", "cat",
+    "bash",
+    "shell",
+    "sh",
+    "exec",
+    "run_command",
+    "run",
+    "read_file",
+    "write_file",
+    "edit",
+    "edit_file",
+    "ls",
+    "cat",
 ];
 
 /// 组装给 realtime 模型的 tools 数组（OpenAI Realtime / StepFun / Qwen 同构）
@@ -202,7 +212,10 @@ mod tests {
     fn rejects_read_file() {
         let mut tools = tool_defs();
         tools.push(json!({"type": "function", "name": "read_file", "parameters": {}}));
-        assert!(assert_tool_invariant(&tools).is_err(), "read_file 必须在黑名单里");
+        assert!(
+            assert_tool_invariant(&tools).is_err(),
+            "read_file 必须在黑名单里"
+        );
     }
 
     /// 黑名单里的名字一个都不能在 tool_defs 里

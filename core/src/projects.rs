@@ -104,10 +104,10 @@ impl ProjectTable {
         // 再试「用户说的词包含某个别名」或反过来的包含匹配
         // （用户可能说「蝶梦项目」，别名是「蝶梦」）
         for p in &self.project {
-            if p.alias
-                .iter()
-                .any(|a| { let na = normalize(a); !na.is_empty() && (key.contains(&na) || na.contains(&key)) })
-            {
+            if p.alias.iter().any(|a| {
+                let na = normalize(a);
+                !na.is_empty() && (key.contains(&na) || na.contains(&key))
+            }) {
                 return Some(p);
             }
         }
@@ -186,8 +186,14 @@ mod tests {
     #[test]
     fn exact_alias_matches() {
         let t = table();
-        assert_eq!(t.lookup("蝶梦").unwrap().path, "/home/wings/Code_Project/morphofly");
-        assert_eq!(t.lookup("家里云").unwrap().path, "/home/wings/docker-compose");
+        assert_eq!(
+            t.lookup("蝶梦").unwrap().path,
+            "/home/wings/Code_Project/morphofly"
+        );
+        assert_eq!(
+            t.lookup("家里云").unwrap().path,
+            "/home/wings/docker-compose"
+        );
     }
 
     #[test]
