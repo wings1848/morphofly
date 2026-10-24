@@ -428,12 +428,16 @@ impl VoiceSession {
                         assistant_reply.clear();
                         let _ = m.handle(Stimulus::ModelDone);
                     }
-                    RealtimeEvent::Error { code, .. } => {
+                    RealtimeEvent::Error { code, message } => {
                         // 断线 → S5（schema 里用 error 承载断线）
                         if code.as_deref() == Some("disconnected") {
                             m.set_connected(false);
                             break;
                         }
+                        // ⚠️ 2026-10-25：以前这里只处理断线，其它 error **一个字都不记**。
+                        // 结果「纠正提醒注入了、模型却毫无反应」这种现象完全查不出来 ——
+                        // 分不清是没发出去、发了被拒、还是在慢慢生成。
+                        tracing::warn!(code = ?code, message = %message, "实时语音服务端返回 error");
                     }
                     RealtimeEvent::ToolCall {
                         call_id,

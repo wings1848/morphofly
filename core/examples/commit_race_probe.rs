@@ -38,7 +38,10 @@ fn read_wav_16k_mono(path: &str) -> Result<Vec<i16>> {
         spec.channels == 1 && spec.sample_rate == 16_000 && spec.bits_per_sample == 16,
         "只吃 16k mono 16bit wav"
     );
-    Ok(reader.samples::<i16>().filter_map(std::result::Result::ok).collect())
+    Ok(reader
+        .samples::<i16>()
+        .filter_map(std::result::Result::ok)
+        .collect())
 }
 
 async fn play(client: &RealtimeClient, pcm: &[i16]) -> Result<()> {
