@@ -424,6 +424,7 @@ fn spawn_session_guard(
     machine: Arc<Mutex<SessionMachine>>,
     cfg: Arc<morphofly_core::Config>,
     store: Arc<Mutex<morphofly_core::tasks::store::TaskStore>>,
+    dispatcher: Arc<morphofly_core::dispatch::Dispatcher>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut current: Option<voice::VoiceSession> = None;
@@ -461,7 +462,7 @@ fn spawn_session_guard(
             // 需要建会话？（S1 且还没有）
             if voice::should_open_session(st) && current.is_none() {
                 tracing::info!("建立语音会话…");
-                match voice::VoiceSession::open(&cfg).await {
+                match voice::VoiceSession::open(&cfg, store.clone(), dispatcher.clone()).await {
                     Ok(sess) => {
                         {
                             let mut m = machine.lock().await;
@@ -1043,6 +1044,10 @@ fn main() {
         bridge,
         cfg.dsh.default_cwd.clone(),
     ));
+    // 守卫和 AppState 用同一个 dispatcher / 同一个 TaskStore：
+    // 2026-10-25 真机踩坑 —— 会话里各自 new 一个 store 实例，
+    // 结果「主动汇报」守卫看不到会话派出去的任务，DSH 干完了也不汇报。
+    let dispatcher_for_guard = dispatcher.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -1090,6 +1095,7 @@ fn main() {
                 machine.clone(),
                 cfg.clone(),
                 store_for_guard.clone(),
+                dispatcher_for_guard.clone(),
             );
             // ★ 系统托盘（用户要求「支持跨平台任务栏图标」）
             // V1 最严重的体验问题：无边框+置顶+任务栏不显示 = 关不掉也找不到
