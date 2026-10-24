@@ -28,31 +28,57 @@ MorphoFly 的答案：
 
 ## 实测数据
 
-所有数字都来自真机测试（Intel/AMD x86_64 + PipeWire + 真实声卡）。
+所有数字都来自真机测试（wings-gpd：Intel N6000 + PipeWire；语音用虚拟音源注入，
+除「空气」那一段外整条链路都是真的）。
 
 | 指标 | 实测 | 目标 | 状态 |
 |---|---|---|---|
-| **端到端延迟** | **802ms** | <800ms | ✅ |
-| **打断延迟** | **300ms** | <300ms | ✅ |
+| **端到端延迟** | **802ms** | <800ms | ✅（早期实测）|
+| **打断（本地反应）** | **<10ms**（VAD 判定人声 → 停播） | <300ms | ✅ 真机抓到完整打断 |
 | 唤醒召回 | **9/9 = 100%** | ≥95% | ✅ |
 | 唤醒误报 | **0/8 = 0%** | ≈0 | ✅ |
 | 冷启动 | 1476ms | <3s | ✅ |
 | **任务派发（复用进程）** | **1102ms** | — | ✅ |
 | 空闲 CPU | 3.7% | <5% | ✅ |
-| 安装包 | 24MB (deb) | <100MB | ✅ |
-| **真机 e2e 通过率** | **13/14** | >80% | ✅ |
-| **空闲内存** | **371MB (PSS)** | <150MB | ❌ |
+| **悬浮球拖动** | 真机 A/B 两条用例，误差 **1px** | — | ✅ |
+| 单元测试 | **271**（含唤醒词 **282**） | — | ✅ |
+| 前端测试 | **13** | — | ✅ |
+| CI | ✅ 全绿（含 Windows 检查、可下载 Linux 产物）| — | ✅ |
+| 安装包 | 24MB (deb) / 97MB (AppImage) | <100MB | ✅ |
+| **空闲内存** | **≈294MB (PSS)** | <150MB | ❌ |
 
 **唯一不达标是内存**，原因见[已知问题](#已知问题)。
 
 > 内存口径说明：早期写的 488MB 是 RSS（会把共享 .so 重复计算）。
-> 用 PSS 重测是 371MB，其中真正属于我们代码的堆只有 81MB，
+> 用 PSS 重测从 371MB 降到 ≈294MB，其中真正属于我们代码的堆只有几十 MB，
 > 其余是 WebKit 子进程和映射的系统库。详见 `docs/v2/scout-full.md`。
 
-复现命令见 [`docs/实测数据.md`](docs/实测数据.md)。
+复现命令见 [`docs/实测数据.md`](docs/实测数据.md)，
+验收脚本清单见 [`docs/v2/HOW-TO-VERIFY.md`](docs/v2/HOW-TO-VERIFY.md)。
 
-V2 的完整进展（含 10 个已修 bug、真机验证、剩余工作）见
+V3 的完整进展（悬浮窗/拖动/CI/并行 e2e）见
 [`docs/v2/PROGRESS.md`](docs/v2/PROGRESS.md)。
+
+---
+
+## V3 · 悬浮窗与交付方式（2026-10-25）
+
+用户提的要求：**默认置顶 / 启动在屏幕右下角 / 参考 360 悬浮窗 / UI 和动效优化 /
+构建用 GitHub Actions / 用 computer use 看真机效果**。全部落地：
+
+- **148×148 透明置顶小球**，六态视觉（待机/唤醒/聆听/思考/说话/异常），
+  启动贴右下角，气泡字幕向左展开、收起后右边缘不偏（KWin 右边缘越界会拉回窗口）。
+- **拖动**：系统原生 `startDragging()` 在 KWin/XWayland 上实测**完全不生效**
+  （8 秒采样零位移），改成 Rust 每 16ms 读全局指针搬窗口；松手只吸左右边、
+  上下位置保留。真机验收误差 1px，见 [`docs/v2/orb-drag.md`](docs/v2/orb-drag.md)。
+- **编译走 GitHub Actions**：`ci.yml` 的 `build-app-linux` 产出
+  `morphofly-app-linux-x64.tar.gz`（二进制 + 唤醒词模型 + 版本标记），
+  部署用 `tools/gpd_deploy_ci.sh`，掌机不再本地编译。
+  见 [`docs/v2/ci-build.md`](docs/v2/ci-build.md)。
+- **三台设备并行验收**：本机（无头单测）∥ gpd（真桌面+真麦）∥ pc（真桌面），
+  `tools/e2e_matrix.sh --with-pc` 一条命令跑多车道。
+  见 [`docs/v2/parallel-e2e.md`](docs/v2/parallel-e2e.md)、[`docs/v2/pc-lane.md`](docs/v2/pc-lane.md)。
+- **被动升级**：CI 产物 sha 可追溯（`build.txt`），`systemctl --user restart` 即生效。
 
 ---
 
@@ -140,54 +166,81 @@ chmod 600 ~/.diemeng/credentials
 git clone https://github.com/wings1848/morphofly
 cd morphofly
 
-# 测试
-cargo test -p morphofly-core --lib          # 178 passed
-node --test app/frontend/test/              # 8 passed
+# 测试（本机无桌面也能跑）
+cargo test -p morphofly-core --lib                    # 271 passed
+cargo test -p morphofly-core --features kws --lib     # 282 passed（唤醒词，需 libstdc++）
+node --test app/frontend/test/                        # 13 passed
 
-# 带唤醒词（需要 libstdc++）
-cargo test -p morphofly-core --features kws --lib   # 189 passed
+# 编译应用：**推荐走 CI**（用户要求；本机/掌机都不本地编）
+#   push 后 GitHub Actions 的 build-app-linux 产出可下载产物
+tools/gpd_deploy_ci.sh --run <run-id>     # 下载 + 部署到掌机 + 重启服务
 
-# 打包
-cd app && cargo tauri build
+# 本机想本地编也行（需要 webkit2gtk-4.1 / gtk3 / libasound）
+cd app && cargo tauri build               # 产出 deb / AppImage
 ```
 
 ---
 
 ## 已知问题
 
-### 1. 内存 488MB（要求 <150MB）
+### 1. 内存 ≈294MB（要求 <150MB）
 
-| 进程 | RSS |
+| 进程 | 说明 |
 |---|---|
-| `morphofly-app` 主进程 | 191 MB |
-| `WebKitWebProcess` | 161 MB |
-| `WebKitNetworkProcess` | 63 MB |
+| `morphofly-app` 主进程 | Rust core + GitHub 出的二进制 |
+| `WebKitWebProcess` | 画小球与气泡字幕 |
+| `WebKitNetworkProcess` | WebView 的网络进程 |
 
 **原因**：Tauri 2 在 Linux 上必须用 WebKitGTK，它自身就吃 200MB+。
 这是「用 WebView 做 UI」的固有代价（Electron 同量级），不是内存泄漏。
+已经做过一轮优化（关掉前端演示音频、跳过低频 emit），从 371MB 降到 ≈294MB。
 
-**解法**：重写 UI 层为原生渲染（3–5 天），或调整验收标准。
+**解法**：重写 UI 层为原生渲染（3–5 天），或调整验收标准 —— **等用户拍板**。
 
-### 2. 外放会自我打断
+### 2. 自打断风险（AEC 在测试台上验不了）
 
-回声消除（AEC）未实现。**戴耳机正常。**
+代码里已接 AEC（sonora / AEC3），但**真机听觉验证仍然没做**：
+gpd 和 pc 都没有能出声的扬声器，测试用虚拟音源注入，App 自己的输出
+根本不会回灌到采集里 —— 没有回声可消，也就测不出 AEC 好坏。
 
-### 3. 英文项目名识别不准
+- 结构上不会自打断的配置已固化并在 `tools/verify_audio_topology.sh` 里断言
+  （默认 sink 必须是物理设备，不能是虚拟 sink）。
+- 真实场景（外放 + 麦克风）**戴耳机正常，外放待验证**。
 
-`morphofly` / `diemeng` 这类英文词对中文 ASR 不友好，
-可能听成 `diamond` / `daimian`。**说中文名「蝶梦」100% 正确。**
+详见 [`docs/v2/audio-topology.md`](docs/v2/audio-topology.md)。
+
+### 3. 英文项目名识别不准（已加三层兜底）
+
+`morphofly` / `diemeng` 这类英文词对中文 ASR 不友好
+（真机实测：`morphofly` → `mosofly` / `魔方fly` / `move_forward`）。
+**说中文名「蝶梦」100% 正确。**
+
+已经做的兜底（都不依赖供应商）：
+1. 项目别名**模糊匹配**（编辑距离，听错一两个字也能对上）
+2. 任务文本**纠正**（`mosofly` → `morphofly` 再交给 DSH）
+3. 专有名词**本地纠正表**（`vimi`/`微米` → `README`）
+
+试过但没用：给 StepFun 转写加 OpenAI 风格 `prompt` 热词提示，
+服务端**静默忽略**（探针实测，见 [`docs/v2/asr-project-mishearing.md`](docs/v2/asr-project-mishearing.md)）。
 
 ### 4. 平台支持现状
 
 | 平台 | 状态 |
 |---|---|
-| Linux x86_64 | ✅ 真机验证过（wings-gpd：唤醒/派活/汇报/悬浮窗全链路） |
+| Linux x86_64 | ✅ 真机验证（wings-gpd：唤醒/派活/汇报/悬浮窗/拖动/打断全链路；wings-pc 作为第二条桌面车道） |
 | Windows x86_64 | ⚠️ **能编、能打 NSIS 安装包，运行时没在真 Windows 上验过**。已修三个必然挂的问题（数据目录只读 HOME、拉不起 npm 装的 `dsh.cmd`、平台代码未隔离），详见 [docs/v2/windows.md](docs/v2/windows.md) |
 | 其它 | ❌ 未验证（ARM 需要重新编译） |
 
 Windows 上最大的未知是**中文安装路径 + sherpa-onnx 加载唤醒词模型**：
 `productName` 是「蝶梦」，安装目录带中文，模型加载可能失败。要上 Windows 建议先把
 productName 改成纯 ASCII。
+
+### 5. 打断的自动化复现有已知限制
+
+机制是通的（真机抓到过完整打断：停播 + 取消云端 + 计数 + 回聆听态），
+但自动化脚本在虚拟音源上**不稳定**：注入链路有 1–2 秒延迟，
+而模型对短问题的回答只有 2–4 秒，经常错过「正在说话」的窗口。
+真机手感建议接耳机人工说「停」验证。见 [`docs/v2/bargein.md`](docs/v2/bargein.md)。
 
 ---
 
@@ -222,6 +275,14 @@ runs/                devflow 开发记录（含实测证据）
 | 唤醒词配置与 3 个坑 | [`docs/唤醒词.md`](docs/唤醒词.md) |
 | 音频路由排障 | [`docs/音频路由.md`](docs/音频路由.md) |
 | 跨机部署 | [`docs/跨机传文件.md`](docs/跨机传文件.md) |
+| **验收脚本清单（怎么验这个项目）** | [`docs/v2/HOW-TO-VERIFY.md`](docs/v2/HOW-TO-VERIFY.md) |
+| 悬浮球拖动（为什么原生拖不动） | [`docs/v2/orb-drag.md`](docs/v2/orb-drag.md) |
+| 编译走 CI + 一键部署 | [`docs/v2/ci-build.md`](docs/v2/ci-build.md) |
+| 三台设备并行 e2e | [`docs/v2/parallel-e2e.md`](docs/v2/parallel-e2e.md) / [`docs/v2/pc-lane.md`](docs/v2/pc-lane.md) |
+| 打断（barge-in）实现与限制 | [`docs/v2/bargein.md`](docs/v2/bargein.md) |
+| 测试台音频流（防自打断） | [`docs/v2/audio-topology.md`](docs/v2/audio-topology.md) |
+| ASR 听错项目名怎么兜底 | [`docs/v2/asr-project-mishearing.md`](docs/v2/asr-project-mishearing.md) |
+| Windows 兼容现状与风险 | [`docs/v2/windows.md`](docs/v2/windows.md) |
 | 完整验收表（28 条） | [`runs/`](runs/) |
 
 ---
@@ -250,4 +311,12 @@ runs/                devflow 开发记录（含实测证据）
 
 ## 状态
 
-V1 已可用。开发记录（含所有实测证据）在 [`runs/`](runs/)。
+**V3 可用**：真机全链路（喊「小蝶」→ 说任务 → 派活 → DSH 干活 → 会话关了自己重开回来汇报）
+实测通过；悬浮窗置顶/右下角/拖动/六态动效完成；编译走 GitHub Actions；
+本机 ∥ gpd ∥ pc 三台设备并行验收。
+
+当前开发记录（含所有实测证据）在 [`runs/`](runs/)，
+最新一轮：`runs/20261024-2208-ui-ux-360/verify-round13.md`。
+
+**未完成/待拍板**：Windows 运行时真机验证、AEC 真机听觉验证、内存优化（≈294MB）、
+仓库历史瘦身（.git 245MB，改写历史不可逆）。

@@ -1,162 +1,121 @@
-# MorphoFly V2 进展总览
+# MorphoFly 进展总览
 
-**最后更新**：2026-10-25 00:20
+**最后更新**：2026-10-25 05:50
 
 ## 一句话状态
 
-**麦克风修好了 —— 第一次在真机上完成「喊小蝶 → 说任务 → 派活 → 主动汇报」全链路。现在在做 V3 悬浮窗 UI。**
+**V3 真机全链路跑通**：喊「小蝶」→ 说任务 → 派活 → DSH 真干活 → **语音会话关掉了它也能自己重开回来汇报**。
+悬浮窗（置顶/右下角/拖动/六态动效）完成；编译改走 GitHub Actions；
+本机 ∥ gpd ∥ pc 三台设备并行验收。
 
 ## 当前指标
 
 | 项目 | 数值 |
 |---|---|
-| 单元测试（默认） | **242 passed** |
-| 单元测试（含 kws） | **243 passed** |
+| 单元测试（默认） | **271 passed** |
+| 单元测试（含 kws） | **282 passed** |
 | 前端测试 | **13 passed** |
-| e2e mock | 14/14 |
-| **e2e 真机（语音链路）** | **13/14** |
-| 编译警告 | 0 |
-| clippy 警告 | 0 |
-| CI | ✅ **绿（修好了长期红灯）** |
-| GitHub Actions 构建 | ✅ 产出 deb 24MB / AppImage 97MB |
+| CI | ✅ **全绿**（测试 / 含唤醒词 / Windows 检查 / 密钥扫描 / build-app-linux）|
+| 真机全链路 | ✅ 唤醒 1 / 派活 1 / DSH 会话 1 / 主动汇报 1 |
+| 悬浮球拖动 | ✅ A/B 两条真机用例，误差 1px |
+| 打断（barge-in） | ✅ 真机抓到完整打断（interruptions=1；本地反应 <10ms）|
+| 音频流防自打断 | ✅ `tools/verify_audio_topology.sh` PASS（`--live` 实测 0 打断）|
+| 并行车道 | **3 条**：local（无头）/ gpd（真桌面+真麦）/ pc（真桌面）|
+| 编译方式 | 全部 GitHub Actions（单次 3–4 分钟），CI 产物 sha 可追溯 |
+| 内存 | ≈294MB PSS（目标 <150MB，❌ 待用户拍板）|
 
-## 已完成（全部有实测证据）
+## 里程碑（新 → 旧）
 
-### 0. 今天最硬的一块：麦克风（P0，卡了很久）
+### V3.3 打断验收 + 音频流排查（2026-10-25 05:40）
+- 首次拿到打断真机证据：停播 + `response.cancel` + 计数 + 回聆听态
+- 修 3 个 bug：打断路径 `block_on` panic、journal 写 ANSI 导致脚本失真、
+  「说完」判定 200ms 太短导致 `ongoing response already exists`
+- 按用户要求改语义：回复中收到新一句 → 先取消再干净开新轮；
+  打断计数两条路径都算 + 2 秒去重（一次开口只记一次）
+- 音频输入/输出流实测：App 播放→物理 sink、采集←虚拟 sink monitor，**结构上不会自打断**
+- 新增：`tools/verify_bargein.sh`、`tools/verify_audio_topology.sh`、
+  `docs/v2/bargein.md`、`docs/v2/audio-topology.md`
 
-两个原因叠加，都修了：
-1. 服务跑的是**旧 deb 里的二进制**（没有 PulseAudio 后端代码）—— 改完代码要
-   先 `ls -la /proc/$(pgrep -x morphofly-app)/exe` 确认跑的是哪个文件。
-2. `.asoundrc` 里 `device "default"` 在 pipewire-pulse 上不存在（`No such entity`）。
+### V3.2 语音全链路修复（2026-10-25 04:40）
+- 真机时间线：20:35 唤醒 → 20:36 DSH 会话 → 20:37 会话已关 → **自己重开 → 回报**
+- 修 5 个真 bug：汇报不响（两个 TaskStore 实例）、只读任务被误解为复杂、
+  ASR 听错项目名、ASR 听错专有名词、DSH 握手超时（高负载实测 22.8s > 30s 上限）
+- 新增：ASR 模糊匹配 + 本地纠正表；`tools/gpd_voice_e2e.sh` 计数修正
+- Windows 车道：pc 接成第二条真机桌面车道（`--with-pc`）
+- 证据：`runs/20261024-2208-ui-ux-360/verify-round12.md`
 
-现在：`音频后端：PulseAudio` + `KWS 常驻监听已启动`。
-详见 `docs/v2/gpd-voice-e2e.md`。
+### V3.1 拖动 + 编译走 CI + 并行 e2e（2026-10-25 03:45）
+- 拖动：原生 `startDragging()` 在 KWin/XWayland 实测无效 → Rust 位置跟随；
+  松手只吸水平边，垂直位置保留
+- 编译：CI 新增 `build-app-linux` + `tools/gpd_deploy_ci.sh`（掌机不再本地编译）
+- 并行：`tools/e2e_matrix.sh`，本机 ∥ gpd（+pc）多车道
+- 证据：`docs/v2/orb-drag.md`、`runs/.../verify-round11.md`
 
-### 1. 修复 12 个 bug（其中 7 个是「假通过」）
+### V3 悬浮窗（2026-10-24 23:20）
+- 148×148 置顶透明小球、启动右下角、360 风格、六态动效，机器验收 5/5
 
-| # | 问题 | 类型 |
+### V2（2026-10-24）
+- 麦克风打通（PulseAudio 后端 + 去掉坏的 `.asoundrc`）
+- 修 12 个 bug（7 个「假通过」：写了状态变更但没通知外部系统）
+- 多 agent / 项目别名表 / 模型切换 / AEC 接入 / 进程复用 / 托盘 / 意图确认
+- 首次真机全链路（喊小蝶 → 派活 → 主动汇报）
+
+## 当前架构要点（别破的三条不变量）
+
+1. **WebView 永不碰麦克风**：音频全在 Rust，前端只画球
+2. **语音模型只有 5 个函数**（派活/查进度/取消/追加/切上下文），无文件与命令能力
+3. **语音链路与任务链路独立**：语音轮次先结束，任务后台跑完再主动汇报
+
+## 已知限制 / 风险
+
+| # | 限制 | 现状 |
 |---|---|---|
-| 1 | 模型编造目录列表（6 个全不存在）| 🔴 致命 |
-| 2 | 模型凭空捏造路径（Code_Project/M1）| 🔴 致命 |
-| 3 | 模型假装干活（说「好查着呢」不调工具）| 🔴 致命 |
-| 4 | cancel_task 不真停 DSH | 🟠 欺骗 |
-| 5 | append 不发给运行中 DSH | 🟠 欺骗 |
-| 6 | set_context(model) 只改字段 | 🟠 假功能 |
-| 7 | set_context(agent) 只改字段 | 🟠 假功能 |
-| 8 | ACP 不按 sessionId 过滤 | 🟠 多agent地基 |
-| 9 | 打断不停云端生成 | 🟡 浪费token |
-| 10 | 每任务 spawn（慢 2.8s）| 🟡 性能 |
-| 11 | 兜底纠正判据错 → 一句话派 4 次任务 | 🔴 致命 |
-| 12 | App 重启把历史任务结果重念一遍 | 🟠 体验 |
-
-「假通过」的共同模式：**写了状态变更但没通知外部系统**，只改本地副本。
-
-### 2. P0 体验
-- ✅ 系统托盘（左键显示/隐藏、右键退出）—— 之前只能 pkill
-- ✅ 小球自动贴右下角
-- ✅ 拖动 + 松手自动贴边
-- ✅ 文案极简（23 字 → 5 字）
-- ✅ 复杂任务先问确认
-
-### 3. 多 agent
-- ✅ `set_context` 第 5 个工具（白名单+黑名单不变量）
-- ✅ 项目别名表（中文 → 真实路径）
-- ✅ agent 真实切换（dsh 可用；codex 需登录）
-- ✅ 模型切换（JSON 数组格式，DSH 校验）
-- ⚠️ 语音切换不可用（模型不调工具，协议无用户转写）
-
-### 4. AEC
-- ✅ sonora AEC3 接入音频链路
-- ✅ 19 个测试全绿，合成信号 34.5dB
-- ✅ 双讲人声保留 43-55%
-- ⏳ 真机听觉验证（等麦克风桥接修好）
-
-### 5. 进程复用
-- ✅ 冷启动 3698ms → 复用后 **1102ms**
-- ✅ 每任务省 2.6 秒
-
-### 6. 测试基础设施
-- ✅ 15 条 e2e 用例 + TTS 合成 + 裸 PCM 注入
-- ✅ 真机驱动 `e2e_drive.rs`
-- ✅ KWS 前置门打通（本机建 libstdc++ 软链接解决）
-
-### 7. Computer Use
-- ✅ 接入 `computer-use-linux`（SSH 桥接到 gpd）
-- ✅ 18 个工具可用：列窗口/点击/输入/截图
-- ✅ 注册到 DSH profile
-
-### 8. CI/CD
-- ✅ GitHub Actions 构建成功（deb 24MB）
-- ✅ 产物在 gpd（N6000 无 AVX）能运行
-
-## 关键发现（推翻了 6 个原有判断）
-
-| 我说过 | 实际 |
-|---|---|
-| AEC 只有 1.9dB，方案不行 | 测试信号太规则，实际 34.5dB |
-| codex 实测可用 | 复用 dsh 进程池的假象 |
-| 谐音误唤醒是产品 bug | KWS 干净，e2e 绕过了它 |
-| wings-pc 桌面已就绪 | 是登录器进程 |
-| 缺陷 #4 需 300 行重构 | 50 行省 2.6 秒 |
-| wings-pc 能测 AEC | **它没有麦克风硬件** |
-
-## 第 2 轮（2026-10-24 深夜）又修了什么
-
-| 问题 | 真因 |
-|---|---|
-| 右下角又歪 212px | 启动时字幕抢在贴边前调 orb_tip，归位点拿屏幕正中当基准 |
-| 模型只回「好，查着呢」不派活，且没被纠正 | 纠正判据只认云端 `speech_started`，本地 VAD 提前 commit 时那条不来 |
-| 项目名被 ASR 听错就直接放弃 | `delegate` 里 dir 不存在只追问，没先查别名表 |
-| **Windows 上仓库根本检不出来** | 根目录有个被跟踪的空文件叫 `...`（Windows 文件名不能以点结尾） |
-| **仓库 423MB 是构建产物撑的** | `ci-dist/` 把 AppImage + 解开的 squashfs-root 提交了 |
-
-## Windows 兼容（用户 2026-10-25 要求）
-
-**能编、能打 NSIS 安装包、三个必然挂的地雷已拆；运行时没在真 Windows 上验过。**
-
-1. 数据目录只读 `HOME` → `USERPROFILE` 回退（+3 测试）
-2. `Command::new("dsh")` 拉不起 npm 装的 `dsh.cmd` → `spawn_program` 按 PATHEXT 试 + `cmd /C` 兜底
-3. 平台代码未隔离 → `force_x11_backend` cfg 到 linux；cpal 的 pulseaudio 依赖本身是 target 门控的
-
-闸门：CI 加 `build-windows` job；release 加 Windows NSIS 打包 job。
-详见 `docs/v2/windows.md`（含 5 条没验证的风险）。
+| 1 | Windows 运行时没在真 Windows 验过 | 能编、能打 NSIS；`productName` 还是中文，安装路径有风险 |
+| 2 | AEC 真机听觉验证没做 | 代码已接 sonora/AEC3；两台设备都没有能出声的扬声器，测试台没有回声可消 |
+| 3 | 打断自动化复现不稳 | 虚拟音源注入延迟 1–2s，模型短回答只有 2–4s；建议接耳机人工验手感 |
+| 4 | 内存 ≈294MB（要求 <150MB） | 待用户拍板：接受 / 原生重写 UI |
+| 5 | 仓库 `.git` 245MB | 历史里有早期构建产物；改写历史不可逆，待用户点头 |
+| 6 | ASR 内容词听错（README→limit） | 本地救不了，靠模型直接听音频；项目名这类有限集合已兜底 |
+| 7 | 无扬声器机器上「汇报念不出」 | 会反复重开会话（计费）；退避策略未做（P1）|
 
 ## 剩余工作
 
-### P0 阻塞：麦克风桥接
-gpd 上 ALSA→PipeWire 录音流报 `No such entity`。
-已改 cpal 用 PulseAudio 后端（代码已提交），**待 gpd 编译验证**。
+### P1
+1. 无扬声器/无输出设备时给主动汇报加**退避与上限**（避免反复开计费会话）
+2. AEC 真机验证（接实体音箱 + 麦克风；或人工戴耳机喊「停」验打断手感）
+3. Windows 真机试装（先把 `productName` 改 ASCII）
+4. 打断自动化复现稳定化（用更长的模型回答或双注入）
 
-### P1 待做
-1. AEC 真机听觉验证（喊「停」能否打断）
-2. 语音切换 agent（需协议加用户转写，或改托盘菜单）
-
-### P2 可选
+### P2
 1. 完整多 session 进程池
 2. 内存优化（等用户拍板）
 3. ESP32 / 安卓 / Web 端
 
 ## 硬件与设备
 
-| 设备 | 用途 | 限制 |
-|---|---|---|
-| wings-tx-us1（本机）| 开发、单测、CI | 无桌面无音频 |
-| wings-pc | GUI 验证 | **无麦克风硬件** |
-| **wings-gpd** | **真机全流程** | 有麦克风+桌面，但 N6000 慢 |
+| 设备 | 地址 | 用途 | 限制 |
+|---|---|---|---|
+| wings-tx-us1（本机）| 100.99.51.5 | 开发、单测、CI 触发 | 无桌面、无音频 |
+| wings-gpd | `wings@100.107.9.102` | **真机全流程**（桌面+麦克风+虚拟音源注入） | N6000 慢；无扬声器 |
+| wings-pc | `wings@100.110.222.0` | 第二条真机桌面车道（已登录桌面） | 有麦克风接口、**无可用扬声器**；需先起服务 |
+
+> 编译一律走 GitHub Actions（用户要求），设备上只部署 CI 产物：
+> `tools/gpd_deploy_ci.sh --run <run-id>`。
 
 ## 文档索引
 
 | 想知道什么 | 看哪个 |
 |---|---|
-| 侦察结论 | `docs/v2/scout-full.md` |
-| 体验问题清单 | `docs/v2/review.md` |
-| AEC 状态 | `docs/v2/aec-status.md` |
-| AEC 真机测试 | `docs/v2/evidence/aec-realtime-test.md` |
-| e2e 发现 | `docs/v2/e2e-status.md` |
-| 不会误唤醒的证明 | `docs/v2/no-false-wake-proof.md` |
-| 工具真实性审计 | `docs/v2/tool-audit.md` |
-| 教训总结 | `docs/v2/lessons.md` |
+| **怎么验证这个项目** | `docs/v2/HOW-TO-VERIFY.md` |
+| 悬浮球拖动（为什么原生拖不动）| `docs/v2/orb-drag.md` |
+| 编译走 CI + 一键部署 | `docs/v2/ci-build.md` |
+| 并行 e2e / pc 车道 | `docs/v2/parallel-e2e.md`、`docs/v2/pc-lane.md` |
+| 打断实现与限制 | `docs/v2/bargein.md` |
+| 测试台音频流（防自打断）| `docs/v2/audio-topology.md` |
+| ASR 听错兜底 | `docs/v2/asr-project-mishearing.md` |
+| Windows 兼容 | `docs/v2/windows.md` |
+| DSH 握手 | `docs/v2/dsh-handshake.md` |
 | 硬件事实 | `docs/v2/hardware-facts.md` |
-| Computer Use 接入 | `docs/v2/computer-use-setup.md` |
-| 语音切换设计 | `docs/v2/voice-switch-design.md` |
-| KWS 边界情况 | `docs/v2/kws-edge-case.md` |
+| 教训总结 | `docs/v2/lessons.md` |
+| 所有实测数字 | `docs/实测数据.md` |
+| 每轮验收记录 | `runs/20261024-2208-ui-ux-360/verify-round*.md` |

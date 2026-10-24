@@ -1,16 +1,34 @@
 # 怎么验证蝶梦（操作手册）
 
-**给后续接手的 agent 或人看。**
+**给后续接手的 agent 或人看。最后更新：2026-10-25 05:50**
 
 ## 环境分工
 
 | 设备 | 地址 | 用途 | 限制 |
 |---|---|---|---|
-| 本机（云主机）| - | 开发、单测、CI | 无桌面、无音频 |
-| wings-pc | `wings@100.110.222.0` | GUI 验证 | **无麦克风硬件** |
-| **wings-gpd** | `wings@100.107.9.102` | **真机全流程** | N6000 慢，编译 5 分钟 |
+| 本机（云主机）| 100.99.51.5 | 开发、单测、CI 触发 | 无桌面、无音频 |
+| wings-gpd | `wings@100.107.9.102` | **真机全流程**（桌面 + 麦克风 + 虚拟音源注入） | N6000 慢；**没有能出声的扬声器** |
+| wings-pc | `wings@100.110.222.0` | 第二条真机桌面车道（已登录桌面） | 有麦克风接口、**无可用扬声器**；需先起服务 |
 
 用 `tools/pc_ssh.sh` / `tools/gpd_ssh.sh` 拿目标地址（有兜底逻辑）。
+
+> **编译一律走 GitHub Actions**（用户要求）。设备上只部署 CI 产物：
+> `tools/gpd_deploy_ci.sh`。
+
+## 验收脚本清单（一条命令一项）
+
+| 验什么 | 命令 | 说明 |
+|---|---|---|
+| 本机单测 + 跨平台逻辑 | `cargo test -p morphofly-core --lib` | 271 条；`--features kws` 是 282 条 |
+| 前端渲染单测 | `node --test app/frontend/test/` | 13 条 |
+| 悬浮球几何（位置/置顶/尺寸/截图/点击）| `tools/verify_float_ui.sh all` | 在 gpd 上跑 |
+| **悬浮球拖动** | `tools/verify_orb_drag.sh` | A/B 两条用例，误差 1px |
+| **打断（barge-in）** | `tools/verify_bargein.sh` | 注入「停」串，量本地反应 <300ms |
+| **音频流防自打断** | `tools/verify_audio_topology.sh [--live]` | `--live` 跑真会话断言 0 打断 |
+| 语音全链路 | `tools/gpd_voice_e2e.sh` | 唤醒→派活→DSH→主动汇报 |
+| 并行多车道 | `tools/e2e_matrix.sh [--with-pc]` | local ∥ gpd ∥ pc |
+| 部署 CI 产物 | `tools/gpd_deploy_ci.sh --run <id>` | 下载 + 装 + 重启服务 |
+| 看真机画面 | `python3 tools/gpd_shot.py /tmp/x.png` | 唯一能落盘的截图路径 |
 
 ## 一、本地验证（最快，不依赖设备）
 
@@ -18,10 +36,10 @@
 cd ~/Code_Project/morphofly
 source tools/dev-env.sh    # 本机必需（无 root，ALSA 解包在 ~/.local/sysroot）
 
-# 单元测试（232 个）
+# 单元测试（271 个）
 cargo test -p morphofly-core --lib
 
-# 含唤醒词的测试（243 个）
+# 含唤醒词的测试（282 个）
 cargo test -p morphofly-core --features kws --lib
 
 # 前端（8 个）
@@ -58,92 +76,94 @@ python3 tools/e2e/run.py --mode real
 
 **期望：13/14 通过**（唯一失败是 edge-02「小蝶帮我」KWS 漏检）。
 
-## 三、gpd 真机部署
+## 三、真机部署（CI 产物，一条命令）
 
-### 3.1 拿 CI 编译的包（推荐）
+### 3.1 部署
 
 ```bash
-# 触发构建
-gh workflow run release.yml
+# 1) 本地改完 push，等 CI 的 build-app-linux 绿
+gh run list --workflow=ci.yml --limit 3
 
-# 等完成
-gh run list --workflow=release.yml --limit 1
+# 2) 下载最新成功产物 → 传到设备 → 解到 target/release → 重启服务
+tools/gpd_deploy_ci.sh                    # 取 main 上最近一次成功 CI
+tools/gpd_deploy_ci.sh --run <run-id>     # 指定某次
+tools/gpd_deploy_ci.sh --no-restart       # 只装不重启
 
-# 下载产物
-gh run download <run-id> -D /tmp/gh-dist
-
-# 传到 gpd
-T=$(tools/gpd_ssh.sh)
-scp /tmp/gh-dist/morphofly-linux-x86_64/deb/蝶梦_0.1.0_amd64.deb "$T:/tmp/morphofly.deb"
-
-# 解包（gpd 没有 dpkg）
-ssh "$T" 'cd /tmp && rm -rf mf-install && mkdir mf-install && cd mf-install && \
-  ar x /tmp/morphofly.deb && tar xf data.tar.*'
+# 3) 确认跑的是哪个提交
+ssh "$(tools/gpd_ssh.sh)" 'cat ~/Code_Project/morphofly/target/release/build.txt'
 ```
 
-**为什么不用 AppImage**：AppImage 会打包编译机的系统库
-（含 AVX 指令），在 N6000（无 AVX）上会 SIGILL。deb 不打包系统库。
+产物解到 `~/Code_Project/morphofly/target/release/`（二进制 + `resources/`），
+服务的 `MORPHOFLY_BUNDLE_DIR` 已经指向那里，**不用改服务配置**。
 
-### 3.2 启动（关键：不能用 nohup）
+### 3.2 启动方式（关键：不能用 nohup）
 
 ```bash
-# ❌ 错误：nohup setsid 在 SSH 会话退出时会被杀，App 启动后立刻消失（日志全空）
-# ✅ 正确：systemd user service
+# ❌ nohup/setsid 在 SSH 会话退出时会被杀，App 立刻消失、日志全空
+# ✅ systemd user service，ExecStart 指向启动包装脚本
+ssh "$(tools/gpd_ssh.sh)" 'cat ~/.config/systemd/user/morphofly-test.service'
+```
 
-ssh "$T" '
-XAUTH=$(ls /run/user/1000/ | grep xauth | head -1)
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/morphofly-test.service <<EOF
-[Unit]
-Description=MorphoFly (test)
+服务单元要点：
 
+```ini
 [Service]
 Type=simple
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/run/user/1000/$XAUTH
-Environment=MORPHOFLY_BUNDLE_DIR=/tmp/mf-install/usr/lib/蝶梦/resources
-ExecStart=/tmp/mf-install/usr/bin/morphofly-app
+Environment=GDK_BACKEND=x11            # 必须：否则 Wayland 下不能定位/置顶
+Environment=MORPHOFLY_BUNDLE_DIR=/home/wings/Code_Project/morphofly/target/release/resources
+Environment=RUST_LOG=info,morphofly_app=debug
+# ⚠️ 不要写死 XAUTHORITY！每次登录文件名都会变
+ExecStart=/usr/bin/bash /home/wings/Code_Project/morphofly/tools/gpd_run_app.sh
 Restart=no
-EOF
-systemctl --user daemon-reload
-systemctl --user start morphofly-test
-'
 ```
 
-### 3.3 麦克风配置（必做，否则 KWS 起不来）
+`tools/gpd_run_app.sh` 会在启动时现找当前会话的 `XAUTHORITY`
+（先抄 plasmashell 的 environ，退路取最新的 `xauth_*`）。
+写死会导致重新登录后崩在 `Failed to initialize GTK`（status=101）。
 
-gpd 上 ALSA→PipeWire 的录音流有 bug，必须显式指定设备：
-
-```bash
-ssh "$T" 'cat > ~/.asoundrc <<EOF
-pcm.!default {
-    type pulse
-    device "alsa_input.pci-0000_00_1f.3-platform-sof-essx8336.stereo-fallback"
-}
-ctl.!default { type pulse }
-EOF'
-```
-
-**最近的修法**：代码里已改 cpal 优先用 PulseAudio 后端（commit `e64c936`），
-理论上不再依赖 `.asoundrc`。两者都保留更保险。
-
-### 3.4 确认成功
+### 3.3 确认成功
 
 ```bash
-ssh "$T" 'journalctl --user -u morphofly-test -n 20 --no-pager | \
-  grep -E "托盘|贴边|AEC|KWS"'
+ssh "$(tools/gpd_ssh.sh)" 'journalctl --user -u morphofly-test -n 30 --no-pager -o cat | \
+  grep -E "托盘|贴边|AEC|KWS|启动自检"'
 ```
 
 期望看到：
+
 ```
 系统托盘已就绪（左键显示/隐藏，右键菜单）
-小球已贴边 x=3344 y=1456 right=true
+小球已贴边 x=2908 y=1516 right=true
 AEC 已启用（sonora / AEC3） stream_delay_ms=0
 KWS 常驻监听已启动
+前端日志 js=启动自检 tauri=true core=true win=true
 ```
 
-**这四行同时出现 = 蝶梦完整跑起来了。**
+**这五行同时出现 = 蝶梦完整跑起来了。**
+（`前端自检` 那行很关键：透明无边框窗口没 devtools，桥有没有通只能看它。）
+
+### 3.4 虚拟音源（语音测试必需）
+
+gpd 没有能出声的扬声器，声学回环做不了，测试改成「注入虚拟音源」：
+
+```bash
+ssh "$(tools/gpd_ssh.sh)" '
+  pactl load-module module-null-sink sink_name=mfsink || true
+  pactl set-default-source mfsink.monitor     # App 从这里录音
+  pactl get-default-source'                    # 期望 mfsink.monitor
+
+# 改完默认 source 必须重启 App（采集设备是建会话时打开的）
+```
+
+**注意两个坑**：
+
+1. 默认 **sink** 必须留在物理设备，**不要**设成 mfsink ——
+   那会让 App 听到自己的 TTS → 自打断（`tools/verify_audio_topology.sh` 会报 FAIL）。
+2. 注入链路有 1–2 秒延迟（paplay 启动 + null-sink/monitor + 采集缓冲），
+   这是测试台延迟，不是产品延迟。
+
+音频拓扑详见 `docs/v2/audio-topology.md`。
 
 ## 四、用 Computer Use 操作 gpd 桌面
 
@@ -168,54 +188,88 @@ CMD = ("export PATH=$HOME/.bun/bin:$HOME/.local/share/fnm/aliases/default/bin:$P
 - 截图分辨率会缩放，要按 `scale` 换算坐标
 - 双屏时先确认哪块屏（gpd 是 3072×1728 + 1920×1200）
 
-## 五、AEC 真机验证（最后一步）
+## 五、语音全链路 / 打断 / AEC
 
-需要真实人声。两条路：
+### 5.1 全链路（虚拟音源，一条命令）
 
-### 路线 A：人站在 gpd 前
-1. 启动 App（3.2）
-2. 喊「小蝶」→ 看日志 `唤醒命中`
-3. 让它说话，观察是否自我打断
-4. 说话时喊「停」→ 应在 300ms 内停播
-
-### 路线 B：注入真实 TTS 音频
 ```bash
-# 生成「小蝶」音频（本机）
-uv run --with edge-tts edge-tts --voice zh-CN-XiaoxiaoNeural \
-  --text "小蝶" --write-media /tmp/xiaodie.mp3
-uv run --with miniaudio python -c "
-import miniaudio, wave
-d = miniaudio.decode_file('/tmp/xiaodie.mp3',
-    output_format=miniaudio.SampleFormat.SIGNED16, nchannels=1, sample_rate=16000)
-w = wave.open('/tmp/xiaodie.wav','wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
-w.writeframes(bytes(d.samples)); w.close()"
-
-# 本地先验 KWS 能识别
-MORPHOFLY_BUNDLE_DIR=$PWD/app/src-tauri/resources \
-  cargo run -q -p morphofly-core --features kws --example kws_file_probe2 -- /tmp/xiaodie.wav
-# 期望：命中 1 处: [(1.1, "小蝶")]
-
-# 传 gpd 并播放（会被麦克风收到）
-scp /tmp/xiaodie.wav "$T:/tmp/"
-ssh "$T" 'export XDG_RUNTIME_DIR=/run/user/1000; paplay /tmp/xiaodie.wav'
-
-# 看是否唤醒
-ssh "$T" 'journalctl --user -u morphofly-test -n 10 --no-pager | grep -E "唤醒|S1|S2"'
+tools/gpd_voice_e2e.sh          # 唤醒 → 说任务 → 派活 → DSH 干活 → 主动汇报
+tools/gpd_voice_e2e.sh --wake-only   # 只验唤醒
 ```
 
-**注意**：内置扬声器音量小，麦克风可能收不到。
-先把音量调到 100%，或接外接音箱。
+它会：准备音频（edge-tts）→ 设虚拟音源 → 重启 App → 注入唤醒词 →
+等会话建立 → 注入任务语音 → 轮询「主动汇报」→ 计数判定。
+
+期望输出：
+
+```
+派活次数:          1
+DSH 会话新建:      1
+主动汇报:          1
+✅ 全链路通过：唤醒 1 次、派活 1 次、汇报 1 次
+```
+
+**关键点**：语音会话 90 秒空闲会被云端断开，而 DSH 干活要 1–3 分钟 ——
+所以「会话已经关了它自己重开会话回来汇报」才是核心验收，不要只看会话内的汇报。
+
+### 5.2 打断（barge-in）
+
+```bash
+tools/verify_bargein.sh --dry-run   # 看计划
+tools/verify_bargein.sh             # 真机跑一次
+```
+
+判定：① 出现打断日志 ② 打断后回到 S2 ③ 本地反应（VAD 判定人声 → 停播）<300ms。
+
+**已知不稳定**：虚拟音源注入有 1–2 秒延迟，模型对短问题只答 2–4 秒，
+经常错过「正在说话」的窗口。真机手感请人工验证（接耳机说话时喊「停」）。
+
+### 5.3 音频流 / 防自打断
+
+```bash
+tools/verify_audio_topology.sh         # 只查结构（只读）
+tools/verify_audio_topology.sh --live  # 真跑一次「只说话不插话」，断言 0 打断
+```
+
+会检查：默认 sink/source 是什么、采集源是不是默认输出的 monitor（自打断高危配置）、
+App 的播放/录音流是否存在。
+
+### 5.4 AEC（仍然没做真机听觉验证）
+
+代码里已接 sonora / AEC3，但两台设备（gpd、pc）都**没有能出声的扬声器**，
+测试台用虚拟音源注入 → App 的输出不进采集 → **没有回声可消**，
+所以 AEC 效果在这套环境里测不出来。
+
+能做的验证：
+1. 接实体音箱 + 麦克风，外放音量 70%，让它说话时喊「停」
+2. 期望 300ms 内停播、且不自我打断
+3. 观察日志 `AEC 已启用（sonora / AEC3）` 与打断记录
+
+### 5.5 生成注入音频（手工时用）
+
+```bash
+uvx --from edge-tts edge-tts --voice zh-CN-XiaoxiaoNeural \
+  --text "小蝶" --write-media /tmp/xiaodie.mp3
+scp /tmp/xiaodie.mp3 "$(tools/gpd_ssh.sh):/tmp/"
+ssh "$(tools/gpd_ssh.sh)" 'ffmpeg -y -loglevel error -i /tmp/xiaodie.mp3 -ar 16000 -ac 1 /tmp/xiaodie.wav'
+ssh "$(tools/gpd_ssh.sh)" 'paplay --device=mfsink /tmp/xiaodie.wav'
+```
 
 ## 六、常见问题
 
 | 症状 | 原因 | 解决 |
 |---|---|---|
-| `KWS 需要麦克风` | ALSA 桥接失败 | 见 3.3 麦克风配置，或确认 cpal PulseAudio 后端生效 |
+| `KWS 需要麦克风` | 采集设备/后端问题 | 确认 `音频后端：PulseAudio`，并确认默认 source 是 mfsink.monitor |
 | App 启动后日志全空、进程消失 | nohup 被杀 | 用 systemd service（3.2）|
-| `PulseAudio: Unable to create stream: No such entity` | ALSA→PipeWire 录音流 bug | 同上 |
-| 窗口跑到屏幕外 | 贴边坐标是按主屏算的 | 查 `小球已贴边 x=? y=?`，确认在哪块屏 |
+| `Failed to initialize GTK` + `Authorization required` | 服务里写死了旧的 XAUTHORITY | 用 `tools/gpd_run_app.sh` 作 ExecStart（3.2）|
+| `PulseAudio: Unable to create stream: No such entity` | ALSA→PipeWire 录音流 bug | 用 cpal 的 PulseAudio 后端（代码已改）|
+| 脚本 grep 不到 `state="S4"` | 老版本二进制把 ANSI 颜色码写进 journal | 升级到 ≥ d4f6ee1；脚本侧也做了去 ANSI |
+| `ongoing response already exists` | 一话被切成多段，没取消上一轮就开新轮 | 已修（说完判定 400ms + 开新轮前取消）|
+| 打断计数变多/重复 | 本地 VAD 与云端 speech_started 各看见一次 | 已加 2 秒去重（一次开口记一次）|
+| 没人说话却记了打断 | 默认 sink 被设成了虚拟 sink（自打断）| 默认 sink 保持物理设备；跑 `verify_audio_topology.sh` |
+| 窗口跑到屏幕外 | 贴边坐标按主屏算 | 查 `小球已贴边 x=? y=?`，确认哪块屏 |
 | 双屏截图对不上坐标 | 截图缩放 + 多屏 | 先 `xrandr` 确认布局 |
-| CI 产物在 gpd SIGILL | AppImage 打包了 AVX 库 | 用 deb |
+| CI 产物在 gpd SIGILL | AppImage 打包了 AVX 库 | 用 CI 的原生二进制（现在默认就是）|
 
 ## 看真机效果（截图）
 

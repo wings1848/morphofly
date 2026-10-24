@@ -5,6 +5,49 @@
 
 ## [Unreleased]
 
+### 新增（V3，2026-10-24～25）
+
+**悬浮窗（用户要求：默认置顶 / 启动右下角 / 参考 360 悬浮窗）**
+- 148×148 透明置顶小球，六态视觉（S0–S5），启动贴右下角
+- 气泡字幕向左展开，收起时右边缘不偏（KWin 不允许右边缘越界）
+- **拖动**：Rust 每 16ms 读全局指针搬窗口（原生 `startDragging()` 在
+  KWin/XWayland 上实测无效），松手只吸左右边、垂直位置保留
+- 前端日志桥 `orb_log` / `orb_metrics`：透明无边框窗口没 devtools，排障靠 journal
+
+**编译与交付**
+- CI 新增 `build-app-linux`：产出 `morphofly-app-linux-x64.tar.gz`
+  （二进制 + 唤醒词模型 + `build.txt` 版本标记）
+- `tools/gpd_deploy_ci.sh`：下载 CI 产物 → 部署到设备 → 重启服务（一条命令）
+- **掌机不再本地编译**（用户要求），CI 单次约 3–4 分钟
+
+**并行验收**
+- `tools/e2e_matrix.sh`：本机（无头）∥ gpd（真桌面+真麦）∥ pc（真桌面）三条车道，
+  `--with-pc` 启用 pc 车道，默认不花钱、不重启服务
+- gpd 上新增 `tools/verify_orb_drag.sh`（拖动 A/B 两条用例，真机误差 1px）
+- 新增 `tools/verify_bargein.sh`（打断）、`tools/verify_audio_topology.sh`（音频流防自打断）
+
+**语音链路**
+- 用户转写事件接上（`conversation.item.input_audio_transcription.*`），
+  模型只说不做时本地拿用户原话代派
+- ASR 听错兜底三层：项目名模糊匹配、任务文本纠正、专有名词本地纠正表
+- 启动自愈：上次没跑完的 `running` 任务标成「被中断」并被主动汇报
+- DSH 握手超时按慢机器放宽（initialize 30s→75s，建会话 50s→100s）
+
+### 修复（V3）
+- **干完了不汇报**：会话与汇报守卫各自 `TaskStore::open(同一路径)` 建了两个实例，
+  守卫看不到会话派出的任务 → 改成共用同一份 store/dispatcher
+- **只读任务被反问确认**：「查看 /path 的 README」因路径太长（57 字）被判复杂任务
+  → 只读动词 + 无改动动词时直接派
+- **拖动**：原生拖动无效 + 松手强拉回底部 → 改位置跟随 + 只吸水平边
+- **打断路径 panic**：async 任务里 `block_on` → 推流任务死掉、麦克风静默失效 → 改 `spawn`
+- **「说完」判定 200ms 太短**：换气切句 → `ongoing response already exists` → 改 400ms
+- **打断判定**：从「播放队列有音频」扩成「队列有音频 或 状态机在思考/说话」，
+  并把两条打断路径的计数都补上（2 秒去重，一次开口只记一次）
+- **journal 写入 ANSI 颜色码**：脚本 grep 不到状态、`-o json` 解析踩坑 → 只在终端上色
+- **服务启动崩在 GTK**：单元里写死 `XAUTHORITY`，重新登录后失效
+  → `tools/gpd_run_app.sh` 启动时现找；验收脚本也会自动发现
+- **Windows 构建失败**：兜底取消用了 kws 门控变量 → 改未门控的 `m_machine`
+
 ### 新增（V2）
 - **多 agent 支持**：`set_context` 第 5 个工具，可切换 agent / 项目 / 模型
   - agent 表可配置，内置 dsh 和 codex（codex 走 `@zed-industries/codex-acp` 适配器）
@@ -53,7 +96,7 @@
 - `docs/实测数据.md` 的内存口径改为 PSS（RSS 会重复计算共享库）
 
 ### 待处理
-- **内存 371MB (PSS)** 超标（要求 <150MB）—— 需用户拍板：
+- **内存 ≈294MB (PSS)** 超标（要求 <150MB）—— 需用户拍板：
   接受现状，还是走原生重写（3–9 天，视觉会降级）
 - **语音切换 agent 不可用** —— 模型不调 set_context 工具，
   且协议没开用户语音转写所以宿主也拿不到原话。暂用托盘菜单替代
