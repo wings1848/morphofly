@@ -50,6 +50,12 @@ pub enum RealtimeEvent {
         name: String,
         arguments: String,
     },
+    /// 模型这条回复在服务端会话里的 item id。
+    ///
+    /// 打断时必须用它发 `conversation.item.truncate`，告诉服务端
+    /// 「用户只听到前 N 毫秒」，否则服务端以为整段都说出口了，
+    /// 下一轮的上下文就和用户实际听到的对不上（官方控制台就是这么做的）。
+    AssistantItem { item_id: String },
     /// 本轮响应结束，`status` 可能是 completed / cancelled / failed / incomplete
     ResponseDone { status: String },
     /// 服务端错误。StepFun 的行为：发 `error` 但**会话不断**（例如 voice 非法），所以不 panic
@@ -74,6 +80,7 @@ impl RealtimeEvent {
             RealtimeEvent::TranscriptDone { .. } => "TranscriptDone",
             RealtimeEvent::TextDelta { .. } => "TextDelta",
             RealtimeEvent::ToolCall { .. } => "ToolCall",
+            RealtimeEvent::AssistantItem { .. } => "AssistantItem",
             RealtimeEvent::ResponseDone { .. } => "ResponseDone",
             RealtimeEvent::Error { .. } => "Error",
         }
@@ -141,6 +148,15 @@ pub enum ClientCommand {
     /// 手动往上下文里塞一条 item（系统提示、工具结果回灌等）
     #[serde(rename = "conversation.item.create")]
     ConversationItemCreate { item: Value },
+    /// 把模型这条回复截断到「用户实际听到的位置」（打断后对齐上下文）。
+    ///
+    /// OpenAI Realtime / StepFun 同构字段：`item_id` + `content_index` + `audio_end_ms`。
+    #[serde(rename = "conversation.item.truncate")]
+    ConversationItemTruncate {
+        item_id: String,
+        content_index: u32,
+        audio_end_ms: u64,
+    },
 }
 
 /// `session.update` 的载荷。

@@ -86,7 +86,9 @@ pub fn parse_event(raw: &str, sample_rate: u32) -> Option<RealtimeEvent> {
 
         // 工具调用：完整参数只出现在 done / 带参数的 added 上
         "response.output_item.done" | "response.output_item.created" => tool_call(&v, false),
-        "response.output_item.added" => tool_call(&v, true),
+        // added 事件里既有 function_call（工具）也有 message（模型这条回复），
+        // 后者要留 item_id 给「打断后 truncate」用（官方控制台的做法）。
+        "response.output_item.added" => assistant_item(&v).or_else(|| tool_call(&v, true)),
         "response.function_call_arguments.done" => tool_call_flat(&v),
         "response.function_call_arguments.delta" => None,
 
@@ -145,6 +147,22 @@ pub fn parse_event(raw: &str, sample_rate: u32) -> Option<RealtimeEvent> {
 }
 
 /// 从 `item`（或顶层）取 `function_call`。
+/// `response.output_item.added` 里 role=assistant 的 message item → 记 item_id。
+fn assistant_item(v: &Value) -> Option<RealtimeEvent> {
+    let item = v.get("item").filter(|i| i.is_object())?;
+    if item.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    if item.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let item_id = item.get("id").and_then(Value::as_str)?.to_string();
+    if item_id.is_empty() {
+        return None;
+    }
+    Some(RealtimeEvent::AssistantItem { item_id })
+}
+
 fn tool_call(v: &Value, need_arguments: bool) -> Option<RealtimeEvent> {
     let src = v.get("item").filter(|i| i.is_object()).unwrap_or(v);
     if src.get("type").and_then(Value::as_str) != Some("function_call") {

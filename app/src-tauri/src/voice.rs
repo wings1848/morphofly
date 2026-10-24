@@ -84,6 +84,46 @@ fn count_interruption(counter: &AtomicU64, last_ms: &AtomicU64) -> bool {
     true
 }
 
+/// 打断后告诉服务端「用户只听到了前 N 毫秒」（`conversation.item.truncate`）。
+///
+/// 为什么要做：不截断的话，服务端上下文里 assistant 那条是**完整**的，
+/// 模型会以为「我已经说过了」，下一轮回复就会跳过或复述用户没听到的内容
+/// （表现是「答非所问 / 突然不吭声」）。官方开源控制台
+/// （stepfun-ai/Step-Realtime-Console）在打断时正是这套顺序：
+///   停播 → response.cancel → conversation.item.truncate(audio_end_ms=已播时长)。
+///
+/// `assist` 里存的是 (item_id, 这条回复开始时的累计已播采样数)；
+/// 已播时长用 `frames_pulled`（真正被声卡取走的样本）而不是 `played_frames`
+/// （那是「收进来多少」，会把还没播的也算进去）。
+fn truncate_played(
+    client: &RealtimeClient,
+    assist: &std::sync::Mutex<Option<(String, u64)>>,
+    player: &AudioPlayer,
+) {
+    let taken = {
+        let mut g = match assist.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        g.take()
+    };
+    let Some((item_id, base)) = taken else {
+        return;
+    };
+    let now = player.frames_pulled();
+    let ms = now.saturating_sub(base).saturating_mul(1000)
+        / u64::from(morphofly_core::audio::DOWNLINK_SAMPLE_RATE);
+    if ms == 0 {
+        return;
+    }
+    match client.truncate_item(&item_id, ms) {
+        Ok(()) => {
+            tracing::info!(item = %item_id, audio_end_ms = ms, "打断：已截断上下文（truncate）")
+        }
+        Err(e) => tracing::debug!(error = %e, "truncate 失败（可忽略）"),
+    }
+}
+
 impl VoiceSession {
     /// 建立会话：连云端 + 开麦克风 + 开播放器
     ///
@@ -151,6 +191,13 @@ impl VoiceSession {
         let turn_wait = Arc::new(std::sync::Mutex::new(TurnWait::default()));
         let turn_wait_push = turn_wait.clone();
         let turn_wait_ev = turn_wait.clone();
+        // ★ 模型当前这条回复的 (item_id, 回复开始时的已播采样数)。
+        //   打断时用它算「用户实际听到多少毫秒」，再发 conversation.item.truncate。
+        //   官方控制台（Step-Realtime-Console）的 safeStartAudioInput 就是这么做的。
+        type AssistRef = Arc<std::sync::Mutex<Option<(String, u64)>>>;
+        let assist: AssistRef = Arc::new(std::sync::Mutex::new(None));
+        let assist_push = assist.clone();
+        let assist_ev = assist.clone();
 
         // 采集 → 推流 + 频谱
         let mic2 = mic.clone();
@@ -324,6 +371,12 @@ impl VoiceSession {
                                             queued,
                                             responding,
                                             "⚡ 打断：停播 + 取消当前回复（记一次打断）"
+                                        );
+                                        #[cfg(feature = "kws")]
+                                        truncate_played(
+                                            &client_in_push,
+                                            &assist_push,
+                                            &player_in_push,
                                         );
                                     } else {
                                         tracing::info!(
@@ -625,6 +678,13 @@ impl VoiceSession {
                         }
                         let _ = m.handle(Stimulus::ModelSpeaking);
                     }
+                    RealtimeEvent::AssistantItem { item_id } => {
+                        // 记下这条回复的 item_id（打断时 truncate 用）
+                        let base = player2.frames_pulled();
+                        if let Ok(mut g) = assist_ev.lock() {
+                            *g = Some((item_id, base));
+                        }
+                    }
                     RealtimeEvent::SpeechStarted => {
                         // ★ barge-in：本地先停，不等云端确认
                         let queued = player2.queued_frames();
@@ -644,6 +704,7 @@ impl VoiceSession {
                                     responding,
                                     "⚡ 云端 SpeechStarted 打断（barge-in，记一次打断）"
                                 );
+                                truncate_played(&c_ev, &assist_ev, &player2);
                             } else {
                                 tracing::debug!(
                                     queued,

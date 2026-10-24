@@ -443,6 +443,19 @@ impl RealtimeClient {
         self.send_command(ClientCommand::ConversationItemCreate { item })
     }
 
+    /// 打断后把模型的这条回复截断到「用户实际听到的位置」。
+    ///
+    /// 为什么必须发：服务端上下文里 assistant 这条是完整的，如果不截断，
+    /// 模型会以为「我已经说过了」—— 下一轮回复就会跳过、或复述用户没听到的内容。
+    /// 官方控制台（Step-Realtime-Console）在 interrupt 时正是这样做的。
+    pub fn truncate_item(&self, item_id: &str, audio_end_ms: u64) -> Result<()> {
+        self.send_command(ClientCommand::ConversationItemTruncate {
+            item_id: item_id.to_string(),
+            content_index: 0,
+            audio_end_ms,
+        })
+    }
+
     /// 把工具执行结果回灌给模型（OpenAI Realtime 同构的 `function_call_output`）。
     ///
     /// 回灌后模型会继续说话（调研记录 §3.1 实测过这条行为）。
