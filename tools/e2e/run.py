@@ -213,9 +213,21 @@ async def run_real(case: dict, audio: Path) -> dict:
             cargo = str(cand)
             env["PATH"] = f"{cand.parent}:{env['PATH']}"
 
+    # ★ 带上 kws feature 和 bundle 目录，让测试走**真实产品链路**
+    # （先过本地 KWS 唤醒词门，命中才连云端）。
+    #
+    # 之前不带 kws 时，测试直接连云端，导致「小蝶儿」「蝴蝶」
+    # 这类谐音被云端 ASR 骗过去，误报成「误唤醒」。
+    # 真实产品里它们会被 KWS 挡住，根本不会连云端。
+    bundle = ROOT / "app" / "src-tauri" / "resources"
+    env = dict(env)
+    if bundle.is_dir():
+        env["MORPHOFLY_BUNDLE_DIR"] = str(bundle)
+
     cmd = [
         cargo, "run", "-q", "-p", "morphofly-core",
-        "--example", "e2e_drive", "--", "--file", str(audio),
+        "--example", "e2e_drive", "--features", "kws",
+        "--", "--file", str(audio),
     ]
 
     proc = await asyncio.create_subprocess_exec(
