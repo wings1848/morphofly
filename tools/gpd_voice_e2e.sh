@@ -96,7 +96,12 @@ done
 if [ "$READY" = 1 ]; then echo "会话已建立"; else echo "⚠️ 30 秒内没建会话，仍然尝试说话"; fi
 sleep 1
 run "timeout 20 paplay $DEV $TASK_WAV"
-sleep 24
+# 派活之后 DSH 要真干活，汇报通常 15–40 秒才回来。轮询等它，别用固定 sleep 蒙。
+for _ in $(seq 1 40); do
+  if run "journalctl --user -u morphofly-test --since '$MARK' --no-pager | grep -q '主动汇报'" ; then break; fi
+  sleep 1
+done
+sleep 2
 
 echo "=== 5) 结果 ==="
 LOG=$(run "journalctl --user -u morphofly-test --since '$MARK' --no-pager")
@@ -118,9 +123,13 @@ echo "DSH 会话新建:      $SESSIONS    （期望 1）"
 echo "主动汇报:          $REPORTS     （期望 1）"
 echo "兜底纠正注入:      $CORRECTIONS （期望 0；本地代派路径下也是 0）"
 
-if [ "$DELEGATED" -eq 1 ] && [ "$SESSIONS" -le 1 ] && [ "$CORRECTIONS" -le 1 ]; then
-  echo "✅ 全链路通过：一次唤醒、一次派活、一次汇报"
+if [ "$DELEGATED" -eq 1 ] && [ "$SESSIONS" -le 1 ] && [ "$CORRECTIONS" -le 1 ] && [ "$REPORTS" -ge 1 ]; then
+  echo "✅ 全链路通过：唤醒 1 次、派活 1 次、汇报 $REPORTS 次"
   exit 0
+fi
+if [ "$DELEGATED" -eq 1 ] && [ "$SESSIONS" -le 1 ] && [ "$CORRECTIONS" -le 1 ]; then
+  echo "⚠️ 派活成功但没等到主动汇报（DSH 可能还在干，或会话已超时）"
+  exit 1
 fi
 echo "❌ 有重复派活或多余纠正，看上面日志"
 exit 1
