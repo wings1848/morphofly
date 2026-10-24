@@ -208,13 +208,47 @@ impl Dispatcher {
         };
         let urgent = v.get("urgent").and_then(|x| x.as_bool()).unwrap_or(false);
 
-        // 目录必须真实存在。语音识别经常把项目名听错（实测「diemeng」→「/daimian」），
-        // 与其让 DSH 在空目录里瞎跑，不如立刻回一句让它复述确认。
+        // 目录必须真实存在。语音识别经常把项目名听错
+        // （实测「diemeng」→「/daimian」、「morphofly」→「move_forward」），
+        // 与其让 DSH 在空目录里瞎跑，不如先纠正或回一句追问。
+        //
+        // 2026-10-24 真机实测：用户说「morphofly 项目」，云端 ASR 听成「move_forward」，
+        // 模型忠实地把 `/home/wings/Code_Project/move_forward` 传进来 ——
+        // 这个目录不存在，DSH 会话根本建不起来，用户只能重说一遍。
+        //
+        // 所以先做一件便宜事：把听错的名字丢进项目别名表查一遍。
+        // 「蝶梦」「蝴蝶」「diemeng」这类都有别名，能对上就不用追问。
+        let mut dir = dir;
+        if !std::path::Path::new(&dir).is_dir() {
+            let base = std::path::Path::new(&dir)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if let Some(p) = self.projects.lookup(&base) {
+                tracing::info!(heard = %base, mapped = %p.path, "项目名听错了，按别名表纠正");
+                dir = p.path.clone();
+            }
+        }
         if !std::path::Path::new(&dir).is_dir() {
             let hint = suggest_dir(&dir, &self.default_dir);
+            // 说清「我可以在哪儿办」，别让用户猜。念项目名，不念绝对路径。
+            let here = std::path::Path::new(&self.default_dir)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let tail = if here.is_empty() {
+                "我没敢直接开工，你确认一下是哪个项目？".to_string()
+            } else {
+                format!("我没敢直接开工。要是在【{here}】里办，你说一声就行。")
+            };
             return Ok(ToolResult {
-                speech: format!("{hint} 我没敢直接开工，你确认一下是哪个目录？"),
-                data: serde_json::json!({ "error": "dir_not_found", "dir": dir, "hint": hint }),
+                speech: format!("{hint} {tail}"),
+                data: serde_json::json!({
+                    "error": "dir_not_found",
+                    "dir": dir,
+                    "hint": hint,
+                    "current_project": here,
+                }),
             });
         }
 
@@ -770,9 +804,14 @@ fn suggest_dir(bad: &str, default_dir: &str) -> String {
         // 不念原始路径：用户听不懂绝对路径，而且带斜杠读出来很怪
         "那个目录我没找到".to_string()
     } else {
+        // 只念最后一段（项目名），不念 /home/wings/Code_Project/xxx 这种路径
+        let short = std::path::Path::new(bad)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| bad.to_string());
         format!(
-            "路径「{}」不存在，你是说 {} 吗？",
-            bad,
+            "没找到「{}」，你是说 {} 吗？",
+            short,
             candidates
                 .iter()
                 .take(3)
@@ -1170,7 +1209,34 @@ mod tests {
     #[test]
     fn suggest_dir_says_not_found_for_garbage() {
         let s = suggest_dir("/definitely/not/here/xyz", "/tmp");
-        assert!(s.contains("不存在"));
+        assert!(s.contains("没找到"));
+    }
+
+    /// 念提示时不能把绝对路径念出来（用户听不懂，带斜杠读着也怪）。
+    #[test]
+    fn suggest_dir_does_not_read_absolute_path() {
+        let s = suggest_dir("/home/wings/Code_Project/move_forward", "/tmp");
+        assert!(!s.contains("/home/wings"), "不该念出绝对路径: {s}");
+        assert!(s.contains("move_forward"), "但要说清是哪个名字没找到: {s}");
+    }
+
+    /// 回归：ASR 把项目名听错时，先按别名表纠正，别直接放弃。
+    ///
+    /// 真机实测：说「morphofly 项目」，云端听成「move_forward」，
+    /// 模型就把 /home/wings/Code_Project/move_forward 传进来了。
+    /// move_forward 对不上任何别名，仍然要追问；但「蝶梦/morphofly」能对上。
+    #[test]
+    fn project_alias_resolves_misheard_name() {
+        let t = crate::projects::ProjectTable::builtin();
+        // 别名表内置了 蝶梦/diemeng/morphofly/蝴蝶
+        for heard in ["蝶梦", "diemeng", "morphofly", "蝴蝶"] {
+            let p = t
+                .lookup(heard)
+                .unwrap_or_else(|| panic!("别名表该认得出: {heard}"));
+            assert!(!p.path.is_empty(), "{heard} 对应路径不能为空");
+        }
+        // 听错的词对不上，就该落到追问分支（不能瞎猜）
+        assert!(t.lookup("move_forward").is_none());
     }
 
     #[test]
