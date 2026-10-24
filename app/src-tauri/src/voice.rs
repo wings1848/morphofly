@@ -429,8 +429,8 @@ impl VoiceSession {
                                     "模型只说不做 → 本地用用户原话代派"
                                 );
                                 let d = dispatcher.clone();
-                                let dir_hint = tool_dir_hint(&dispatcher).await;
-                                let dir_hint = dir_hint.trim_matches('"').to_string();
+                                // 用「这句话里提到的项目」挑目录，别用家目录
+                                let dir_hint = dispatcher.dir_for_task(&said).await;
                                 let args = serde_json::json!({
                                     "task": said,
                                     "dir": dir_hint,
@@ -452,7 +452,8 @@ impl VoiceSession {
                             // 真机实测：只写「立刻调用 delegate_task」时模型还是不调 ——
                             // 它多半卡在「项目名听不准、不知道该填哪个 dir」上。
                             // 与其让它猜，我们直接把当前项目路径喂给它。
-                            let dir_hint = tool_dir_hint(&dispatcher).await;
+                            let dir_hint =
+                                format!("\"{}\"", dispatcher.dir_for_task(&user_said).await);
                             let hint = format!(
                                 "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。\
 现在立刻调用 delegate_task 把这件事派出去，dir 直接填 {dir_hint}。\

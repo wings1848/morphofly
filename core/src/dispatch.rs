@@ -77,6 +77,49 @@ impl Dispatcher {
     }
 
     /// 读当前上下文（给 UI 显示「现在连着哪个 agent」用）
+    /// 给一句话挑一个干活目录（本地代派 / 纠正提醒都用它）。
+    ///
+    /// 优先级：
+    /// 1. 会话上下文里 set_context 设过的目录
+    /// 2. 这句话里提到的已知项目名（别名表：蝶梦/morphofly/diemeng/蝴蝶…）
+    /// 3. 默认目录
+    /// 4. 默认目录只是家目录（`/home/wings`）时，退到内置项目目录
+    ///
+    /// 为什么不能只用默认目录：真机实测本地代派把任务派到了 `/home/wings`
+    /// —— 因为配置里的 `default_cwd` 就是家目录。用户说的是「蝶梦项目」，
+    /// 派到家里当然干不成事。
+    pub async fn dir_for_task(&self, task: &str) -> String {
+        // ★ 顺序很关键：**任务里点名的项目优先**，其次才是会话上下文。
+        //
+        // 坑在这：`Dispatcher::new` 会把 context.dir 初始化成 default_dir，
+        // 所以「上下文非空就返回」等于永远用默认目录（真机实测派到了 /home/wings），
+        // 别名表那段成了死代码。用户嘴上说了哪个项目，就该去哪个项目。
+        for proj in &self.projects.project {
+            if proj
+                .alias
+                .iter()
+                .any(|a| !a.is_empty() && task.contains(a.as_str()))
+            {
+                return proj.path.clone();
+            }
+        }
+        {
+            let ctx = self.context.lock().await;
+            if !ctx.dir.is_empty() && !is_home_dir(&ctx.dir) {
+                return ctx.dir.clone();
+            }
+        }
+        if !self.default_dir.is_empty() && !is_home_dir(&self.default_dir) {
+            return self.default_dir.clone();
+        }
+        // 最后退到内置项目目录（别名表第一项）
+        self.projects
+            .project
+            .first()
+            .map(|p| p.path.clone())
+            .unwrap_or_else(|| self.default_dir.clone())
+    }
+
     /// 当前应该在哪个目录干活：会话上下文优先，否则默认目录。
     ///
     /// 给「纠正提醒」用 —— 真机实测模型卡在「不知道 dir 填什么」上不肯调工具，
@@ -854,6 +897,19 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
 }
 
+/// 这个路径是不是「家目录」（拿它当干活目录等于没指定）。
+fn is_home_dir(p: &str) -> bool {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    if home.is_empty() {
+        return false;
+    }
+    let a = std::path::Path::new(p);
+    let b = std::path::Path::new(&home);
+    a == b || p.trim_end_matches('/') == home.trim_end_matches('/')
+}
+
 /// 判断一个词是不是常见指代，不是真正的项目名。
 ///
 /// 「这个项目」「那个项目」「我的项目」这类不该被当成未识别项目名去追问。
@@ -1217,6 +1273,33 @@ mod tests {
     fn clean_for_speech_empty_becomes_something() {
         assert_eq!(clean_for_speech(""), "干完了。");
         assert_eq!(clean_for_speech("```\ncode\n```"), "干完了。");
+    }
+
+    /// 回归：本地代派挑目录不能挑到家目录。
+    ///
+    /// 真机实测（2026-10-25）：用户说「帮我看看蝶梦项目的 README」，
+    /// 本地代派把任务派到了 `/home/wings`（配置里的 default_cwd 就是家目录），
+    /// DSH 在家里当然干不成事。
+    #[tokio::test]
+    async fn dir_for_task_prefers_project_in_task() {
+        let d = dispatcher_for_test();
+        let project_path = d.projects.project[0].path.clone();
+        let got = d.dir_for_task("帮我看看蝶梦项目的 README 第一行").await;
+        assert_eq!(got, project_path, "应该用别名表里的项目路径");
+
+        // 没提项目、默认目录也不是家目录（测试里是 /tmp）→ 用默认目录
+        let got2 = d.dir_for_task("帮我看看今天几号").await;
+        assert_eq!(got2, "/tmp");
+    }
+
+    #[test]
+    fn is_home_dir_recognizes_home() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            assert!(is_home_dir(&home));
+            assert!(is_home_dir(&format!("{home}/")));
+        }
+        assert!(!is_home_dir("/tmp"));
     }
 
     #[test]
