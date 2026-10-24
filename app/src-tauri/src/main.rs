@@ -261,7 +261,11 @@ async fn orb_state(state: State<'_, AppState>) -> Result<serde_json::Value, Stri
     let caption = state.caption.lock().await.clone();
     Ok(serde_json::json!({
         "state": m.state().as_str(),
-        "caption": if caption.is_empty() { m.state().label().to_string() } else { caption },
+        // ★ 没显式设过字幕就返回空串，别拿状态名顶替。
+        //   2026-10-25 真机踩坑：这里原来回退成 `m.state().label()`（"待机"），
+        //   前端启动时把它当字幕弹出来 → 窗口被向左撑开、黑色气泡在球旁边停 4.2 秒，
+        //   就是用户报的「KDE 启动弹黑框、字和球叠一会儿」。
+        "caption": caption,
         "connected": m.is_connected(),
     }))
 }
@@ -346,7 +350,10 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
         // 50ms（20fps）足够顺，之前 33ms 在 N6000 上纯属浪费
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
         let started = Instant::now();
-        let mut last_state = String::new();
+        // ★ 初始状态就当作「已经推过」：否则 demo/QA 模式下第一帧就会推一次
+        //   state=S0 + caption=待机，前端又弹一次启动字幕气泡（2026-10-25 修完真机
+        //   黑气泡后，review 指出 demo 模式会复现；顺手从源头抑制）。
+        let mut last_state = machine.lock().await.state().as_str().to_string();
         let mut phase = 0.0f32;
 
         loop {
@@ -1119,6 +1126,7 @@ fn main() {
                 // 2. 未映射时 `set_position` 被 KWin 忽略，窗口最后还是弹在屏幕正中。
                 //
                 // 所以：先 show() → 等尺寸变非 0 → 显式设一次尺寸 → 再贴边。
+                //
                 let w2 = win.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(120)).await;

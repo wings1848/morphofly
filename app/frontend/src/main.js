@@ -9,6 +9,7 @@
 import { OrbRenderer } from './orb/renderer.js';
 import { StateSmoother, HoverEase, STATES } from './orb/state.js';
 import { parseOrbParams } from './orb/params.js';
+import { normalizeCaption } from './orb/caption.js';
 
 const params = parseOrbParams(window.location.search);
 const forcedState = params.state;
@@ -116,11 +117,18 @@ async function boot() {
       smoother.set(s.state);
       setStateBadge(s.state);
     }
-    if (s?.caption) showCaption(s.caption);
+    // ★ 启动时不显示字幕（2026-10-25 修「KDE 启动弹黑框、字压球」）：
+    //   这里只把值打进 journal 当证据（验收 T1 grep caption=无），不调 showCaption。
+    //   真实字幕只由运行期的 state / caption 事件触发。
+    const cap = normalizeCaption(s?.caption);
+    jsLog(`启动状态 state=${s?.state || '?'} caption=${cap || '无'}`);
   } catch { /* 演示模式下没有后端 */ }
 }
 
-function showCaption(text) {
+function showCaption(raw) {
+  // 空字幕不显示 —— 启动时后端没有真实字幕就什么都不该弹（否则就是黑色气泡）。
+  const text = normalizeCaption(raw);
+  if (!text) return;
   captionEl.textContent = text;
   captionEl.classList.add('show');
   setTip(true);

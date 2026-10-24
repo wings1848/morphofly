@@ -1,0 +1,32 @@
+# 轻量档任务 DAG（启动干净度修复）
+run: 20261025-0520-startup-clean
+wave_1:
+  - id: gate-and-red
+    desc: 写真机启动干净度验收脚本，并在旧二进制上跑出红证据
+    scope: [tools/verify_startup_clean.sh, tools/gpd_startup_frames.py]
+    gate: T1/T2/T3 在旧二进制 FAIL（见 evidence/red.log）
+    status: done
+  - id: root-cause
+    desc: 定位真因（orb_state 把状态名当字幕；8fps 连拍证明「黑框」就是字幕气泡，不是空窗口）
+    gate: 真机 journal 时间线 + 录屏帧（见 evidence/red-journal-visible-bubble.log、evidence/red-visible-bubble/）
+    status: done
+wave_2:
+  - id: rust-fix
+    desc: orb_state 不再回退状态名；demo 模式不推初始 state 字幕（不做窗口透明度 hack，见 verify-report）
+    scope: [app/src-tauri/src/main.rs]
+    gate: cargo fmt --check + CI 编译
+    status: done
+  - id: frontend-fix
+    desc: 启动不显示初始字幕、空字幕不渲染、首帧后通知 Rust
+    scope: [app/frontend/src/main.js, app/frontend/src/orb/caption.js, app/frontend/test/caption.test.mjs]
+    gate: node --test app/frontend/test（16 passed）
+    status: done
+wave_3:
+  - id: deploy-verify
+    desc: CI 产物部署到 wings-gpd，跑 tools/verify_startup_clean.sh 修后全绿
+    gate: 验收 T1–T4 全 PASS（evidence/startup-clean-summary.md）
+    status: done
+  - id: independent-review
+    desc: subagent 独立核验（读 diff + 复跑判据），Lead 抽查其结论
+    gate: 复核意见落盘（review 提的 B1/B2 已通过「收窄范围」解决；合并后再做一次运行时独立复跑）
+    status: in_progress
