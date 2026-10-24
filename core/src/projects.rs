@@ -103,15 +103,12 @@ impl ProjectTable {
         }
         // 再试「用户说的词包含某个别名」或反过来的包含匹配
         // （用户可能说「蝶梦项目」，别名是「蝶梦」）
-        for p in &self.project {
-            if p.alias.iter().any(|a| {
+        self.project.iter().find(|p| {
+            p.alias.iter().any(|a| {
                 let na = normalize(a);
                 !na.is_empty() && (key.contains(&na) || na.contains(&key))
-            }) {
-                return Some(p);
-            }
-        }
-        None
+            })
+        })
     }
 
     /// 列出所有别名（给提示词用）

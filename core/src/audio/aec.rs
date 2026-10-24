@@ -506,8 +506,10 @@ mod tests {
         assert_eq!(render.len(), capture.len(), "render/capture 必须等长");
         let mut out = capture.to_vec();
         for (r, c) in render
-            .chunks_exact(AEC_SUBFRAME_SAMPLES)
-            .zip(out.chunks_exact_mut(AEC_SUBFRAME_SAMPLES))
+            .as_chunks::<AEC_SUBFRAME_SAMPLES>()
+            .0
+            .iter()
+            .zip(out.as_chunks_mut::<AEC_SUBFRAME_SAMPLES>().0)
         {
             aec.process_render(r);
             aec.process_capture(c);

@@ -178,7 +178,10 @@ impl VoiceSession {
                                         }
                                         interruptions_in_push.fetch_add(1, Ordering::Relaxed);
                                         vad_cooldown = 40; // 40 帧 * 20ms = 800ms
-                                        tracing::info!(queued, "⚡ 本地 VAD 打断（已通知云端停止生成）");
+                                        tracing::info!(
+                                            queued,
+                                            "⚡ 本地 VAD 打断（已通知云端停止生成）"
+                                        );
                                         tauri::async_runtime::block_on(async {
                                             let mut m = machine_in_push.lock().await;
                                             let _ = m.handle(Stimulus::UserSpeechStarted);
