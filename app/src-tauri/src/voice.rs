@@ -262,8 +262,11 @@ impl VoiceSession {
                                     // 打断路径没走到），先取消再开新轮。
                                     // 硬发 create_response 会被服务端拒：
                                     // `ongoing response already exists`（真机日志抓到过）。
+                                    // 用 `m_machine`（不是 kws 门控的 machine_in_push）：
+                                    // Windows 的 `--no-default-features` 构建没有 kws，
+                                    // 引用门控变量会编不过（CI 抓到过）。
                                     let still_responding = {
-                                        let m = machine_in_push.lock().await;
+                                        let m = m_machine.lock().await;
                                         matches!(m.state(), OrbState::S3 | OrbState::S4)
                                     };
                                     if still_responding {
