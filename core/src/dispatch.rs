@@ -67,7 +67,8 @@ impl Dispatcher {
             store,
             bridge,
             context: Arc::new(tokio::sync::Mutex::new(SessionContext::new(
-                "dsh", default_dir.clone(),
+                "dsh",
+                default_dir.clone(),
             ))),
             projects: crate::projects::load(),
             default_dir,
@@ -141,6 +142,30 @@ impl Dispatcher {
             return Ok(ToolResult {
                 speech: format!("{hint} 我没敢直接开工，你确认一下是哪个目录？"),
                 data: serde_json::json!({ "error": "dir_not_found", "dir": dir, "hint": hint }),
+            });
+        }
+
+        // ★ 修 Bug 1：项目名必须能被识别，不能拿 ASR 听错的假名字直接干。
+        //
+        // 2026-10-24 真机 e2e 抓到的严重问题：
+        // 用户说「在 aimeng 项目里跑测试」（aimeng 是 ASR 听错 diemeng 的结果），
+        // 蝶梦**直接派活了**，没有追问。
+        //
+        // 提示词规则 1 要求「项目名不确定必须先追问」，但模型不遵守。
+        // 所以必须在代码层拦：从 task 文本里提取「提到的项目名」，
+        // 如果它不在别名表里，就追问。
+        //
+        // 注意：只在任务里**明确提到**了某个项目名时才检查，
+        // 不能因为「没提到项目」就拦截（那样简单的「看看目录」也过不去）。
+        if let Some(unknown) = self.extract_unknown_project(&task) {
+            tracing::warn!(task = %task, unknown = %unknown, "任务里提到不认识的項目名");
+            return Ok(ToolResult {
+                speech: self.projects.suggest(&unknown),
+                data: serde_json::json!({
+                    "error": "unknown_project",
+                    "got": unknown,
+                    "known": self.projects.all_aliases(),
+                }),
             });
         }
 
@@ -245,13 +270,76 @@ impl Dispatcher {
         }
     }
 
+    /// 从任务文本里找出「不认识的项目名」。
+    ///
+    /// 返回 Some(候选名) 表示任务里提到了一个别名表里没有的项目，
+    /// 调用方应该追问而不是直接派活。
+    ///
+    /// ## 为什么要这么做
+    ///
+    /// 中文 ASR 识别英文项目名经常出错（实测 diemeng → daimian 3/3 全错）。
+    /// 用户说「在 aimeng 项目里跑测试」时，如果直接派出去了，
+    /// DSH 会在一个不存在的目录里瞎跑，用户等半天才发现。
+    ///
+    /// ## 怎么找
+    ///
+    /// 找「X 项目」/「X 里」/「X 中」这种模式里的 X。
+    /// 这是启发式，不完美，但比完全不检查好。
+    /// 已知项目（在别名表里的）会被放行。
+    fn extract_unknown_project(&self, task: &str) -> Option<String> {
+        // 找「XX项目」模式
+        for marker in ["项目", "工程", "仓库"] {
+            let mut rest = task;
+            while let Some(pos) = rest.find(marker) {
+                // 往前取 2-8 个字符作为候选名
+                let before = &rest[..pos];
+                let name: String = before
+                    .chars()
+                    .rev()
+                    .take(8)
+                    .take_while(|c| {
+                        c.is_alphanumeric()
+                            || matches!(c, '蝶' | '梦' | '家' | '里' | '云')
+                            || c.is_ascii_alphabetic()
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+
+                let name = name.trim().to_string();
+                if !name.is_empty() && name.chars().count() >= 2 {
+                    // 已知项目就放行
+                    if self.projects.lookup(&name).is_some() {
+                        // 继续找下一个
+                    } else if is_common_word(&name) {
+                        // 「这个项目」「那个项目」这种指代，不是项目名，放过
+                    } else {
+                        return Some(name);
+                    }
+                }
+                rest = &rest[pos + marker.len()..];
+            }
+        }
+        None
+    }
+
     /// 5. 切换上下文（V2 新增，多 agent 支持）
     ///
     /// 三个参数都可选，只改传了的那个。
     async fn set_context(&self, v: &Value) -> Result<ToolResult> {
-        let agent = v.get("agent").and_then(|x| x.as_str()).map(|s| s.trim().to_string());
-        let project = v.get("project").and_then(|x| x.as_str()).map(|s| s.trim().to_string());
-        let model = v.get("model").and_then(|x| x.as_str()).map(|s| s.trim().to_string());
+        let agent = v
+            .get("agent")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string());
+        let project = v
+            .get("project")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string());
+        let model = v
+            .get("model")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string());
 
         if agent.is_none() && project.is_none() && model.is_none() {
             return Ok(ToolResult {
@@ -512,6 +600,17 @@ fn short_id(id: &str) -> String {
 }
 
 /// 清洗成可以念的话：去掉 markdown / 代码块 / 路径 / URL（验收 D5）
+/// 判断一个词是不是常见指代，不是真正的项目名。
+///
+/// 「这个项目」「那个项目」「我的项目」这类不该被当成未识别项目名去追问。
+fn is_common_word(s: &str) -> bool {
+    const COMMON: &[&str] = &[
+        "这个", "那个", "我的", "你的", "某个", "整个", "所有", "每个", "一个", "项目", "工程",
+        "仓库", "当前", "之前", "刚才", "别的",
+    ];
+    COMMON.iter().any(|c| s.contains(c)) || s.chars().count() < 2
+}
+
 /// 语音回复的硬长度上限（字符数）。
 ///
 /// 用户要求「语音消息回复极其简洁」。
@@ -635,10 +734,7 @@ mod tests {
         // 派活的回复应该极简，不含 ID
         assert_eq!("好，干完说".chars().count(), 5);
         // 这条断言的意义：如果有人把 task id 加回文案，长度会明显超过
-        assert!(
-            "好，干完说".chars().count() < 20,
-            "派活回复必须极简"
-        );
+        assert!("好，干完说".chars().count() < 20, "派活回复必须极简");
     }
 
     #[test]

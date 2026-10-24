@@ -58,21 +58,40 @@ impl Intent {
 
 /// 表示"大改动"的词：一出现就说明这事不简单
 const BIG_WORDS: &[&str] = &[
-    "整个", "全部", "所有", "重构", "重写", "架构", "迁移",
-    "覆盖率", "性能优化", "安全审计", "清理", "整理一遍",
-    "批量", "每个", "逐个", "全面",
+    "整个",
+    "全部",
+    "所有",
+    "重构",
+    "重写",
+    "架构",
+    "迁移",
+    "覆盖率",
+    "性能优化",
+    "安全审计",
+    "清理",
+    "整理一遍",
+    "批量",
+    "每个",
+    "逐个",
+    "全面",
 ];
 
 /// 表示"要规划"的词
 const PLAN_WORDS: &[&str] = &[
-    "规划", "设计", "方案", "拆分", "评估", "调研", "分析",
-    "怎么做", "如何实现", "可行性",
+    "规划",
+    "设计",
+    "方案",
+    "拆分",
+    "评估",
+    "调研",
+    "分析",
+    "怎么做",
+    "如何实现",
+    "可行性",
 ];
 
 /// 多个动作的连接词（出现越多越可能多步）
-const CHAIN_WORDS: &[&str] = &[
-    "然后", "接着", "再", "并且", "同时", "顺便", "之后",
-];
+const CHAIN_WORDS: &[&str] = &["然后", "接着", "再", "并且", "同时", "顺便", "之后"];
 
 /// 判断任务复杂度。
 ///
@@ -82,7 +101,10 @@ pub fn classify(task: &str) -> Intent {
 
     // 空任务当作简单（实际不会发生，dispatch 层会先报错）
     if t.is_empty() {
-        return Intent { complexity: Complexity::Simple, reason: "空任务" };
+        return Intent {
+            complexity: Complexity::Simple,
+            reason: "空任务",
+        };
     }
 
     // 规则 1：大改动词
@@ -104,15 +126,24 @@ pub fn classify(task: &str) -> Intent {
     // 规则 3：多步链路（出现 2 个以上连接词）
     let chain = CHAIN_WORDS.iter().filter(|w| t.contains(*w)).count();
     if chain >= 2 {
-        return Intent { complexity: Complexity::Complex, reason: "多步骤任务" };
+        return Intent {
+            complexity: Complexity::Complex,
+            reason: "多步骤任务",
+        };
     }
 
     // 规则 4：句子很长（超过 50 字），大概率描述复杂需求
     if t.chars().count() > 50 {
-        return Intent { complexity: Complexity::Complex, reason: "任务描述过长" };
+        return Intent {
+            complexity: Complexity::Complex,
+            reason: "任务描述过长",
+        };
     }
 
-    Intent { complexity: Complexity::Simple, reason: "单步任务" }
+    Intent {
+        complexity: Complexity::Simple,
+        reason: "单步任务",
+    }
 }
 
 // reason 用 &'static str 是为了零分配；这里为每个词返回固定文案
@@ -196,7 +227,11 @@ mod tests {
     fn long_description_needs_confirm() {
         // 必须真的超过阈值（第一次写测试时串只有 43 字，没到 50，测试假通过）
         let t = "我需要你帮我仔细看一下这个项目里面的那个音频处理模块，                 检查它到底是不是存在什么潜在的问题，如果有的话就帮我修复一下，                 另外再确认一下是不是会影响其他模块，最后告诉我具体的改动点";
-        assert!(t.chars().count() > 50, "测试串必须超过阈值，实际 {}", t.chars().count());
+        assert!(
+            t.chars().count() > 50,
+            "测试串必须超过阈值，实际 {}",
+            t.chars().count()
+        );
         assert!(classify(t).needs_confirm(), "超长描述应该先问确认");
     }
 
@@ -207,8 +242,16 @@ mod tests {
         let at_50: String = std::iter::repeat('测').take(50).collect();
         let at_51: String = std::iter::repeat('测').take(51).collect();
         let _ = base;
-        assert_eq!(classify(&at_50).complexity, Complexity::Simple, "50 字仍是简单");
-        assert_eq!(classify(&at_51).complexity, Complexity::Complex, "51 字算复杂");
+        assert_eq!(
+            classify(&at_50).complexity,
+            Complexity::Simple,
+            "50 字仍是简单"
+        );
+        assert_eq!(
+            classify(&at_51).complexity,
+            Complexity::Complex,
+            "51 字算复杂"
+        );
     }
 
     #[test]

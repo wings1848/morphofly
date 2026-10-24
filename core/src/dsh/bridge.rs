@@ -113,12 +113,7 @@ impl DshBridge {
     }
 
     /// 带任务 ID 的版本 —— 支持中途取消。
-    pub async fn run_task_with_id(
-        &self,
-        task_id: &str,
-        task: &str,
-        cwd: &str,
-    ) -> Result<String> {
+    pub async fn run_task_with_id(&self, task_id: &str, task: &str, cwd: &str) -> Result<String> {
         let cwd = if cwd.trim().is_empty() {
             &self.default_cwd
         } else {

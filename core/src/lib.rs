@@ -8,11 +8,11 @@
 pub mod audio;
 pub mod config;
 pub mod dispatch;
-pub mod intent;
-pub mod projects;
 pub mod dsh;
+pub mod intent;
 #[cfg(feature = "kws")]
 pub mod kws;
+pub mod projects;
 pub mod realtime;
 pub mod session;
 pub mod spectrum;
