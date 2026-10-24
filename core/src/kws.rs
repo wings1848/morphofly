@@ -414,6 +414,31 @@ pub fn detect_in_file(cfg: &KwsConfig, path: &Path) -> Result<Vec<(f32, String)>
     let spotter = KeywordSpotter::create(&kws_cfg).context("创建 KeywordSpotter 失败")?;
     let stream = spotter.create_stream();
 
+    // ★ 裸 PCM 直通（16k mono s16le）。
+    //
+    // 端到端测试用 TTS 合成裸 PCM 注入，没有容器头，
+    // rodio 解码会报 "An IO error occurred while reading"。
+    // 和 audio/capture.rs 的 file_source 同一套处理。
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pcm"))
+        .unwrap_or(false)
+    {
+        let bytes = std::fs::read(path)?;
+        let samples: Vec<f32> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| i16::from_le_bytes(*c) as f32 / 32768.0)
+            .collect();
+        // 已经是 16k mono，直接走后续流程
+        let mut pcm = samples;
+        let pad = (16_000f32 * 0.8) as usize;
+        pcm.extend(std::iter::repeat_n(0.0f32, pad));
+        return run_spotter(&spotter, &stream, &pcm);
+    }
+
     // 解码任意音频 → 16k mono f32
     use rodio::Source;
     let file = std::fs::File::open(path)?;
@@ -443,20 +468,32 @@ pub fn detect_in_file(cfg: &KwsConfig, path: &Path) -> Result<Vec<(f32, String)>
         pcm.push(a + (b - a) * frac);
     }
     // 末尾补 0.8s 静音，让 trailing blanks 能触发
-    pcm.extend(std::iter::repeat(0.0f32).take(12_800));
+    pcm.extend(std::iter::repeat_n(0.0f32, 12_800));
 
+    run_spotter(&spotter, &stream, &pcm)
+}
+
+/// 把 16k mono f32 样本喂给 spotter，收集命中。
+///
+/// 抽出来是为了让「裸 PCM 直通」和「rodio 解码」两条路径共用同一段逻辑 ——
+/// 否则两边的补静音、分帧、判据会慢慢漂移。
+fn run_spotter(
+    spotter: &sherpa_onnx::KeywordSpotter,
+    stream: &sherpa_onnx::OnlineStream,
+    pcm: &[f32],
+) -> Result<Vec<(f32, String)>> {
     let mut hits = Vec::new();
     let chunk = crate::FRAME_SAMPLES;
     for (i, c) in pcm.chunks(chunk).enumerate() {
-        stream.accept_waveform(target as i32, c);
-        while spotter.is_ready(&stream) {
-            spotter.decode(&stream);
-            if let Some(res) = spotter.get_result(&stream) {
+        stream.accept_waveform(16_000, c);
+        while spotter.is_ready(stream) {
+            spotter.decode(stream);
+            if let Some(res) = spotter.get_result(stream) {
                 if !is_real_hit(&res) {
                     continue;
                 }
-                hits.push((i as f32 * chunk as f32 / target as f32, res.keyword));
-                spotter.reset(&stream);
+                hits.push((i as f32 * chunk as f32 / 16_000.0, res.keyword));
+                spotter.reset(stream);
             }
         }
     }

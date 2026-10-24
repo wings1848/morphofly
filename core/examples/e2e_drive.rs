@@ -201,6 +201,10 @@ async fn main() -> anyhow::Result<()> {
     // 判断是否要求确认（看回复里有没有「要我…吗」的模式）
     let asked_confirm = reply.contains("要我") || reply.trim_end().ends_with('吗');
 
+    // 诊断：模型说了话但没调工具 = 假装干活
+    if tool_calls.is_empty() && !reply.trim().is_empty() {
+        eprintln!("[e2e] ⚠️ 模型只说了话没调工具 —— 这是「假装干活」");
+    }
     let tool_reply = reply_shared.lock().await.clone();
     if reply.trim().is_empty() {
         reply = tool_reply;
