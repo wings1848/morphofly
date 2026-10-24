@@ -14,7 +14,7 @@
         "title": "蝶梦",
         "width": 148,
         "height": 148,
-        "resizable": false,
+        "resizable": true,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
