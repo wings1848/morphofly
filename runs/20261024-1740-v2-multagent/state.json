@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "run_id": "20261024-1740-v2-multagent",
+  "created_at": "2026-10-24T17:38:42+08:00",
+  "goal": "V2：多 agent 支持 + AEC + UI/UX 打磨 + 修复 5 个现存缺陷",
+  "tier": "standard",
+  "project_type": "desktop-app",
+  "human_mode": "inspect",
+  "stage": "S0",
+  "status": "running",
+  "owner": {
+    "agent": "agent",
+    "session_id": "",
+    "claimed_at": "2026-10-24T17:38:42+08:00",
+    "lease_until": "2026-10-24T17:38:42+08:00"
+  },
+  "attempts": {
+    "S0": 1
+  },
+  "loops": {
+    "used": 0,
+    "max": 3,
+    "last_fail_stage": null
+  },
+  "gates": {},
+  "human": {},
+  "budget": {
+    "minutes_cap": 480,
+    "minutes_used": 0,
+    "tokens": 0,
+    "tokens_cap": 500000,
+    "fanout_cap": 8,
+    "fanout_used": 0
+  },
+  "blocked_by": [],
+  "next_action": "S0：跑 G0 并落证据（devflow gate G0 pass --evidence <文件>）",
+  "artifacts": {
+    "progress": "progress.md"
+  }
+}
