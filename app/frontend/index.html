@@ -8,20 +8,18 @@
 </head>
 <body>
   <!--
-    拖动区：整个 body 可拖（Tauri 靠 data-tauri-drag-region 识别）
+    拖动区：整个窗口可拖（Tauri 靠 data-tauri-drag-region 识别）。
+    canvas 叠在上面吃掉指针，所以真正拖动由 main.js 里
+    「移动 >5px → startDragging()」兜底，这个 div 保留给 Tauri 的拖拽命中。
 
-    ⚠️ 2026-10-24 修：之前 style.css 注释写「整个窗口可拖」但 HTML 里
-    从来没有 data-tauri-drag-region —— 拖动功能实际未实现。
-    capabilities 里的 core:window:allow-start-dragging 白给了。
-
-    注意 canvas 上**不加** drag-region（见下），否则点击小球会被当成拖动，
+    注意 canvas 上**不加** drag-region，否则点击小球会被当成拖动，
     「点一下开始说话」就失效了。
   -->
   <div id="drag-region" data-tauri-drag-region></div>
 
-  <canvas id="orb" width="360" height="360"></canvas>
+  <canvas id="orb" width="148" height="148"></canvas>
   <div id="caption" aria-live="polite"></div>
-  <div id="hint">喊「小蝶」或点一下小球</div>
+  <div id="hint"></div>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

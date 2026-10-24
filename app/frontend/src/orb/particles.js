@@ -1,15 +1,17 @@
-// 粒子系统。
-// 视觉铁律：只用一个蓝色色相；发光靠多层叠加（不是大 blur）；没有硬边，边缘衰减到透明。
-// 实现要点：每个粒子有 3D 感（z 决定大小与亮度），画点不画线——连线会变成乱麻。
+// 盘内粒子（球壳上的浮尘）。
+//
+// 视觉铁律：单一色相；发光靠叠加；没有硬边。
+// 这是 148×148 窗口里直径约 84px 的球：130 颗 1–2px 的小点，
+// 比 720 颗亚像素点既省 GPU（N6000 集显要 60fps）又更像浮尘。
 
-export const PARTICLE_COUNT = 720;
+export const PARTICLE_COUNT = 130;
 
 const TAU = Math.PI * 2;
 
 export class Particles {
   constructor(count = PARTICLE_COUNT) {
     this.count = count;
-    // 球面均匀分布（Fibonacci 之外用随机+归一，够用且便宜）
+    // 球内均匀分布（r = cbrt(u)）
     this.angles = new Float32Array(count);
     this.baseRadii = new Float32Array(count);
     this.radii = new Float32Array(count);
@@ -18,12 +20,11 @@ export class Particles {
     this.depths = new Float32Array(count);
     for (let i = 0; i < count; i++) {
       this.angles[i] = Math.random() * TAU;
-      // 球体积均匀：r = cbrt(u)
       this.baseRadii[i] = Math.cbrt(Math.random());
       this.radii[i] = this.baseRadii[i];
       this.speeds[i] = 0.35 + Math.random() * 0.9;
       this.seeds[i] = Math.random() * TAU;
-      // z 从 -1（背后）到 +1（面前）
+      // z 从 -1（背后）到 +1（面前），决定大小和亮度
       this.depths[i] = Math.random() * 2 - 1;
     }
     this.time = 0;
@@ -39,6 +40,9 @@ export class Particles {
   step(dt, R, energy, vis, bins) {
     this.time += dt * vis.speed;
     const outward = vis.speed > 0.9 && vis.glow > 0.8; // 说话态外扩
+    const spread = vis.spread ?? 1;
+    const e = Math.max(0, Math.min(1, energy || 0));
+    const nBins = bins?.length || 0;
 
     for (let i = 0; i < this.count; i++) {
       // 角速度：越外层越慢（体积感）
@@ -49,24 +53,30 @@ export class Particles {
       this.depths[i] = Math.sin(this.time * 0.7 * this.speeds[i] + this.seeds[i]);
 
       // 频谱驱动：把 64 bin 映射到粒子的径向带
-      const band = Math.min(bins.length - 1, (this.baseRadii[i] * bins.length) | 0);
-      const bandVal = bins[band] || 0;
+      const band = nBins ? Math.min(nBins - 1, (this.baseRadii[i] * nBins) | 0) : 0;
+      const bandVal = nBins ? (bins[band] || 0) : 0;
 
-      // spread <1 收紧到内核，>1 铺开成球壳 —— 这是状态差异的主要来源
-      const spread = vis.spread ?? 1;
-      let target = this.baseRadii[i] * (0.70 + energy * 0.50 + bandVal * 0.40) * spread;
-      if (outward) target *= 1.0 + 0.30 * Math.sin(this.time * 2.2 + this.seeds[i]);
+      // spread <1 收紧到内核，>1 铺开成球壳 —— 状态差异的主要来源之一
+      let target = this.baseRadii[i] * (0.92 + e * 0.30 + bandVal * 0.30) * spread;
+      if (outward) target *= 1.0 + 0.28 * Math.sin(this.time * 2.2 + this.seeds[i]);
       // 呼吸（待机时也能看出活着）
       target *= 1 + 0.035 * Math.sin(this.time * 1.1 + this.seeds[i]);
+      // 别跑出圆盘
+      target = Math.min(target, 0.94);
 
       this.radii[i] += (target - this.radii[i]) * Math.min(1, dt * 6);
     }
   }
 
-  /** 画：两遍叠加（背后暗、前面亮），单色相，边缘自动衰减 */
-  draw(ctx, cx, cy, R, vis, alphaMul = 1) {
+  /**
+   * 画点：单色相、小圆点、边缘衰减。
+   * @param {number} dpr 设备像素比（让点的视觉大小不随屏幕缩放变化）
+   */
+  draw(ctx, cx, cy, R, vis, alphaMul = 1, dpr = 1) {
     const { hue, sat, glow } = vis;
-    const satPct = (sat * 100) | 0;
+    const satPct = Math.round((sat ?? 0.8) * 100);
+    const gain = 0.14 + Math.max(0, glow) * 1.0;
+    const baseR = Math.max(1.15 * dpr, R * 0.020);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
 
@@ -75,32 +85,20 @@ export class Particles {
       const front = (z + 1) / 2;           // 0..1
       const rr = this.radii[i];
       // 边缘衰减：越靠外越淡，避免硬边
-      const edge = Math.max(0, 1 - rr * 0.86);
-      const alpha = (0.05 + front * 0.42) * (0.25 + glow) * edge * alphaMul;
+      const edge = Math.max(0, 1 - rr * 0.78);
+      const alpha = (0.05 + front * 0.40) * gain * edge * alphaMul;
       if (alpha <= 0.004) continue;
 
       const x = cx + Math.cos(this.angles[i]) * rr * R;
-      const y = cy + Math.sin(this.angles[i]) * rr * R * 0.94;
-      const size = Math.max(0.6, R * (0.006 + front * 0.010));
+      const y = cy + Math.sin(this.angles[i]) * rr * R;
+      const size = Math.max(1.15 * dpr, baseR * (0.75 + front * 0.85));
 
       ctx.beginPath();
-      ctx.fillStyle = `hsla(${hue}, ${satPct}%, ${74 + front * 18}%, ${alpha})`;
+      ctx.fillStyle = `hsla(${hue}, ${satPct}%, ${78 + front * 14}%, ${alpha})`;
       ctx.arc(x, y, size, 0, TAU);
       ctx.fill();
     }
 
-    // 前层再叠一次，做出「体积光」而不是「雾」
-    for (let i = 0; i < this.count; i += 3) {
-      const z = this.depths[i];
-      if (z < 0.35) continue;
-      const rr = this.radii[i];
-      const x = cx + Math.cos(this.angles[i]) * rr * R;
-      const y = cy + Math.sin(this.angles[i]) * rr * R * 0.94;
-      ctx.beginPath();
-      ctx.fillStyle = `hsla(${hue}, ${Math.min(100, satPct + 8)}%, 88%, ${0.10 * glow})`;
-      ctx.arc(x, y, Math.max(0.8, R * 0.012), 0, TAU);
-      ctx.fill();
-    }
     ctx.restore();
   }
 }
