@@ -141,7 +141,8 @@ fn spawn_state_walker(machine: Arc<Mutex<SessionMachine>>) {
 fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: bool) {
     tauri::async_runtime::spawn(async move {
         let mut spectrum = Spectrum::with_default_window();
-        let mut ticker = tokio::time::interval(Duration::from_millis(33));
+        // 50ms（20fps）足够顺，之前 33ms 在 N6000 上纯属浪费
+        let mut ticker = tokio::time::interval(Duration::from_millis(50));
         let started = Instant::now();
         let mut last_state = String::new();
         let mut phase = 0.0f32;
@@ -176,6 +177,12 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
             } else {
                 (vec![0.0f32; morphofly_core::SPECTRUM_BINS], 0.0)
             };
+
+            // 空闲态不需要频谱（S0 的呼吸动画不吃 bins），直接跳过，省 IPC 和 CPU
+            let st_now = { machine.lock().await.state() };
+            if !demo_audio && matches!(st_now, OrbState::S0 | OrbState::S1) {
+                continue;
+            }
 
             if app
                 .emit(
@@ -744,9 +751,13 @@ fn main() {
         cfg.idle_timeout_ms,
     ))));
 
+    // ★ 默认关。2026-10-25 真机实测：开着演示频谱时空闲 CPU 77%
+    // （tokio worker 28% 在每秒 30 次「合成 512 点 PCM + FFT + IPC 发给前端」），
+    // 而 WebKit 那边的渲染进程反而 0% —— 白烧 CPU，风扇一直转。
+    // 只有做视觉演示/截图时才需要它：MORPHOFLY_DEMO_AUDIO=1。
     let demo_audio = std::env::var("MORPHOFLY_DEMO_AUDIO")
         .map(|v| v != "0")
-        .unwrap_or(true);
+        .unwrap_or(false);
     // 唤醒词常驻监听的启动挪到 .setup() 里 —— 必须在 MORPHOFLY_BUNDLE_DIR 设好之后，
     // 否则 AppImage 场景下会去 ~/.diemeng 找模型（找不到就静默降级）。
     let enable_kws = std::env::var("MORPHOFLY_KWS")
