@@ -6,7 +6,7 @@
   "tier": "standard",
   "project_type": "generic",
   "human_mode": "inspect",
-  "stage": "S0",
+  "stage": "S4",
   "status": "running",
   "owner": {
     "agent": "agent",
@@ -15,14 +15,47 @@
     "lease_until": "2026-10-24T22:08:21+08:00"
   },
   "attempts": {
-    "S0": 1
+    "S0": 1,
+    "S1": 1,
+    "S2": 1,
+    "S4": 2,
+    "S3": 1
   },
   "loops": {
-    "used": 0,
+    "used": 1,
     "max": 3,
-    "last_fail_stage": null
+    "last_fail_stage": "S4"
   },
-  "gates": {},
+  "gates": {
+    "G0": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/intake.md",
+      "sha256": "d354c18c8681debc28b493b288f83180d9eb980cdd5ac28b6af9ef1cebf97977",
+      "at": "2026-10-24T22:25:00+08:00",
+      "note": "根目录/档位/类型已写进 intake.md"
+    },
+    "G1": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/acceptance.md",
+      "sha256": "2a4700dc35f948738de8abaf9d908459131973390987749292fef0583876ddc3",
+      "at": "2026-10-24T22:25:01+08:00",
+      "note": "验收表 9 行都有判定命令；不做清单 5 条"
+    },
+    "G2": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/facts.md",
+      "sha256": "aac8fc42d798211d4915393dc6ba29bd203e7bd527cef5baec3000654f460c78",
+      "at": "2026-10-24T22:25:03+08:00",
+      "note": "F1-F10 每条都有可复现命令和实测输出；DAG 无环；每任务有闸门；3 条不变量已列"
+    },
+    "G3": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/evidence/red.log",
+      "sha256": "8be27fc21c91e439a93d28b254b57aeca4c477f1427b9fc26bb82d44a9cc87f7",
+      "at": "2026-10-24T22:27:02+08:00",
+      "note": "A1/A3/A4 的红都留了实测证据"
+    }
+  },
   "human": {},
   "budget": {
     "minutes_cap": 480,
@@ -33,7 +66,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S0：跑 G0 并落证据（devflow gate G0 pass --evidence <文件>）",
+  "next_action": "S4：跑 G4 并落证据（devflow gate G4 pass --evidence <文件>）",
   "artifacts": {
     "progress": "progress.md"
   }
