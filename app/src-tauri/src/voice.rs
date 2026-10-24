@@ -99,6 +99,8 @@ impl VoiceSession {
         // 采集 → 推流 + 频谱
         let mic2 = mic.clone();
         let client2 = client.clone();
+        #[cfg(feature = "kws")]
+        let client_for_push = client.clone();
         let stop2 = stop.clone();
         let m_machine = machine.clone();
         let on_spec = on_spectrum.clone();
@@ -109,6 +111,9 @@ impl VoiceSession {
         let interruptions_in_push = interruptions.clone();
         #[cfg(feature = "kws")]
         let machine_in_push = machine.clone();
+        // 打断时要通知云端停止生成（修缺陷 #5）
+        #[cfg(feature = "kws")]
+        let client_in_push = client_for_push.clone();
         let push_task = tokio::spawn(async move {
             let mut rx = mic2.subscribe();
             let mut spectrum = Spectrum::with_default_window();
@@ -165,9 +170,15 @@ impl VoiceSession {
                                     let queued = player_in_push.queued_frames();
                                     if queued > 0 {
                                         player_in_push.stop_now();
+                                        // ★ 修缺陷 #5：还要告诉云端别生成了。
+                                        // 之前只停本地播放，云端继续跑 —— 浪费 token，
+                                        // 而且缓存的音频会让它「刚停又接着说」。
+                                        if let Err(e) = client_in_push.cancel_response() {
+                                            tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
+                                        }
                                         interruptions_in_push.fetch_add(1, Ordering::Relaxed);
                                         vad_cooldown = 40; // 40 帧 * 20ms = 800ms
-                                        tracing::info!(queued, "⚡ 本地 VAD 打断");
+                                        tracing::info!(queued, "⚡ 本地 VAD 打断（已通知云端停止生成）");
                                         tauri::async_runtime::block_on(async {
                                             let mut m = machine_in_push.lock().await;
                                             let _ = m.handle(Stimulus::UserSpeechStarted);
@@ -262,6 +273,11 @@ impl VoiceSession {
                         // ★ barge-in：本地先停，不等云端确认
                         let queued = player2.queued_frames();
                         player2.stop_now();
+                        // ★ 修缺陷 #5：云端已经知道用户开口了，但当前这轮生成
+                        // 可能还在继续。显式取消，别浪费 token。
+                        if let Err(e) = c_ev.cancel_response() {
+                            tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
+                        }
                         if queued > 0 {
                             interruptions.fetch_add(1, Ordering::Relaxed);
                         }
