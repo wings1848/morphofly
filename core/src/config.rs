@@ -110,8 +110,11 @@ pub const DEFAULT_INSTRUCTIONS: &str = "你是「小蝶」，蝶梦语音智能�
 \
 6. 用户闲聊就正常回一句，不派活。闲聊也要极简。\
 \
-7. 「已知项目」表：说「蝶梦」或「morphofly」= /home/wings/Code_Project/morphofly；\
-   其余项目名一律追问用户要路径。";
+7. 「已知项目」表：说「蝶梦」或「morphofly」= /home/wings/Code_Project/morphofly。\
+   **dir 只能填这张表里出现的路径，或者干脆不填（= 用当前项目）。**\
+   绝对不要根据听来的词自己拼路径 —— 语音识别经常把英文项目名听成别的词\
+   （实测 morphofly 被听成 move_forward），拼出来的目录根本不存在，活派不出去。\
+   表里没有的项目名，一律追问用户。";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -387,6 +390,18 @@ mod tests {
         c.apply_env();
         assert_eq!(c.realtime.provider, Provider::Qwen);
         std::env::remove_var("MORPHOFLY_PROVIDER");
+    }
+
+    /// 回归：提示词必须明确禁止模型自己拼路径。
+    ///
+    /// 真机实测：用户说「morphofly 项目」，ASR 听成「move_forward」，
+    /// 模型按 Code_Project/<听到的名字> 拼了个不存在的目录，活直接派不出去。
+    #[test]
+    fn instructions_forbid_guessing_paths() {
+        assert!(DEFAULT_INSTRUCTIONS.contains("绝对不要根据听来的词自己拼路径"));
+        assert!(DEFAULT_INSTRUCTIONS.contains("或者干脆不填"));
+        // 已知项目表必须在
+        assert!(DEFAULT_INSTRUCTIONS.contains("/home/wings/Code_Project/morphofly"));
     }
 
     #[test]
