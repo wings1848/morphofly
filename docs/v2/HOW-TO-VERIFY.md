@@ -216,3 +216,35 @@ ssh "$T" 'journalctl --user -u morphofly-test -n 10 --no-pager | grep -E "唤醒
 | 窗口跑到屏幕外 | 贴边坐标是按主屏算的 | 查 `小球已贴边 x=? y=?`，确认在哪块屏 |
 | 双屏截图对不上坐标 | 截图缩放 + 多屏 | 先 `xrandr` 确认布局 |
 | CI 产物在 gpd SIGILL | AppImage 打包了 AVX 库 | 用 deb |
+
+## 看真机效果（截图）
+
+**最重要的一条：光看日志不算看见，必须看图。**
+
+```bash
+# 整个桌面（走 app 自己的 MCP 协议，portal 截图，能落盘）
+python3 tools/gpd_shot.py /tmp/desktop.png
+
+# 只截一块（x,y,w,h，按真实分辨率）
+python3 tools/gpd_shot.py /tmp/orb.png --crop 2900,1450,172,172
+```
+
+为什么不用别的办法（都试过，都不行）：
+
+| 办法 | 结果 |
+|---|---|
+| `ffmpeg -f x11grab` | 抓不到被合成的窗口，整张图只有鼠标指针 |
+| computer-use MCP 的 `screenshot` | 图能拿到，但本会话网关只转发文本 |
+| `computer-use-linux screenshot` CLI | 只打印元数据，不落盘 |
+| **`tools/gpd_shot.py`** | ✅ 直连 MCP stdio 协议，base64 取回来写文件 |
+
+前端视觉**不用编译**就能看（秒级）：
+
+```bash
+ssh gpd 'cd ~/Code_Project/morphofly/app/frontend && nohup python3 -m http.server 8899 &'
+ssh gpd 'chromium --headless=new --disable-gpu --no-sandbox --window-size=148,148 \
+  --virtual-time-budget=1600 --screenshot=/tmp/ui-S2.png \
+  "http://127.0.0.1:8899/index.html?state=S2&demo=1"'
+```
+
+⚠️ 判断观感要在**深色背景**上合成，白底会让你误判「太淡」。

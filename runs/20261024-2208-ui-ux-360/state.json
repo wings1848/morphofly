@@ -6,8 +6,8 @@
   "tier": "standard",
   "project_type": "generic",
   "human_mode": "inspect",
-  "stage": "S7",
-  "status": "running",
+  "stage": "done",
+  "status": "done",
   "owner": {
     "agent": "agent",
     "session_id": "",
@@ -21,7 +21,8 @@
     "S4": 2,
     "S3": 1,
     "S5": 1,
-    "S7": 1
+    "S7": 1,
+    "S8": 1
   },
   "loops": {
     "used": 1,
@@ -70,6 +71,20 @@
       "sha256": "b061e6970664f18a559b71601c5388ebb24d310706e36f98a7fcb8a20c7486b3",
       "at": "2026-10-24T23:19:16+08:00",
       "note": "5 项机器判定全绿 + 语音链路回归 + 不变量核对"
+    },
+    "G7": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/ship.md",
+      "sha256": "5b354c87916829f92350d355c0cd4df7fbbc05843c7e859ecac04a7c479f21b6",
+      "at": "2026-10-24T23:19:26+08:00",
+      "note": "CI 绿 + 回滚方案写明 + 收尾三查（含如实列出未清的临时文件）"
+    },
+    "G8": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/retro.md",
+      "sha256": "5af92c238487ec3075f6d5bedc540e238b41e45ebed59dcb0432ced6c24dfbdd",
+      "at": "2026-10-24T23:19:33+08:00",
+      "note": "4 条流程改进都落到具体文件"
     }
   },
   "human": {},
@@ -82,7 +97,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S7：跑 G7 并落证据（devflow gate G7 pass --evidence <文件>）",
+  "next_action": "run 已完成：写 retro.md、归档并同步技能",
   "artifacts": {
     "progress": "progress.md"
   }
