@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// 支持的 provider
@@ -121,6 +122,16 @@ pub struct DshConfig {
     pub default_cwd: String,
     /// 单个任务最长执行时间（秒），超时自动取消
     pub task_timeout_secs: u64,
+    /// 可用的 agent 表（名字 → 启动命令）。
+    ///
+    /// 用户要求「语音接入和管理多个 agent（dsh、codex 等）」。
+    /// 每个 agent 就是一个 ACP 服务器进程，协议层完全复用。
+    ///
+    /// 目前内置两个：
+    /// - `dsh`：`dsh --profile acp`（默认）
+    /// - `codex`：`npx -y @zed-industries/codex-acp`
+    #[serde(default)]
+    pub agents: HashMap<String, Vec<String>>,
 }
 
 impl Default for DshConfig {
@@ -129,6 +140,7 @@ impl Default for DshConfig {
             command: vec!["dsh".into(), "--profile".into(), "acp".into()],
             default_cwd: std::env::var("HOME").unwrap_or_else(|_| ".".into()),
             task_timeout_secs: 3600,
+            agents: default_agents(),
         }
     }
 }
@@ -201,6 +213,33 @@ pub fn bundle_data_dir() -> Option<PathBuf> {
 
 /// 定位一个随包资源：先找 bundle，再找用户数据目录。
 ///
+/// 内置 agent 表。
+///
+/// ## 为什么 Codex 用 npx 适配器
+///
+/// `codex` CLI **没有** ACP 子命令（实测 `codex help | grep -c acp` = 0）。
+/// 但 Zed 出了官方适配器 `@zed-industries/codex-acp`，
+/// 它启动 Codex App Server 并翻译 ACP 请求。
+///
+/// **关键**：协议层和 DSH 完全一致，所以不需要写第二个客户端 ——
+/// 换一条启动命令就是一个新 agent。
+pub fn default_agents() -> HashMap<String, Vec<String>> {
+    let mut m = HashMap::new();
+    m.insert(
+        "dsh".to_string(),
+        vec!["dsh".into(), "--profile".into(), "acp".into()],
+    );
+    m.insert(
+        "codex".to_string(),
+        vec![
+            "npx".into(),
+            "-y".into(),
+            "@zed-industries/codex-acp".into(),
+        ],
+    );
+    m
+}
+
 /// `rel` 是相对路径，比如 `"kws-model"` 或 `"vad-model/silero_vad.onnx"`。
 pub fn find_resource(rel: &str) -> PathBuf {
     if let Some(b) = bundle_data_dir() {

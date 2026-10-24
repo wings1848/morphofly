@@ -41,6 +41,8 @@ impl Drop for CancelGuard {
 /// DSH 桥
 pub struct DshBridge {
     command: Vec<String>,
+    /// 可用的 agent 表（名字 → 启动命令）。`set_context` 切换 agent 时用。
+    agents: HashMap<String, Vec<String>>,
     default_cwd: String,
     /// 单个任务最长跑多久（超时后取消）
     task_timeout: Duration,
@@ -74,8 +76,10 @@ pub struct DshBridge {
 
 impl DshBridge {
     pub fn new(command: Vec<String>, default_cwd: String, task_timeout: Duration) -> Self {
+        let agents = crate::config::default_agents();
         Self {
             command,
+            agents,
             default_cwd,
             task_timeout,
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -85,11 +89,28 @@ impl DshBridge {
     }
 
     pub fn from_config(cfg: &crate::Config) -> Self {
-        Self::new(
+        let mut bridge = Self::new(
             cfg.dsh.command.clone(),
             cfg.dsh.default_cwd.clone(),
             Duration::from_secs(cfg.dsh.task_timeout_secs),
-        )
+        );
+        // 用户配置里的 agents 覆盖内置表
+        if !cfg.dsh.agents.is_empty() {
+            bridge.agents = cfg.dsh.agents.clone();
+        }
+        bridge
+    }
+
+    /// 某个 agent 名字对应的启动命令。未知名字返回 None。
+    pub fn command_for(&self, agent: &str) -> Option<&Vec<String>> {
+        self.agents.get(agent)
+    }
+
+    /// 当前可用的 agent 名字（给提示词和 UI 用）
+    pub fn agent_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.agents.keys().cloned().collect();
+        v.sort();
+        v
     }
 
     pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
@@ -128,8 +149,35 @@ impl DshBridge {
         self.run_task_with_id("", task, cwd).await
     }
 
+    /// 指定 agent 的版本（多 agent 支持）。
+    pub async fn run_task_as(
+        &self,
+        task_id: &str,
+        agent: &str,
+        task: &str,
+        cwd: &str,
+    ) -> Result<String> {
+        let cmd = self
+            .command_for(agent)
+            .cloned()
+            .with_context(|| format!("没有叫 {agent} 的 agent"))?;
+        self.run_with_command(task_id, cmd, task, cwd).await
+    }
+
     /// 带任务 ID 的版本 —— 支持中途取消。
     pub async fn run_task_with_id(&self, task_id: &str, task: &str, cwd: &str) -> Result<String> {
+        self.run_with_command(task_id, self.command.clone(), task, cwd)
+            .await
+    }
+
+    /// 真正干活的地方：用指定命令跑一个任务。
+    async fn run_with_command(
+        &self,
+        task_id: &str,
+        command: Vec<String>,
+        task: &str,
+        cwd: &str,
+    ) -> Result<String> {
         let cwd = if cwd.trim().is_empty() {
             &self.default_cwd
         } else {
@@ -153,10 +201,7 @@ impl DshBridge {
         // 注意：不能写成 `Some(mut c) if c.is_alive() =>` ——
         // Rust 的 match guard 里不允许可变借用（is_alive 要 &mut self）。
         let mut reused = self.idle.lock().await.take();
-        let alive = reused
-            .as_mut()
-            .map(|c| c.is_alive())
-            .unwrap_or(false);
+        let alive = reused.as_mut().map(|c| c.is_alive()).unwrap_or(false);
         let (mut client, was_reused) = if alive {
             tracing::debug!("复用已握手的 DSH 进程（省 1.35s）");
             (reused.take().expect("刚判断过是 Some"), true)

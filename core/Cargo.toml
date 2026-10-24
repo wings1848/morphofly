@@ -72,3 +72,6 @@ name = "aec_aloop_test"
 
 [[example]]
 name = "pool_bench"
+
+[[example]]
+name = "agent_switch_check"
