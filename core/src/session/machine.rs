@@ -183,6 +183,7 @@ impl SessionMachine {
         }
         // 断线：除了「还没连过」的初始态，一律进异常
         if (self.ever_connected || self.state.is_active_call()) && self.state != OrbState::S5 {
+            tracing::debug!(from = self.state.as_str(), "断线 → S5");
             self.state = OrbState::S5;
             self.transitions += 1;
         }
@@ -246,6 +247,19 @@ impl SessionMachine {
         };
         let changed = next != from;
         self.goto(next);
+        // ★ 每次迁移都留痕（2026-10-25 真机排障用的）。
+        //
+        // 起因：会话「刚连上 1.6 秒就自己结束」，日志里只有「会话结束」，
+        // 分不清是谁把状态拉出通话态的（超时 / 断线 / 点击 / force_idle）。
+        // 状态机是纯逻辑，这里打一条 debug 成本可以忽略。
+        if changed {
+            tracing::debug!(
+                from = from.as_str(),
+                to = next.as_str(),
+                stim = ?stim,
+                "状态迁移"
+            );
+        }
         Ok(changed)
     }
 

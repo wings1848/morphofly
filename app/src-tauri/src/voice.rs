@@ -158,6 +158,10 @@ impl VoiceSession {
             let mut rx = mic2.subscribe();
             let mut spectrum = Spectrum::with_default_window();
             let mut idle_frames = 0u64;
+            // 诊断计数（2026-10-25 加）：用来区分「麦克风没声音」和「VAD 没判出来」。
+            let mut frames_seen = 0u64;
+            let mut peak_rms = 0.0f32;
+            tracing::debug!("推流任务启动（等待采集帧）");
             // ★ 本地 VAD：三个用途
             //   1. 打断（用户说话 → 立刻停播）
             //   2. 判定「开口 / 说完了」→ 立刻 commit（不等服务端 VAD 的 1.95s）
@@ -369,13 +373,38 @@ impl VoiceSession {
                                 _ => {}
                             }
                         }
-                        if let Err(_) = client2.send_audio(&frame) {
+                        if let Err(e) = client2.send_audio(&frame) {
+                            tracing::warn!(error = %e, "推流失败，推流任务退出（此后麦克风不再上传）");
                             break;
+                        }
+                        // 诊断心跳：每 5 秒（250 帧 × 20ms）留一行，
+                        // 能一眼看出「麦克风到底有没有帧 / 声音多响」。
+                        frames_seen += 1;
+                        if rms > peak_rms {
+                            peak_rms = rms;
+                        }
+                        if frames_seen % 250 == 0 {
+                            // `player_in_push` 只有 kws 构建才有（--no-default-features 没有播放队列句柄）
+                            #[cfg(feature = "kws")]
+                            let queued = player_in_push.queued_frames();
+                            #[cfg(not(feature = "kws"))]
+                            let queued = 0u64;
+                            tracing::debug!(
+                                frames = frames_seen,
+                                peak_rms = format!("{peak_rms:.4}"),
+                                queued,
+                                "推流心跳"
+                            );
+                            peak_rms = 0.0;
                         }
                         // 静音 30s 自动退出（验收 F9）
                         if rms < 0.005 {
                             idle_frames += 1;
                             if idle_frames > 30 * 50 {
+                                tracing::info!(
+                                    frames = frames_seen,
+                                    "30 秒没人说话 → 回待机（IdleTimeout）"
+                                );
                                 let mut m = m_machine.lock().await;
                                 let _ = m.handle(Stimulus::IdleTimeout);
                                 break;
@@ -387,6 +416,7 @@ impl VoiceSession {
                     _ => continue,
                 }
             }
+            tracing::debug!(frames = frames_seen, "推流任务退出");
         });
 
         // 事件 → 状态机 + 播放 + 打断
@@ -429,6 +459,9 @@ impl VoiceSession {
             let mut user_said_is_final = false;
             // 一次用户说话最多纠正一次，防止无限打断
             let mut correction_sent = false;
+            // 诊断：这一轮回复的音频块数 / 采样数（排查「卡顿、被截断」用）
+            let mut resp_chunks = 0u32;
+            let mut resp_frames = 0u64;
             loop {
                 if stop3.load(Ordering::Relaxed) {
                     break;
@@ -463,7 +496,18 @@ impl VoiceSession {
                                     .store(t.elapsed().as_millis() as u64, Ordering::Relaxed);
                             }
                         }
+                        // 诊断：服务端是「按实时推」还是「一口气突发推」——
+                        // 2026-10-25 真机实测是后者（2.42s 音频 650ms 到齐），
+                        // 当时的 500ms 播放环撑不住 → 卡顿截断。这里留痕便于复核。
+                        resp_chunks += 1;
+                        tracing::debug!(
+                            chunk = resp_chunks,
+                            pcm_samples = pcm.len(),
+                            sample_rate,
+                            "收到 TTS 音频块"
+                        );
                         let n = player2.append_pcm16(&pcm, sample_rate);
+                        resp_frames += n as u64;
                         played.fetch_add(n as u64, Ordering::Relaxed);
                         let _ = m.handle(Stimulus::ModelSpeaking);
                     }
@@ -645,6 +689,21 @@ impl VoiceSession {
                         // 这一轮真正结束了。注意不重置 `tool_calls_this_turn`：
                         // 同一句话后续可能还有 response（工具结果回灌后），
                         // 只有用户重新开口（SpeechStarted）才清零。
+                        //
+                        // ★ 音频诊断（2026-10-25）：
+                        // - `frames`：这一轮一共收了多少采样（24k 下 /24000 = 秒）
+                        // - `queued`：现在还有多少没播完
+                        // - `dropped_total`：播放环累计丢了几个采样（>0 就是卡顿/截断）
+                        tracing::info!(
+                            chunks = resp_chunks,
+                            frames = resp_frames,
+                            seconds = format!("{:.2}", resp_frames as f64 / 24_000.0),
+                            queued = player2.queued_frames(),
+                            dropped_total = player2.frames_dropped(),
+                            "回复音频收完"
+                        );
+                        resp_chunks = 0;
+                        resp_frames = 0;
                         user_spoke = false;
                         assistant_reply.clear();
                         let _ = m.handle(Stimulus::ModelDone);
@@ -694,6 +753,13 @@ impl VoiceSession {
                     _ => {}
                 }
             }
+            // ★ 事件循环为什么退出必须留痕（2026-10-25）：
+            // 之前「断线」只体现在状态机悄悄跳 S5 上，日志里看不出来，
+            // 于是「会话刚连上就结束」查不到原因。
+            tracing::info!(
+                stop_flag = stop3.load(Ordering::Relaxed),
+                "事件循环退出（收到停止或事件通道关闭）"
+            );
         });
 
         // 主动汇报：轮询任务表，任务完成就主动开口（验收 F7）
@@ -752,8 +818,23 @@ impl VoiceSession {
         // 主循环：等状态离开通话，或用户点击退出
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            let st = { machine.lock().await.state() };
-            if !st.is_active_call() || stop.load(Ordering::Relaxed) {
+            let (st, transitions) = {
+                let m = machine.lock().await;
+                (m.state(), m.transitions)
+            };
+            let stop_flag = stop.load(Ordering::Relaxed);
+            if !st.is_active_call() || stop_flag {
+                // ★ 退出原因必须留痕。
+                //
+                // 2026-10-25 真机：会话刚连上 1.6 秒就「会话结束」，
+                // 日志里没有断线、没有报错、也没有状态迁移记录 ——
+                // 完全看不出是谁结束的。这里把两个判据都打出来。
+                tracing::info!(
+                    state = st.as_str(),
+                    stop_flag,
+                    transitions,
+                    "会话主循环退出（离开通话态或收到停止）"
+                );
                 break;
             }
         }

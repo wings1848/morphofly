@@ -447,6 +447,14 @@ impl AudioPlayer {
         self.queue.frames_pulled()
     }
 
+    /// 累计因环形缓冲溢出而**丢弃**的采样数（nominal rate 下）。
+    ///
+    /// 正常应恒为 0。大于 0 就说明「音频到达速度 > 播放速度 + 缓冲容量」，
+    /// 用户听到的就是卡顿 / 被截断（2026-10-25 真机踩过：服务端突发推流）。
+    pub fn frames_dropped(&self) -> u64 {
+        self.queue.overwritten()
+    }
+
     /// 追加 i16 PCM（任意采样率）。
     ///
     /// 内部先把 `sample_rate` 转到 nominal rate（24k），再写入环。返回写入的样本数
@@ -475,7 +483,25 @@ impl AudioPlayer {
         if let Some(aec) = lock(&self.aec).as_ref() {
             aec.process_render_at(&converted, self.nominal_rate);
         }
-        self.queue.push(&converted)
+        // ★ 缓冲溢出必须留痕。
+        //
+        // 2026-10-25 真机：服务端把整段回复突发推下来（2.42s 音频 650ms 到齐），
+        // 当时 500ms 的环撑不住 → 覆盖最旧样本 → 用户听到「一卡一卡、被截断」，
+        // 而日志里**一个字都没有**，查了很久。现在只要丢样本就 WARN，
+        // 带「丢了多少 / 队列多深 / 这次写入多少」，便于一眼定位。
+        let dropped_before = self.queue.overwritten();
+        let n = self.queue.push(&converted);
+        let dropped = self.queue.overwritten().saturating_sub(dropped_before);
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                appended = converted.len(),
+                queued = self.queue.queued_frames(),
+                cap_ms = JITTER_MAX_MS,
+                "播放缓冲溢出：丢了最旧的样本（语音会卡顿/被截断）"
+            );
+        }
+        n
     }
 
     /// 追加 f32 PCM（任意采样率，值域 `[-1,1]`）。
@@ -791,11 +817,15 @@ mod tests {
 
     #[test]
     fn jitter_bounds_match_design_doc() {
-        // docs/开发方案.md 4.3：播放侧 ring buffer 200–500ms 余量
+        // 下限 200ms 仍是设计值；上限 10s 是按「服务端突发推流整段回复」定的
+        // （2026-10-25 真机：500ms 的环丢样本 → 卡顿截断）
         assert_eq!(JITTER_MIN_MS, 200);
-        assert_eq!(JITTER_MAX_MS, 500);
+        assert_eq!(JITTER_MAX_MS, 10_000);
         let q = PlaybackQueue::new(DOWNLINK_SAMPLE_RATE, JITTER_MAX_MS);
-        assert_eq!(q.capacity(), (DOWNLINK_SAMPLE_RATE as usize * 500) / 1000);
+        assert_eq!(
+            q.capacity(),
+            (DOWNLINK_SAMPLE_RATE as usize * JITTER_MAX_MS as usize) / 1000
+        );
         assert_eq!(DOWNLINK_SAMPLE_RATE, 24_000);
     }
 

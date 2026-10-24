@@ -439,9 +439,19 @@ fn spawn_session_guard(
         let mut current: Option<voice::VoiceSession> = None;
         // 主动汇报开窗的冷却：失败时别每 250ms 试一次
         let mut last_proactive: Option<std::time::Instant> = None;
+        // 状态变化留痕（诊断用，避免每秒刷屏，只在变化时打）
+        let mut last_seen = morphofly_core::session::OrbState::S0;
         loop {
             tokio::time::sleep(Duration::from_millis(250)).await;
             let st = { machine.lock().await.state() };
+            if st != last_seen {
+                tracing::info!(
+                    from = last_seen.as_str(),
+                    to = st.as_str(),
+                    "会话守卫看到状态变化"
+                );
+                last_seen = st;
+            }
 
             // ★ 任务干完了但会话已经关了 → 主动开一轮把它念出来。
             //
@@ -587,6 +597,14 @@ fn spawn_wake_listener(machine: Arc<Mutex<SessionMachine>>) {
                     Ok(_) => tracing::info!(%keyword, state = guard.state().as_str(), "🔊 唤醒"),
                     Err(e) => tracing::warn!(error = %e, "唤醒迁移失败"),
                 }
+            } else {
+                // 通话中又听到唤醒词：不重复唤醒，但**必须留痕** ——
+                // 否则用户觉得「喊了没反应」，日志里却什么都没有（2026-10-25 加）。
+                tracing::debug!(
+                    %keyword,
+                    state = guard.state().as_str(),
+                    "已经醒着 / 正在通话，忽略这次唤醒词"
+                );
             }
         });
     }) {

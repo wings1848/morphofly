@@ -32,7 +32,18 @@ pub const DOWNLINK_SAMPLE_RATE: u32 = 24_000;
 pub const JITTER_MIN_MS: u32 = 200;
 
 /// 播放侧抗抖动缓冲上限（毫秒）。超出即丢最旧（用户等不到的音频没有保留价值）。
-pub const JITTER_MAX_MS: u32 = 500;
+///
+/// ⚠️ 2026-10-25 真机实测（wings-gpd + StepFun `step-1o-audio`）：
+/// 服务端**不按实时速率推流** —— 它先把整段回复合成完，再一口气发下来。
+/// 证据：一次回复共 58080 个 24k 采样（2.42 秒音频）全部在 **650 毫秒**内到达
+/// （约 3.7 倍实时），日志里 `state=S4` 到 `state=S2` 只隔 650ms。
+///
+/// 原来按「200–500ms 抗抖动」设计的 500ms 环遇到这种突发，会来不及播就被新样本
+/// 覆盖最旧的那批 —— 用户听到的就是「说话一卡一卡、说几个字被截断」。
+///
+/// 环变大**不增加延迟**：播放端仍是「到多少放多少」，环只是先进先出水池。
+/// 容量按「一整段回复都放得下」定：10 秒 ≈ 24 万采样 ≈ 960KB。
+pub const JITTER_MAX_MS: u32 = 10_000;
 
 /// 音频层统一错误。
 ///
@@ -115,9 +126,10 @@ mod tests {
 
     #[test]
     fn jitter_constants_match_design() {
-        // 开发方案 4.3：播放侧 ring buffer 200–500ms 余量
+        // 下限仍是设计值 200ms；上限改成 10s —— 服务端会突发推流（整段回复
+        // 650ms 内发完），500ms 的环会丢样本 → 真机表现为「卡顿 + 截断」。
         assert_eq!(JITTER_MIN_MS, 200);
-        assert_eq!(JITTER_MAX_MS, 500);
+        assert_eq!(JITTER_MAX_MS, 10_000);
         assert_eq!(DOWNLINK_SAMPLE_RATE, 24_000);
     }
 
