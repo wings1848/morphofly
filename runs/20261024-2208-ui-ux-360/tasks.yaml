@@ -1,0 +1,34 @@
+run: 20261024-2208-ui-ux-360
+tasks:
+  - id: B-window
+    title: 窗口尺寸/置顶/右下角/X11 后端/气泡撑开
+    owner: lead
+    writes: [app/src-tauri/]
+    gate: cargo build --release -p morphofly-app && tools/verify_float_ui.sh top
+    status: done
+  - id: A-frontend
+    title: 360 悬浮窗风格小球 + 6 状态动效
+    owner: ui-visual
+    writes: [app/frontend/]
+    gate: node --test 'app/frontend/test/*.test.mjs'
+    status: in_progress
+  - id: C-verify
+    title: 验收脚本 tools/verify_float_ui.sh
+    owner: verify-harness
+    writes: [tools/]
+    gate: bash -n tools/verify_float_ui.sh
+    status: in_progress
+  - id: D-merge
+    title: 合并三条流 + 编译 + 真机验收
+    owner: lead
+    blocked_by: [B-window, A-frontend, C-verify]
+    writes: []
+    gate: tools/verify_float_ui.sh all && tools/gpd_voice_e2e.sh
+    status: pending
+  - id: E-ship
+    title: CI 绿 + 文档/canvas 更新 + 交付单
+    owner: lead
+    blocked_by: [D-merge]
+    writes: [docs/, README.md]
+    gate: gh run list --limit 1 显示 success
+    status: pending
