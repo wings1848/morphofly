@@ -127,7 +127,8 @@ impl Dispatcher {
         let id2 = id.clone();
         tokio::spawn(async move {
             let _ = store.lock().await.set_status(&id2, TaskStatus::Running);
-            match bridge.run_task(&task_clone, &dir).await {
+            // ★ 用带 ID 的版本，这样能中途取消（修缺陷 #1）
+            match bridge.run_task_with_id(&id2, &task_clone, &dir).await {
                 Ok(summary) => {
                     let mut s = store.lock().await;
                     let _ = s.set_summary(&id2, &clean_for_speech(&summary));
@@ -204,9 +205,25 @@ impl Dispatcher {
             });
         }
         s.set_status(&id, TaskStatus::Cancelled)?;
+        drop(s); // 先放锁，cancel_task 里要 await
+
+        // ★ 修缺陷 #1：真的让 DSH 停下来，而不只是改本地状态。
+        // 之前这里 `self.bridge` 根本没用到，用户说「停」其实没停 —— 这是欺骗。
+        let stopped = self.bridge.cancel_task(&id).await;
+        if stopped {
+            tracing::info!(task = %id, "任务已真正取消");
+        } else {
+            // 任务可能刚好已经结束，或者还没跑到注册那一步
+            tracing::info!(task = %id, "取消时任务不在运行中（可能已完成）");
+        }
         Ok(ToolResult {
             speech: "好，停了".to_string(),
-            data: serde_json::json!({ "task_id": id, "status": "cancelled" }),
+            data: serde_json::json!({
+                "task_id": id,
+                "status": "cancelled",
+                // 诚实标注：告诉调用方是否真的停掉了正在跑的进程
+                "actually_stopped": stopped,
+            }),
         })
     }
 
@@ -230,11 +247,47 @@ impl Dispatcher {
                 data: serde_json::json!({"error": "not_found"}),
             });
         }
+        let status = s.get(&id).map(|t| t.status);
         s.append_requirement(&id, &extra)?;
-        Ok(ToolResult {
-            speech: format!("行，我给它补上了：{extra}"),
-            data: serde_json::json!({ "task_id": id, "appended": extra }),
-        })
+        drop(s);
+
+        // ★ 修缺陷 #2：诚实对待「追加要求」。
+        //
+        // 之前这里只拼到本地 task.goal，然后回「行，我给它补上了」 ——
+        // 但 bridge.rs 里**没有任何 append 通道**，DSH 那边根本不知道。
+        // 用户以为加了要求，其实没加。**这是欺骗。**
+        //
+        // DSH 的 ACP 协议里，已开始的 session/prompt 没法中途追加要求
+        // （只能再发一轮 prompt，但那是新一轮对话，不是「往这个任务里加」）。
+        // 所以正确做法是：**如实告诉用户能不能加**。
+        let can_append = matches!(
+            status,
+            Some(TaskStatus::Pending) | Some(TaskStatus::Blocked)
+        );
+
+        if can_append {
+            // 还没开始跑 → 真的能加进去
+            Ok(ToolResult {
+                speech: "行，加上了".to_string(),
+                data: serde_json::json!({
+                    "task_id": id,
+                    "appended": extra,
+                    "effective": true,
+                }),
+            })
+        } else {
+            // 已经在跑了 → 老实说加不了，并给可操作的选项
+            Ok(ToolResult {
+                speech: "这活儿已经在跑了，要停了重来吗".to_string(),
+                data: serde_json::json!({
+                    "task_id": id,
+                    "appended": extra,
+                    "effective": false,
+                    "reason": "task_already_running",
+                    "suggestion": "cancel_and_retry",
+                }),
+            })
+        }
     }
 }
 

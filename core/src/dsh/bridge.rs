@@ -9,9 +9,34 @@
 
 use super::acp::{DshClient, DshEvent};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{oneshot, Mutex};
+
+/// 任务退出时把取消注册表里的自己删掉。
+///
+/// 用 RAII 而不是在每个 bail!/return 前手写清理 ——
+/// `run_task` 有 6 个退出路径，手写必漏。
+struct CancelGuard {
+    cancels: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    task_id: String,
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if self.task_id.is_empty() {
+            return;
+        }
+        // Drop 是同步的，只能 try_lock。
+        // 拿不到锁的概率极低（只有正好在 cancel 时），而且残留一条无害
+        // （下次同 ID 任务会覆盖），所以不搞异步清理的复杂度。
+        if let Ok(mut m) = self.cancels.try_lock() {
+            m.remove(&self.task_id);
+        }
+    }
+}
 
 /// DSH 桥
 pub struct DshBridge {
@@ -21,6 +46,15 @@ pub struct DshBridge {
     task_timeout: Duration,
     /// 全局关停开关（App 退出时置 true）
     shutdown: Arc<AtomicBool>,
+    /// 正在跑的任务 → 取消信号。
+    ///
+    /// ⚠️ 2026-10-24 修缺陷 #1：之前 `cancel_task` 只改本地状态，
+    /// `self.bridge` 在 cancel() 里根本没用到 —— 用户说「停」，
+    /// 蝶梦回「好，停了」，但 DSH 里的活还在跑。**这是欺骗用户。**
+    ///
+    /// 现在每个任务跑起来先注册一个 oneshot sender，
+    /// cancel 时发信号，run_task 的循环里检查到就真的中止 client。
+    cancels: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
 }
 
 impl DshBridge {
@@ -30,6 +64,7 @@ impl DshBridge {
             default_cwd,
             task_timeout,
             shutdown: Arc::new(AtomicBool::new(false)),
+            cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -48,12 +83,61 @@ impl DshBridge {
     /// 跑一个任务，返回一句可以念的总结。
     ///
     /// `task` 必须是自包含的（验收 A6）——调用方负责保证。
+    /// 真的取消一个正在跑的任务。
+    ///
+    /// 返回 true 表示找到了对应任务并发了取消信号。
+    /// 返回 false 表示任务不在跑（可能已经结束，或者从来没开始）。
+    pub async fn cancel_task(&self, task_id: &str) -> bool {
+        let tx = self.cancels.lock().await.remove(task_id);
+        match tx {
+            Some(tx) => {
+                // 接收端可能已经 drop（任务刚好结束），忽略发送错误
+                let _ = tx.send(());
+                tracing::info!(task = %task_id, "已发送取消信号");
+                true
+            }
+            None => {
+                tracing::warn!(task = %task_id, "取消时没找到运行中的任务");
+                false
+            }
+        }
+    }
+
+    /// 当前有几个任务在跑（诊断用）
+    pub async fn running_count(&self) -> usize {
+        self.cancels.lock().await.len()
+    }
+
     pub async fn run_task(&self, task: &str, cwd: &str) -> Result<String> {
+        self.run_task_with_id("", task, cwd).await
+    }
+
+    /// 带任务 ID 的版本 —— 支持中途取消。
+    pub async fn run_task_with_id(
+        &self,
+        task_id: &str,
+        task: &str,
+        cwd: &str,
+    ) -> Result<String> {
         let cwd = if cwd.trim().is_empty() {
             &self.default_cwd
         } else {
             cwd
         };
+        // 注册取消通道
+        let cancel_rx = if task_id.is_empty() {
+            None
+        } else {
+            let (tx, rx) = oneshot::channel();
+            self.cancels.lock().await.insert(task_id.to_string(), tx);
+            Some(rx)
+        };
+        // 保证退出时清理注册表（正常结束/报错/超时都要清）
+        let _cleanup = CancelGuard {
+            cancels: self.cancels.clone(),
+            task_id: task_id.to_string(),
+        };
+
         let mut client = DshClient::spawn(&self.command)
             .await
             .context("拉不起 DSH")?;
@@ -70,7 +154,17 @@ impl DshBridge {
         let deadline = tokio::time::Instant::now() + self.task_timeout;
         let stop_reason;
 
+        let mut cancel_rx = cancel_rx;
         loop {
+            // ★ 真的取消：用户说了「停」
+            if let Some(rx) = cancel_rx.as_mut() {
+                if rx.try_recv().is_ok() {
+                    tracing::info!(task = %task_id, "收到取消信号，中止 DSH");
+                    let _ = client.cancel().await;
+                    client.shutdown().await;
+                    anyhow::bail!("用户取消了任务");
+                }
+            }
             if self.shutdown.load(Ordering::Relaxed) {
                 let _ = client.cancel().await;
                 client.shutdown().await;
