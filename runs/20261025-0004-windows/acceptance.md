@@ -8,7 +8,8 @@
 | W2 | core 能在 Windows 上编译 | CI `cargo check -p morphofly-core` | success | ✅ success |
 | W3 | core 单测能在 Windows 上跑过 | CI `cargo test -p morphofly-core --lib` | 全过 | ✅ **248 全过**（在 Windows runner 上真跑，11 秒） |
 | W4 | app 外壳能在 Windows 上编译 | CI `cargo check -p morphofly-app --no-default-features` | success | ✅ **success**（tauri 壳整套依赖在 Windows 上编过） |
-| W5 | 能打出 Windows 安装包 | release `cargo tauri build --bundles nsis` | 产出 .exe | ⏳ 构建中 |
+| W5 | 能在 Windows 上编出可执行文件 | release `tauri build --no-bundle` | 产出 .exe | ⏳ 构建中 |
+| W5b | 能打出 NSIS 安装包 | release `tauri build --bundles nsis` | 产出安装包 | ⏳ 可选，失败不阻塞 |
 | W6 | 数据目录不再依赖 HOME | 本机单测 `config::data_dir_*` | 3 个测试过 | ✅ 11:xx 已过 |
 | W7 | 拉起 dsh 兼容 .cmd | 代码审查 + 注释（Windows 上无法单测） | 有 PATHEXT 分支 | ✅ |
 | W8 | 平台代码隔离 | `grep -c cfg\(target_os = "linux"\)` | force_x11_backend 被隔离 | ✅ |
@@ -33,3 +34,15 @@ test result: FAILED. 246 passed; 2 failed; finished in 8.99s
 | `suggest_dir_does_not_read_absolute_path` | 测试写死 `/tmp` 当候选目录，Windows 没有 /tmp → read_dir 失败 → 走了另一个分支 | 改用 `std::env::temp_dir()` |
 
 **这就是加 Windows 闸门的价值**：这两个问题在 Linux 上永远不会暴露。
+
+## W5 的降级说明（2026-10-25）
+
+NSIS 那一步要**整个 Rust release 冷编译 + 打包**，实测在 windows-latest 上
+跑了 40+ 分钟没完（两次尝试都一样），把整条 release 流水线拖死。
+
+所以拆成两步：
+1. `tauri build --no-bundle`（45 分钟超时）→ 上传 `.exe`
+   —— **这一步过了就等于「Windows 上真的能编」**，是兼容性的硬证据
+2. `tauri build --bundles nsis`（30 分钟超时，失败不阻塞）→ 上传安装包
+
+安装包只是分发形式；「编得出来」才是兼容性的实质。
