@@ -93,3 +93,7 @@ tools/verify_startup_clean.sh --no-frames
   不是 3072x1728 的活动桌面。位置验收要用 `xrandr --listactivemonitors`（verify_float_ui.sh 已这么做）。
 - **这个 bug 有竞态**：页面比贴边早就绪时气泡不展开（只闪一下），
   所以只看「有没有 show=true」会漏判；T1 用前端启动日志 `caption=无` 才稳定。
+- **验收会混进「重启前旧实例」的证据**：`systemctl --user restart` 之前的旧进程可能正在
+  显示正常的运行期字幕（本次就遇到旧实例被环境声唤醒弹了 S2 字幕），
+  journal 和连拍帧都会带上它 → 必须先按「最后一次 `Started` 标记 / restart 返回的 epoch」
+  切掉，否则会误判启动不干净（脚本已处理）。
