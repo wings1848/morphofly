@@ -994,7 +994,7 @@ fn force_x11_backend() {}
 /// 注意：`gtk_window()` 只能在主线程调（Tauri 的 Linux 限制），调用点都在主线程。
 #[cfg(target_os = "linux")]
 fn linux_set_window_opacity(win: &WebviewWindow, opacity: f64) -> bool {
-    use gtk::prelude::GtkWindowExt;
+    use gtk::prelude::WidgetExt;
     match win.gtk_window() {
         Ok(gwin) => {
             gwin.set_opacity(opacity);

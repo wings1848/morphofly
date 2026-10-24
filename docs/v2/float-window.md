@@ -71,6 +71,18 @@ ssh wings@100.107.9.102 'chromium --headless=new --disable-gpu --no-sandbox \
 `?state=S2` 强制状态、`?demo=1` 喂假频谱数据，都是给截图用的。
 **必须走 http**：`file://` 下 ES module 会被 CORS 拦掉。
 
+## 启动时序 v2（2026-10-25）：先透明再显形
+
+用户反馈启动时会闪一个黑框 +「待机」黑气泡，根因与修法见
+[startup-clean.md](startup-clean.md)。这里只记对窗口层的两个新约束：
+
+1. **Linux 启动时窗口先设成全透明**（`linux_set_window_opacity(0.0)`，
+   GTK `gtk_window_set_opacity`），`show()`/贴边/跳位都在透明状态做完，
+   等前端首帧画完（`orb_ready`）再恢复不透明度 → 用户看到的第一帧就已经是
+   「右下角画好的球」。
+2. **贴边完成 + 首帧就绪的先后顺序有日志契约**：`小球已贴边` 必须先于
+   `启动首帧就绪`；`tools/verify_startup_clean.sh` 会查这个顺序（T2）。
+
 ## 启动时序：两个必踩的坑（真机实测）
 
 ### 坑 1：`visible:false` 时窗口尺寸是 0
