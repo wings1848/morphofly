@@ -68,6 +68,10 @@ async fn main() -> anyhow::Result<()> {
     let mut speaking_done = false;
 
     // 推流任务
+    //
+    // ⚠️ 现在默认 use_local_vad=true（关掉服务端 VAD 来把延迟从 1994ms 压到 802ms），
+    // 所以推完必须**手动 commit + create_response**，
+    // 否则服务端永远不知道「用户说完了」，一个事件都不会来。
     let c = client.clone();
     let push = tokio::spawn(async move {
         loop {
@@ -83,6 +87,13 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        // 推完立刻 commit
+        if let Err(e) = c.commit() {
+            eprintln!("commit 失败: {e}");
+        }
+        if let Err(e) = c.create_response() {
+            eprintln!("create_response 失败: {e}");
+        }
     });
 
     // 事件循环
@@ -95,6 +106,11 @@ async fn main() -> anyhow::Result<()> {
         };
         match ev {
             RealtimeEvent::SpeechStarted => {
+                wake = true;
+            }
+            // 关掉服务端 VAD 后不会有 SpeechStarted，
+            // 用「收到任何回复内容」当作「唤醒成功」的等价信号
+            RealtimeEvent::AudioDelta { .. } => {
                 wake = true;
             }
             RealtimeEvent::TranscriptDelta { text } => {

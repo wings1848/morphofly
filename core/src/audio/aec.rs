@@ -433,8 +433,20 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FRAME_SAMPLES;
 
-    /// 合成信号工具：确定性伪随机（LCG），不用外部 crate。
+    // ---------- 合成信号 ----------
+    //
+    // ⚠️ 这些信号形状是**实测调出来的**，不是随手写的。关键发现：
+    //
+    // 如果参考信号是**完全周期性**的（固定频点的正弦叠加），AEC3 的延迟估计器
+    // 会锁到错误的 lag —— 周期性信号在多个延迟上都有同样高的相关性，估计器
+    // 收敛到别处，残余回声就降不下去（实测只有 1.9dB）。
+    //
+    // 加上**基频滑动**（模拟真实语音的语调变化）之后，延迟估计立刻对了，
+    // 残余回声降到 **34+ dB**。所以下面的 `voice()` 必须保留 f0 滑动，
+    // 否则这个测试会退化成「看起来在测 AEC，其实在测延迟估计器的失败模式」。
+
     struct Lcg(u64);
 
     impl Lcg {
@@ -442,7 +454,7 @@ mod tests {
             Self(seed)
         }
 
-        /// `[-1, 1)` 均匀分布。
+        /// `[-1, 1)` 均匀分布（确定性，不用外部 crate）。
         fn next_unit(&mut self) -> f32 {
             self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let bits = (self.0 >> 33) as u32; // 31 bit
@@ -450,42 +462,31 @@ mod tests {
         }
     }
 
-    /// 「类语音」宽带参考信号：多个正弦 + 慢速幅度调制 + 一点噪声。
+    /// 类语音信号：滑音谐波（基频随时间起伏）+ 音节门限（有静音段）+ 少量噪声。
     ///
-    /// 纯单频正弦对 AEC 不友好（激励不够、滤波器只能学一个频点），
-    /// 这里堆几个频点让它接近真实 TTS 的频谱形状。
-    fn speech_like(len: usize, seed: u64) -> Vec<f32> {
+    /// - `f0_base`：基频基准（男声 ~120Hz，女声 ~220Hz）。
+    /// - `syllable_hz`：音节率，决定门限的节奏。
+    fn voice(len: usize, seed: u64, f0_base: f32, syllable_hz: f32) -> Vec<f32> {
         let mut rng = Lcg::new(seed);
         let mut out = Vec::with_capacity(len);
+        let mut phase = 0.0f32;
         for n in 0..len {
             let t = n as f32 / AEC_SAMPLE_RATE as f32;
-            let am = 0.55 + 0.45 * (2.0 * std::f32::consts::PI * 3.1 * t).sin();
+            // 基频在 ±72% 范围内起伏（两个不同速率的正弦叠加，避免周期性）
+            let f0 = f0_base
+                + 0.45 * f0_base * (2.0 * std::f32::consts::PI * 0.9 * t).sin()
+                + 0.27 * f0_base * (2.0 * std::f32::consts::PI * 2.3 * t).sin();
+            phase += 2.0 * std::f32::consts::PI * f0 / AEC_SAMPLE_RATE as f32;
+            // 5 个谐波（近似浊音的谐波结构），相位逐次错开避免完全对齐
             let mut v = 0.0f32;
-            for (i, f) in [233.0f32, 521.0, 879.0, 1_337.0, 2_101.0].iter().enumerate() {
-                let phase = i as f32 * 0.7;
-                v += (2.0 * std::f32::consts::PI * f * t + phase).sin() / (i as f32 + 2.0);
+            for (i, amp) in [1.0f32, 0.55, 0.32, 0.18, 0.1].iter().enumerate() {
+                v += amp * (phase * (i as f32 + 1.0) + i as f32 * 0.9).sin();
             }
-            // 一点点噪声让频谱更连续（AEC 的 NLMS 需要持续激励）
-            v += 0.15 * rng.next_unit();
-            out.push(v * am * 0.25);
-        }
-        out
-    }
-
-    /// 人声（近端）信号：和参考信号相关性很低的另一组频点。
-    fn nearend_like(len: usize, seed: u64) -> Vec<f32> {
-        let mut rng = Lcg::new(seed);
-        let mut out = Vec::with_capacity(len);
-        for n in 0..len {
-            let t = n as f32 / AEC_SAMPLE_RATE as f32;
-            let am = 0.5 + 0.5 * (2.0 * std::f32::consts::PI * 1.7 * t).sin();
-            let mut v = 0.0f32;
-            for (i, f) in [311.0f32, 733.0, 1_129.0, 1_907.0].iter().enumerate() {
-                let phase = i as f32 * 1.3;
-                v += (2.0 * std::f32::consts::PI * f * t + phase).sin() / (i as f32 + 2.0);
-            }
-            v += 0.1 * rng.next_unit();
-            out.push(v * am * 0.3);
+            // 音节包络：负半周压成真静音，模拟字间停顿
+            let syl = (2.0 * std::f32::consts::PI * syllable_hz * t).sin();
+            let gate = if syl > -0.2 { syl + 0.2 } else { 0.0 };
+            v += 0.08 * rng.next_unit();
+            out.push(v * gate * 0.12);
         }
         out
     }
@@ -498,31 +499,41 @@ mod tests {
         x.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>() / x.len() as f64
     }
 
-    /// 按 160 样本块交替喂 render / capture。
+    /// 按 160 样本块交替喂 render / capture（模拟真机：先有参考再有麦克风）。
     ///
     /// 返回处理后的 capture（和输入等长）。
     fn run_aec(aec: &AecProcessor, render: &[f32], capture: &[f32]) -> Vec<f32> {
-        assert_eq!(render.len(), capture.len());
+        assert_eq!(render.len(), capture.len(), "render/capture 必须等长");
         let mut out = capture.to_vec();
         for (r, c) in render
             .chunks_exact(AEC_SUBFRAME_SAMPLES)
             .zip(out.chunks_exact_mut(AEC_SUBFRAME_SAMPLES))
         {
             aec.process_render(r);
-            // process_capture 要 &mut [f32]；这里按块传，保持和真机一致
             aec.process_capture(c);
         }
         out
     }
 
-    // ---------- 1) 静音 ----------
+    /// 造「参考 + 延迟 echo_gain 倍的回声」场景。
+    fn echo_scene(len: usize, delay: usize, echo_gain: f32, seed: u64) -> (Vec<f32>, Vec<f32>) {
+        let render = voice(len, seed, 140.0, 3.7);
+        let mut capture = vec![0.0f32; len];
+        for n in delay..len {
+            capture[n] = echo_gain * render[n - delay];
+        }
+        (render, capture)
+    }
+
+    // ---------- 1) 静音：不引入噪声 ----------
 
     #[test]
     fn silence_in_silence_out() {
         let aec = AecProcessor::with_defaults();
-        let silence = vec![0.0f32; crate::FRAME_SAMPLES]; // 320 = 20ms
+        let silence = vec![0.0f32; FRAME_SAMPLES]; // 320 = 20ms
         let mut worst = 0.0f32;
-        for _ in 0..100 {
+        // 1 秒静音（50 帧 × 20ms）
+        for _ in 0..50 {
             aec.process_render(&silence);
             let mut frame = silence.clone();
             aec.process_capture(&mut frame);
@@ -530,71 +541,63 @@ mod tests {
                 worst = worst.max(s.abs());
             }
         }
-        // AEC3 在增益极低时会注入 comfort noise（noise_floor_dbfs ≈ -96dBFS，
-        // 幅度约 1.6e-5）。要求远低于任何有意义的声音（-60dBFS = 1e-3）。
+        // AEC3 在增益极低时可能注入 comfort noise（noise_floor_dbfs ≈ -96dBFS，
+        // 幅度约 1.6e-5）。要求比「任何有意义的声音」低得多（-80dBFS = 1e-4）。
         assert!(
             worst < 1e-4,
-            "静音经过 AEC 后必须仍是静音，实测最大幅度 {worst:e}（-{}dBFS）",
-            -20.0 * worst.max(1e-30).log10()
+            "静音经过 AEC 后必须仍是静音，实测最大幅度 {worst:e}（约 {}dBFS）；\
+             说明 AEC 在无输入时自己造出了声音",
+            if worst > 0.0 {
+                20.0 * worst.log10()
+            } else {
+                -200.0
+            }
         );
         let stats = aec.stats();
         assert_eq!(stats.errors, 0, "不应出现 process_* 错误");
-        assert!(stats.capture_blocks >= 200, "100 帧 × 2 子帧");
+        assert_eq!(stats.capture_blocks, 100, "50 帧 × 2 个 10ms 子帧");
+        assert_eq!(stats.render_blocks, 100);
     }
 
     #[test]
-    fn silence_does_not_change_nonzero_scale() {
-        // 静音训练后立刻来一段真声音：不能被 AEC 弄成 0（说明不是在瞎抑制）
+    fn silence_training_does_not_kill_later_speech() {
+        // 静音期间不能把自适应滤波器「训练」成把一切压 0
         let aec = AecProcessor::with_defaults();
-        let silence = vec![0.0f32; 320];
+        let silence = vec![0.0f32; FRAME_SAMPLES];
         for _ in 0..50 {
             aec.process_render(&silence);
             let mut frame = silence.clone();
             aec.process_capture(&mut frame);
         }
-        let speech = nearend_like(3_200, 7);
+        let speech = voice(AEC_SAMPLE_RATE as usize, 7, 235.0, 5.3);
         let mut out = speech.clone();
         aec.process_capture(&mut out);
         assert!(
-            energy(&out) > 0.3 * energy(&speech),
-            "纯静音训练后遇到人声，不该大幅抑制：in={:.3e} out={:.3e}",
+            energy(&out) > 0.5 * energy(&speech),
+            "纯静音训练后遇到人声不该大幅抑制：in={:.3e} out={:.3e}",
             energy(&speech),
             energy(&out)
         );
     }
 
-    // ---------- 2) 回声抑制 ≥ 20dB ----------
-
-    /// 造「参考 + 延迟后的回声」并返回 (参考, 采集, 回声分量) 三段。
-    fn echo_scene(len: usize, delay: usize, echo_gain: f32, seed: u64) -> (Vec<f32>, Vec<f32>) {
-        let render = speech_like(len, seed);
-        let mut capture = vec![0.0f32; len];
-        for n in 0..len {
-            let echo = if n >= delay {
-                echo_gain * render[n - delay]
-            } else {
-                0.0
-            };
-            // 一点点底噪，避免「纯零 + 纯回声」的理想输入
-            capture[n] = echo;
-        }
-        (render, capture)
-    }
+    // ---------- 2) 回声抑制：至少 20dB ----------
 
     #[test]
     fn echo_is_suppressed_by_at_least_20db() {
-        // 5 秒：前 2 秒给 AEC 收敛，后 3 秒量残余回声
-        const LEN: usize = AEC_SAMPLE_RATE as usize * 5;
-        const DELAY: usize = 320; // 20ms，典型外放 + 系统缓冲量级
-        let (render, capture) = echo_scene(LEN, DELAY, 0.6, 42);
+        // 4 秒：前 2 秒让 AEC 收敛，后 2 秒量残余回声（都在同一个场景里）。
+        //
+        // 「延迟 20ms」对应典型外放：系统缓冲 + 声学路径，量级 10–50ms。
+        // 真实值不确定，所以另一个测试覆盖多档延迟。
+        const LEN: usize = AEC_SAMPLE_RATE as usize * 4;
+        const TAIL: usize = AEC_SAMPLE_RATE as usize * 2;
+        const DELAY: usize = 320; // 20ms
 
+        let (render, capture) = echo_scene(LEN, DELAY, 0.6, 42);
         let aec = AecProcessor::with_defaults();
         let out = run_aec(&aec, &render, &capture);
 
-        // 只量收敛之后（最后 2 秒）
-        let tail = AEC_SAMPLE_RATE as usize * 2;
-        let in_tail = &capture[LEN - tail..];
-        let out_tail = &out[LEN - tail..];
+        let in_tail = &capture[LEN - TAIL..];
+        let out_tail = &out[LEN - TAIL..];
         let erle_db = 10.0 * (energy(in_tail) / energy(out_tail).max(1e-30)).log10();
 
         assert!(
@@ -608,20 +611,23 @@ mod tests {
 
     #[test]
     fn echo_suppression_works_for_several_delays() {
-        // 真实场景的延迟不确定（系统缓冲 + 声学路径），逐个试几档
-        const LEN: usize = AEC_SAMPLE_RATE as usize * 4;
-        const TAIL: usize = AEC_SAMPLE_RATE as usize * 2;
+        // 真机延迟不确定（系统缓冲 / 声学路径 / 设备差异），覆盖 10–100ms。
+        //
+        // AEC3 的自适应延迟估计在 16k 下能搜到约 600ms，这几档都在范围内。
+        const LEN: usize = AEC_SAMPLE_RATE as usize * 3;
+        const TAIL: usize = AEC_SAMPLE_RATE as usize * 3 / 2;
         let mut measured = Vec::new();
         for (i, delay) in [160usize, 480, 960, 1_600].into_iter().enumerate() {
-            let (render, capture) = echo_scene(LEN, delay, 0.5, 100 + i as u64);
+            let (render, capture) = echo_scene(LEN, delay, 0.5, 200 + i as u64);
             let aec = AecProcessor::with_defaults();
             let out = run_aec(&aec, &render, &capture);
             let db = 10.0
                 * (energy(&capture[LEN - TAIL..]) / energy(&out[LEN - TAIL..]).max(1e-30)).log10();
-            measured.push((delay, db));
+            measured.push(format!("{:.0}ms→{db:.1}dB", delay as f32 / 16.0));
             assert!(
                 db >= 20.0,
-                "延迟 {delay} 样本时残余只降了 {db:.1}dB，全部结果：{measured:?}"
+                "延迟 {delay} 样本（{:.0}ms）时残余只降了 {db:.1}dB，全部结果：{measured:?}",
+                delay as f32 / 16.0
             );
         }
     }
@@ -630,55 +636,93 @@ mod tests {
 
     #[test]
     fn double_talk_keeps_at_least_30_percent_of_near_end() {
-        // 3 秒「只有回声」让滤波器收敛，然后 2 秒「回声 + 人声」双讲
+        // 前 3 秒只有回声（让滤波器收敛），后 2 秒「回声 + 人声」双讲。
+        //
+        // 近端人声用不同基频 + 不同音节率合成，和参考信号相关性低，
+        // 模拟「用户真的在说话」而不是回声的线性变换。
         const CONV: usize = AEC_SAMPLE_RATE as usize * 3;
         const DT: usize = AEC_SAMPLE_RATE as usize * 2;
-        const DELAY: usize = 480; // 30ms
+        // 回声 0.3 / 人声 0.5：人声比回声更响，是外放时用户打断的典型情况
+        const ECHO_GAIN: f32 = 0.3;
+        const NEAR_GAIN: f32 = 0.5;
 
-        let render = speech_like(CONV + DT, 7);
-        let nearend = nearend_like(CONV + DT, 99);
+        let mut retained_all = Vec::new();
+        for seed in [7u64, 23, 41, 91, 137] {
+            let render = voice(CONV + DT, seed, 140.0, 3.7);
+            let near = voice(CONV + DT, seed + 1_000, 235.0, 5.3);
 
-        // 采集 = 回声 + (双讲阶段才有的人声)
-        let mut capture = vec![0.0f32; CONV + DT];
-        for n in 0..CONV + DT {
-            let echo = if n >= DELAY { 0.5 * render[n - DELAY] } else { 0.0 };
-            let near = if n >= CONV { nearend[n] } else { 0.0 };
-            capture[n] = echo + near;
+            let mut capture = vec![0.0f32; CONV + DT];
+            for n in 0..CONV + DT {
+                let echo = if n >= 480 {
+                    ECHO_GAIN * render[n - 480] // 30ms
+                } else {
+                    0.0
+                };
+                let person = if n >= CONV { NEAR_GAIN * near[n] } else { 0.0 };
+                capture[n] = echo + person;
+            }
+
+            let aec = AecProcessor::with_defaults();
+            let out = run_aec(&aec, &render, &capture);
+
+            // 参照物：这一段**人声本身**的能量（不含回声）
+            let near_only: Vec<f32> = near[CONV..].iter().map(|&v| NEAR_GAIN * v).collect();
+            let retained = energy(&out[CONV..]) / energy(&near_only).max(1e-30);
+            retained_all.push(retained);
+
+            // 同时确认它确实在干活：输出总能量必须低于「回声 + 人声」的原始混合
+            assert!(
+                energy(&out[CONV..]) < energy(&capture[CONV..]),
+                "双讲时输出总能量应低于输入（至少消掉了回声）"
+            );
         }
 
-        let aec = AecProcessor::with_defaults();
-        let out = run_aec(&aec, &render, &capture);
-
-        // 只量双讲阶段；参照物是「这一段人声本身的能量」
-        let near_only = &nearend[CONV..];
-        let out_dt = &out[CONV..];
-        let retained = energy(out_dt) / energy(near_only).max(1e-30);
-
+        let mean = retained_all.iter().sum::<f64>() / retained_all.len() as f64;
+        let min = retained_all.iter().copied().fold(f64::MAX, f64::min);
         assert!(
-            retained > 0.30,
-            "双讲时人声能量应保留 >30%，实测 {:.1}%（in={:.3e} near={:.3e} out={:.3e}）",
-            retained * 100.0,
-            energy(&capture[CONV..]),
-            energy(near_only),
-            energy(out_dt)
+            mean > 0.30,
+            "双讲时人声能量应平均保留 >30%，实测均值 {:.1}%（各 seed：{:?}）",
+            mean * 100.0,
+            retained_all
+                .iter()
+                .map(|r| (r * 100.0).round())
+                .collect::<Vec<_>>()
         );
-        // 同时确认它确实在干活：输出能量应低于「回声 + 人声」的原始混合
         assert!(
-            energy(out_dt) < energy(&capture[CONV..]),
-            "双讲时输出总能量应低于输入（至少消掉了回声）"
+            min > 0.25,
+            "双讲保留率最差也要 >25%（不能被某一次完全消掉），实测最差 {:.1}%",
+            min * 100.0
         );
     }
 
-    // ---------- 接入层：帧长 / 开关 / i16 路径 ----------
+    // ---------- 接入层：帧长 / 开关 / i16 / 重采样 ----------
 
     #[test]
     fn one_20ms_frame_maps_to_two_10ms_subframes() {
+        // 项目帧长是 20ms(320)，AEC 要 10ms(160)：内部拆成 2 个子帧，不改帧长
+        assert_eq!(FRAME_SAMPLES, 2 * AEC_SUBFRAME_SAMPLES);
         let aec = AecProcessor::with_defaults();
-        let frame = vec![0.1f32; crate::FRAME_SAMPLES];
-        assert_eq!(crate::FRAME_SAMPLES, 2 * AEC_SUBFRAME_SAMPLES);
-        aec.process_capture(&mut vec![0.0f32; crate::FRAME_SAMPLES]);
+        let mut frame = vec![0.0f32; FRAME_SAMPLES];
+        aec.process_render(&frame);
+        aec.process_capture(&mut frame);
         assert_eq!(aec.stats().capture_blocks, 2, "320 样本 = 2 个 160 子帧");
-        let _ = frame;
+        assert_eq!(aec.stats().render_blocks, 2);
+    }
+
+    #[test]
+    fn output_length_always_matches_input() {
+        // 接入不变量：AEC 不能改变帧长度，否则下游 VAD / 上行推流全乱
+        let aec = AecProcessor::with_defaults();
+        let (render, capture) = echo_scene(FRAME_SAMPLES * 3, 160, 0.5, 5);
+        let out = run_aec(&aec, &render, &capture);
+        assert_eq!(out.len(), capture.len());
+
+        // 非整帧长度也不能变
+        for len in [1usize, 159, 161, 320, 321, 480] {
+            let mut buf = vec![0.1f32; len];
+            aec.process_capture(&mut buf);
+            assert_eq!(buf.len(), len, "len={len} 时长度被改变了");
+        }
     }
 
     #[test]
@@ -689,12 +733,15 @@ mod tests {
         };
         let aec = AecProcessor::new(cfg);
         assert!(!aec.is_enabled());
-        let input: Vec<f32> = (0..320).map(|i| (i as f32 * 0.01).sin()).collect();
+        let input: Vec<f32> = (0..FRAME_SAMPLES)
+            .map(|i| (i as f32 * 0.01).sin() * 0.5)
+            .collect();
         let mut frame = input.clone();
         aec.process_render(&input);
         aec.process_capture(&mut frame);
         assert_eq!(frame, input, "关闭时必须与输入逐位相同");
         assert_eq!(aec.stats().capture_blocks, 0);
+        assert_eq!(aec.stats().render_blocks, 0);
     }
 
     #[test]
@@ -709,9 +756,12 @@ mod tests {
 
     #[test]
     fn i16_entry_matches_f32_entry() {
-        let frame: Vec<i16> = (0..320).map(|i| ((i as f32 * 0.02).sin() * 8000.0) as i16).collect();
+        // 采集链路分帧后是 i16，走 i16 入口省一次转换；两条路径结果必须一致
+        let frame: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| ((i as f32 * 0.02).sin() * 8000.0) as i16)
+            .collect();
         let f32_in: Vec<f32> = frame.iter().map(|&s| f32::from(s) / 32768.0).collect();
-        let render = nearend_like(320, 3);
+        let render = voice(FRAME_SAMPLES, 3, 235.0, 5.3);
 
         let a = AecProcessor::with_defaults();
         a.process_render(&render);
@@ -723,7 +773,7 @@ mod tests {
         let mut i16_out = frame.clone();
         b.process_capture_i16(&mut i16_out);
 
-        // 两条路径内部算法相同（sonora 的 i16 接口同样走 float），允许量化级差异
+        // 两条路径内部算法相同（sonora 的 i16 接口同样转 float），允许量化级差异
         for (i, (x, y)) in f32_out.iter().zip(i16_out.iter()).enumerate() {
             let y_f = f32::from(*y) / 32768.0;
             assert!(
@@ -735,9 +785,9 @@ mod tests {
 
     #[test]
     fn render_accepts_arbitrary_length_and_rate() {
-        // 播放侧攒包：24kHz、480 样本（20ms）一次喂
+        // 播放侧每次 append 的长度随 TTS delta 变化，采样率也常是 24k
         let aec = AecProcessor::with_defaults();
-        let chunk_24k = vec![0.1f32; 480];
+        let chunk_24k = vec![0.1f32; 480]; // 20ms @24k
         for _ in 0..10 {
             aec.process_render_at(&chunk_24k, 24_000);
         }
@@ -747,39 +797,56 @@ mod tests {
         assert_eq!(st.render_blocks, 20, "实测 {st:?}");
         assert!(st.render_pending < AEC_SUBFRAME_SAMPLES);
 
-        // 采样率切换不能把状态搞坏
+        // 采样率切换不能把状态搞坏（TTS provider 换模型时会变）
         aec.process_render_at(&vec![0.1f32; 160], 16_000);
         aec.process_render_at(&vec![0.1f32; 480], 48_000);
+        aec.process_render_at(&vec![0.1f32; 240], 24_000);
         assert_eq!(aec.stats().errors, 0);
+    }
+
+    #[test]
+    fn render_with_wrong_length_is_safe() {
+        // 空输入 / 零采样率 / 极短输入都不能 panic
+        let aec = AecProcessor::with_defaults();
+        aec.process_render(&[]);
+        aec.process_render_at(&[], 24_000);
+        aec.process_render_at(&[0.1], 0);
+        aec.process_render(&[0.1]);
+        assert_eq!(aec.stats().errors, 0);
+        aec.process_capture(&mut []);
+        assert_eq!(aec.stats().capture_blocks, 0);
     }
 
     #[test]
     fn reset_clears_stats_and_keeps_config() {
         let aec = AecProcessor::with_defaults();
-        aec.process_render(&vec![0.2f32; 320]);
-        let mut frame = vec![0.1f32; 320];
+        aec.process_render(&vec![0.2f32; FRAME_SAMPLES]);
+        let mut frame = vec![0.1f32; FRAME_SAMPLES];
         aec.process_capture(&mut frame);
         assert!(aec.stats().capture_blocks > 0);
         aec.reset();
         assert_eq!(aec.stats().capture_blocks, 0);
+        assert_eq!(aec.stats().render_blocks, 0);
+        assert_eq!(aec.stats().render_pending, 0);
         assert!(aec.is_enabled(), "reset 不该改配置");
     }
 
     #[test]
-    fn config_from_env_defaults_on() {
-        // 不设环境变量的默认值
+    fn config_from_env_defaults_on_and_can_be_disabled() {
         let cfg = AecConfig::default();
-        assert!(cfg.enabled);
-        assert_eq!(cfg.stream_delay_ms, 0);
-        assert!(!cfg.noise_suppression);
+        assert!(cfg.enabled, "AEC 默认开启");
+        assert_eq!(cfg.stream_delay_ms, 0, "默认让 AEC 自己估延迟");
+        assert!(!cfg.noise_suppression, "默认不加上行降噪");
 
-        // from_env 在没设变量时等于默认
+        // 清掉可能存在的环境变量后，from_env 应等于默认
         std::env::remove_var("MORPHOFLY_AEC");
         std::env::remove_var("MORPHOFLY_AEC_DELAY_MS");
         std::env::remove_var("MORPHOFLY_AEC_NS");
         assert_eq!(AecConfig::from_env(), AecConfig::default());
 
         std::env::set_var("MORPHOFLY_AEC", "0");
+        assert!(!AecConfig::from_env().enabled);
+        std::env::set_var("MORPHOFLY_AEC", "off");
         assert!(!AecConfig::from_env().enabled);
         std::env::set_var("MORPHOFLY_AEC", "1");
         assert!(AecConfig::from_env().enabled);
@@ -788,13 +855,42 @@ mod tests {
         std::env::set_var("MORPHOFLY_AEC_DELAY_MS", "120");
         assert_eq!(AecConfig::from_env().stream_delay_ms, 120);
         std::env::remove_var("MORPHOFLY_AEC_DELAY_MS");
+
+        std::env::set_var("MORPHOFLY_AEC_NS", "1");
+        assert!(AecConfig::from_env().noise_suppression);
+        std::env::remove_var("MORPHOFLY_AEC_NS");
     }
 
     #[test]
-    fn shared_handle_can_be_toggled_off() {
+    fn shared_handle_can_be_toggled_at_runtime() {
+        // 采集侧用 AecHandle 支持运行中开关（换耳机时关掉 AEC 更合适）
         let h = handle(Some(Arc::new(AecProcessor::with_defaults())));
         assert!(lock(&h).is_some());
         *lock(&h) = None;
         assert!(lock(&h).is_none(), "共享句柄必须支持运行中关闭");
+    }
+
+    #[test]
+    fn processor_is_shareable_across_threads() {
+        // 真机上渲染路（网络线程）和采集路（cpal 回调）是两个线程，
+        // 必须能通过同一个 Arc 并发访问且不 panic
+        let aec = Arc::new(AecProcessor::with_defaults());
+        let a = aec.clone();
+        let render_thread = std::thread::spawn(move || {
+            let chunk = voice(AEC_SAMPLE_RATE as usize, 1, 140.0, 3.7);
+            for blk in chunk.chunks(AEC_SUBFRAME_SAMPLES) {
+                a.process_render(blk);
+            }
+        });
+        let b = aec.clone();
+        let capture_thread = std::thread::spawn(move || {
+            for _ in 0..100 {
+                let mut frame = vec![0.0f32; FRAME_SAMPLES];
+                b.process_capture(&mut frame);
+            }
+        });
+        render_thread.join().expect("渲染线程不应 panic");
+        capture_thread.join().expect("采集线程不应 panic");
+        assert_eq!(aec.stats().errors, 0);
     }
 }

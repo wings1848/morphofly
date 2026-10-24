@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 
+use super::aec::{AecHandle, AecProcessor};
 use super::{rms_i16, AudioError};
 use crate::{FRAME_SAMPLES, UPLINK_SAMPLE_RATE};
 
@@ -564,6 +565,11 @@ pub struct AudioCapture {
     forward_stop: Arc<std::sync::atomic::AtomicBool>,
     /// 文件源专用：文件是否已全部推完（真麦克风源永远是 false）
     file_finished: Arc<std::sync::atomic::AtomicBool>,
+    /// 回声消除句柄（`None` = 关闭）。
+    ///
+    /// 默认取 [`super::aec::shared()`]（进程级共享实例），因为播放侧的参考信号
+    /// 必须喂给**同一个** AEC 才有意义；`MORPHOFLY_AEC=0` 时这里是 `None`。
+    aec: AecHandle,
 }
 
 impl std::fmt::Debug for AudioCapture {
@@ -643,6 +649,8 @@ impl AudioCapture {
             forwarder: Mutex::new(None),
             forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             file_finished: finished,
+            // 文件源是测试用的注入点，不是真麦克风：不接 AEC。
+            aec: super::aec::handle(None),
         })
     }
 
@@ -793,6 +801,8 @@ impl AudioCapture {
             forwarder: Mutex::new(None),
             forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             file_finished: finished,
+            // 文件源是测试用的注入点，不是真麦克风：不接 AEC。
+            aec: super::aec::handle(None),
         })
     }
 
@@ -815,6 +825,9 @@ impl AudioCapture {
             forwarder: Mutex::new(None),
             forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             file_finished: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            // 真麦克风：默认挂进程级共享 AEC（与播放侧 tee 的是同一个实例）。
+            // MORPHOFLY_AEC=0 时 shared() 返回 None，等价于完全旁路。
+            aec: super::aec::handle(super::aec::shared()),
         }
     }
 
@@ -996,6 +1009,7 @@ impl AudioCapture {
             self.tx.clone(),
             self.stats.clone(),
             self.last_error.clone(),
+            self.aec.clone(),
         )?;
 
         stream
@@ -1034,6 +1048,7 @@ fn build_stream_typed<T>(
     tx: tokio::sync::broadcast::Sender<Vec<i16>>,
     stats: Arc<CaptureStats>,
     last_error: Arc<Mutex<Option<String>>>,
+    aec: AecHandle,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: cpal::SizedSample + Send + 'static + ToF32,
@@ -1052,7 +1067,19 @@ where
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
                 frames.clear();
                 pipeline.process_into(data, &mut frames);
-                for frame in frames.drain(..) {
+                for mut frame in frames.drain(..) {
+                    // ★ 回声消除：分帧之后、发布之前，整帧 320 采样正好 2 个 10ms
+                    //   子帧，块对齐精确，**不引入任何额外延迟**。
+                    //
+                    //   放在分帧之后而不是重采样之后，是因为 cpal 回调长度不等于
+                    //   160 的倍数时，在重采样缓冲上做只能把尾巴延后一个回调 ——
+                    //   那才会引入最多 10ms 延迟。
+                    //
+                    //   句柄是 `Arc<Mutex<Option<..>>>`：读取开销只有一次锁，
+                    //   关闭时（None）立即旁路。
+                    if let Some(aec) = lock_unpoisoned(&aec).as_ref() {
+                        aec.process_capture_i16(&mut frame);
+                    }
                     let rms = rms_i16(&frame);
                     stats.rms_bits.store(rms.to_bits(), Ordering::Relaxed);
                     match tx.send(frame) {
@@ -1080,12 +1107,13 @@ fn build_input_stream(
     tx: tokio::sync::broadcast::Sender<Vec<i16>>,
     stats: Arc<CaptureStats>,
     last_error: Arc<Mutex<Option<String>>>,
+    aec: AecHandle,
 ) -> Result<cpal::Stream, AudioError> {
     macro_rules! dispatch {
         ($($fmt:pat => $ty:ty),* $(,)?) => {
             match sample_format {
                 $($fmt => build_stream_typed::<$ty>(
-                    device, config, sample_format, pipeline, tx, stats, last_error,
+                    device, config, sample_format, pipeline, tx, stats, last_error, aec,
                 ),)*
                 other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
             }
