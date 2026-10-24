@@ -55,3 +55,46 @@ source tools/dev-env.sh
 cargo run -q -p morphofly-core --example asr_probe -- /tmp/task1.wav
 ```
 报告写到 `/tmp/morphofly-asr-probe.json`。
+
+---
+
+# 探针二：`tool_choice: "required"` 有效吗？
+
+**结论：无效。强制轮返回空响应（既不调工具也不说话），比普通重试更糟 —— 不要用。**
+
+## 背景
+
+探针一证明「拿不到用户原话」，退而求其次想用协议级硬约束逼模型调工具。
+
+## 实测（2026-10-25 00:35，`core/examples/toolchoice_probe.rs`）
+
+```
+[探针] 已下发 5 个工具
+[探针] 已 commit + create_response，等第一轮…
+  🔧 工具调用: delegate_task
+  ✓ 一轮结束（completed）
+[探针] 第一轮（默认 tool_choice=auto）：工具 1 次
+
+[探针] 发 response.create + tool_choice=required
+  ✓ 一轮结束（completed）
+[探针] 强制轮：工具 0 次，模型说「」
+
+[探针] 结论：❌ 不支持：强制轮返回空响应
+```
+
+## 两个副产品（都有价值）
+
+1. **第一轮 1 次工具调用** —— 说明「模型不调工具」不是模型本身不会，
+   而是**时机问题**：探针是「音频推完 + 1.5s 静音 + commit + create_response」，
+   一气呵成；App 里是本地 VAD 200ms 判完就 commit。
+   这指向「commit 太早 / 音频还没送完」这条线，比怪模型更可信。
+2. **探针第一版漏了 `commit()`**（因为我们的会话 turn_detection=null，
+   服务端不会自己判「说完了」），结果第一轮什么都没发生 ——
+   写探针也会踩自己的坑，记在这省下一个人。
+
+## 复现
+
+```bash
+source tools/dev-env.sh
+cargo run -q -p morphofly-core --example toolchoice_probe -- /tmp/task1.wav
+```

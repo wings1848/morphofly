@@ -410,11 +410,12 @@ impl VoiceSession {
                                     tracing::warn!(error = %e, "注入纠正提醒失败（会话可能已断）")
                                 }
                             }
-                            // ★ 用 tool_choice=required 逼它这一轮必须调工具。
-                            //   只靠文字提醒实测不够（模型会继续说「好，查着呢」）。
-                            //   若服务端不支持这个字段，会被忽略 → 退化成普通一轮，无害。
-                            let required = serde_json::json!({ "tool_choice": "required" });
-                            if let Err(e) = c_ev.create_response_with(required) {
+                            // ⚠️ 别用 tool_choice="required" —— 实测（2026-10-25）：
+                            //   StepFun 不认这个字段，强制轮返回的是**空响应**
+                            //   （既不调工具也不说话），比普通重试更糟。
+                            //   证据：core/examples/toolchoice_probe.rs → docs/v2/asr-probe.md
+                            //   所以这里就老老实实再触发一轮普通的响应。
+                            if let Err(e) = c_ev.create_response() {
                                 tracing::warn!(error = %e, "纠正后触发响应失败");
                             }
                             assistant_reply.clear();
