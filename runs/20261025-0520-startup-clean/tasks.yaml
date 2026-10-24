@@ -14,18 +14,18 @@ wave_2:
   - id: rust-fix
     desc: 窗口先全透明、前端首帧就绪后再显形；orb_state 不再回退状态名；新增 orb_ready 命令
     scope: [app/src-tauri/src/main.rs, app/src-tauri/Cargo.toml, Cargo.lock]
-    gate: cargo fmt --check + CI 编译
-    status: in_progress
+    gate: cargo fmt --check + CI 编译（run 40134296273 全绿）
+    status: done
   - id: frontend-fix
     desc: 启动不显示初始字幕、空字幕不渲染、首帧后通知 Rust
     scope: [app/frontend/src/main.js, app/frontend/src/orb/caption.js, app/frontend/test/caption.test.mjs]
-    gate: node --test app/frontend/test
-    status: in_progress
+    gate: node --test app/frontend/test（16 passed）
+    status: done
 wave_3:
   - id: deploy-verify
     desc: CI 产物部署到 wings-gpd，跑 tools/verify_startup_clean.sh 修后全绿
-    gate: 验收 T1–T5 全 PASS
-    status: pending
+    gate: 验收 T1–T5 全 PASS（evidence/startup-clean-summary.md）
+    status: done
   - id: independent-review
     desc: subagent 独立核验（读 diff + 复跑判据），Lead 抽查其结论
     gate: 复核意见落盘

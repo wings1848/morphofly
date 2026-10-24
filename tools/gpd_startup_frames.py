@@ -98,7 +98,8 @@ def cmd_record(outdir, duration, fps):
             box = (W - CROP_W, H - CROP_H, W, H)
             fn = "f%04d.jpg" % n
             im.crop(box).save(os.path.join(outdir, fn), quality=85)
-            meta.write(json.dumps({"i": n, "t": round(time.time() - t0, 3), "file": fn,
+            meta.write(json.dumps({"i": n, "t": round(time.time() - t0, 3),
+                                   "epoch": round(time.time(), 3), "file": fn,
                                    "w": W, "h": H, "box": box}) + "\n")
             meta.flush()
             n += 1
@@ -145,7 +146,7 @@ def _bubble_region(win_x, win_y, scale, cw, ch, box):
             min(cw, int(x1)), min(ch, int(y1)))
 
 
-def cmd_analyze(outdir, t_late, win_x, win_y, scale):
+def cmd_analyze(outdir, t_late, win_x, win_y, scale, restart_epoch=0.0):
     """扫描整段录屏，找「球左侧气泡区」与稳定后相比最大的差异。
 
     为什么扫全部帧而不是固定 t_early：启动快的时候气泡 1.5s 就出现，
@@ -153,11 +154,22 @@ def cmd_analyze(outdir, t_late, win_x, win_y, scale):
     取最大值对两种机器都成立。
     """
     metas = _frames(outdir)
+    if restart_epoch and restart_epoch > 0:
+        # 只保留「这次重启之后」的帧：重启前旧实例的字幕气泡是正常产品行为，
+        # 不能算到启动又干净度的账上。
+        metas = [m for m in metas if m.get("epoch", 0) >= restart_epoch]
     if len(metas) < 5:
-        sys.exit("帧太少，录失败")
-    late_m = _nearest(metas, t_late)
+        sys.exit("帧太少，录失败（重启后不足 5 帧）")
+
+    def nearest_epoch(target):
+        if target <= 0:
+            return metas[-1]
+        return min(metas, key=lambda m: abs(m.get("epoch", 0) - target))
+
+    base = restart_epoch if restart_epoch and restart_epoch > 0 else metas[0].get("epoch", 0)
+    late_m = nearest_epoch(base + t_late)
     late = _load(outdir, late_m)
-    prev_m = _nearest(metas, max(0.0, t_late - 1.0))
+    prev_m = nearest_epoch(base + max(0.0, t_late - 1.0))
     prev = _load(outdir, prev_m)
     box = metas[0]["box"]
     cw, ch = late.size
@@ -205,11 +217,12 @@ def main():
     if cmd == "record":
         cmd_record(sys.argv[2], float(sys.argv[3]), float(sys.argv[4]))
     elif cmd == "analyze":
-        # analyze <dir> <t_late> <win_x> <win_y> <scale>
+        # analyze <dir> <t_late> <win_x> <win_y> <scale> [restart_epoch]
         if len(sys.argv) < 7:
-            sys.exit("用法：analyze <dir> <t_late> <win_x> <win_y> <scale>")
+            sys.exit("用法：analyze <dir> <t_late> <win_x> <win_y> <scale> [restart_epoch]")
+        epoch = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
         sys.exit(cmd_analyze(sys.argv[2], float(sys.argv[3]),
-                             int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6])))
+                             int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6]), epoch))
     else:
         sys.exit(f"未知子命令：{cmd}")
 
