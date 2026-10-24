@@ -41,6 +41,23 @@ Windows 上没有 `HOME`，只有 `USERPROFILE`。原来取不到就退化成
 - `force_x11_backend()`（Wayland 补丁）：已 `#[cfg(target_os = "linux")]`，
   其它平台给空实现。Windows 的窗口定位/置顶是系统原生支持的，不需要这套 hack。
 
+## CI 实测进度（2026-10-25）
+
+| 项 | 结果 |
+|---|---|
+| W1 仓库能在 Windows 上检出 | ✅（删掉 `...` 非法文件名之后） |
+| W2 core 在 Windows 上编译 | ✅ |
+| W3 core 248 个单测在 Windows 上跑 | ✅ **全过**（11 秒） |
+| W4 Tauri 壳在 Windows 上编译 | ✅（`--no-default-features`） |
+| W5 打 NSIS 安装包 | 🔄 第一次打（Rust release 构建在 Windows 上冷编译很慢） |
+
+### 顺带修的两个 CI 坑
+
+1. **`cargo install tauri-cli` 在 Windows runner 上跑 40+ 分钟没完**
+   → 改用 `npm install -g @tauri-apps/cli`（预编译，几秒）。
+   注意 npm 版的调用是 `tauri build`，不是 `cargo tauri build`。
+2. **Windows 单测挂住**（不是慢，是真挂）→ 给每步加 `timeout-minutes`。
+
 ## 打包
 
 | 平台 | 产物 | 怎么来 |
