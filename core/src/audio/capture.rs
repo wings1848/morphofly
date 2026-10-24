@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 
-use super::{AudioError, rms_i16};
+use super::{rms_i16, AudioError};
 use crate::{FRAME_SAMPLES, UPLINK_SAMPLE_RATE};
 
 /// 采集参数。
@@ -401,11 +401,7 @@ impl CapturePipeline {
     ///
     /// # Errors
     /// 设备采样率、声道数、目标采样率、帧长任一为 0 时返回 [`AudioError::InvalidConfig`]。
-    pub fn new(
-        device_rate: u32,
-        channels: u16,
-        config: CaptureConfig,
-    ) -> Result<Self, AudioError> {
+    pub fn new(device_rate: u32, channels: u16, config: CaptureConfig) -> Result<Self, AudioError> {
         if device_rate == 0 {
             return Err(AudioError::InvalidConfig("设备采样率为 0".into()));
         }
@@ -478,7 +474,8 @@ impl CapturePipeline {
         // 1) 解交织 + 下混；同采样率时直接写 i16，省一次拷贝
         self.mono.clear();
         if self.channels == 1 {
-            self.mono.extend(interleaved.iter().map(|s| s.to_f32_sample()));
+            self.mono
+                .extend(interleaved.iter().map(|s| s.to_f32_sample()));
         } else {
             let ch = self.channels as usize;
             let frames = interleaved.len() / ch;
@@ -543,7 +540,7 @@ struct CaptureStats {
 ///
 /// 用法：
 /// ```no_run
-/// # use diemeng_core::audio::capture::AudioCapture;
+/// # use morphofly_core::audio::capture::AudioCapture;
 /// let cap = AudioCapture::new();
 /// let mut rx = cap.subscribe();          // 先订阅，避免丢开头
 /// cap.start().expect("打开麦克风");       // 没有设备时这里是 Err，不会 panic
@@ -626,7 +623,11 @@ impl AudioCapture {
             let a = mono.get(idx).copied().unwrap_or(0.0);
             let b = mono.get(idx + 1).copied().unwrap_or(a);
             let v = a + (b - a) * frac;
-            out.push((v.clamp(-1.0, 1.0) * 32768.0).round().clamp(-32768.0, 32767.0) as i16);
+            out.push(
+                (v.clamp(-1.0, 1.0) * 32768.0)
+                    .round()
+                    .clamp(-32768.0, 32767.0) as i16,
+            );
         }
 
         let cfg = CaptureConfig::default();
@@ -661,7 +662,10 @@ impl AudioCapture {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(800);
-            buf.extend(std::iter::repeat(0i16).take(UPLINK_SAMPLE_RATE as usize * pad_ms as usize / 1000));
+            buf.extend(std::iter::repeat_n(
+                0i16,
+                UPLINK_SAMPLE_RATE as usize * pad_ms as usize / 1000,
+            ));
             let mut acc: Vec<i16> = Vec::with_capacity(frame_samples);
             let started = std::time::Instant::now();
             let mut sent = 0usize;
@@ -728,7 +732,7 @@ impl AudioCapture {
     /// 同 [`Self::start`]（无麦克风时返回 [`AudioError::NoInputDevice`]，**不 panic**）。
     ///
     /// ```no_run
-    /// # use diemeng_core::audio::capture::AudioCapture;
+    /// # use morphofly_core::audio::capture::AudioCapture;
     /// let cap = AudioCapture::start_default().expect("需要麦克风");
     /// let frame = cap.recv_timeout(std::time::Duration::from_millis(500)).unwrap();
     /// assert_eq!(frame.len(), 320);
@@ -753,7 +757,7 @@ impl AudioCapture {
             let stop = self.forward_stop.clone();
             stop.store(false, Ordering::Release);
             let handle = std::thread::Builder::new()
-                .name("diemeng-capture-forward".into())
+                .name("morphofly-capture-forward".into())
                 .spawn(move || {
                     while !stop.load(Ordering::Acquire) {
                         match rx.blocking_recv() {
@@ -886,11 +890,8 @@ impl AudioCapture {
             sample_format: supported.sample_format().to_string(),
         };
 
-        let pipeline = CapturePipeline::new(
-            format.device_sample_rate,
-            format.channels,
-            self.config,
-        )?;
+        let pipeline =
+            CapturePipeline::new(format.device_sample_rate, format.channels, self.config)?;
 
         let stream_config: cpal::StreamConfig = supported.config();
         let sample_format = supported.sample_format();
@@ -955,7 +956,7 @@ where
 
     device
         .build_input_stream::<T, _, _>(
-            config.clone(),
+            *config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
                 frames.clear();
                 pipeline.process_into(data, &mut frames);
@@ -1083,9 +1084,20 @@ mod tests {
         assert_eq!(0.25f32.to_f32_sample(), 0.25);
         assert_eq!(0.25f64.to_f32_sample(), 0.25);
         // 24bit
-        assert_eq!(<cpal::I24 as cpal::FromSample<i16>>::from_sample_(0i16).to_f32_sample(), 0.0);
-        assert!((<cpal::I24 as cpal::FromSample<i16>>::from_sample_(16384i16).to_f32_sample() - 0.5).abs() < 1e-3);
-        assert!((<cpal::U24 as cpal::FromSample<i16>>::from_sample_(16384i16).to_f32_sample() - 0.5).abs() < 1e-3);
+        assert_eq!(
+            <cpal::I24 as cpal::FromSample<i16>>::from_sample_(0i16).to_f32_sample(),
+            0.0
+        );
+        assert!(
+            (<cpal::I24 as cpal::FromSample<i16>>::from_sample_(16384i16).to_f32_sample() - 0.5)
+                .abs()
+                < 1e-3
+        );
+        assert!(
+            (<cpal::U24 as cpal::FromSample<i16>>::from_sample_(16384i16).to_f32_sample() - 0.5)
+                .abs()
+                < 1e-3
+        );
     }
 
     // ---------- 重采样 ----------
@@ -1093,9 +1105,7 @@ mod tests {
     /// 生成正弦波（mono f32）。
     fn sine(freq: f64, rate: u32, n: usize, amp: f32) -> Vec<f32> {
         (0..n)
-            .map(|i| {
-                amp * (std::f64::consts::TAU * freq * i as f64 / f64::from(rate)).sin() as f32
-            })
+            .map(|i| amp * (std::f64::consts::TAU * freq * i as f64 / f64::from(rate)).sin() as f32)
             .collect()
     }
 
@@ -1246,7 +1256,7 @@ mod tests {
         assert_eq!(a.pending_len(), 60, "余量必须带到下一次调用");
 
         // 再补 60 只有 120，还不够一帧（这正是不丢样本的证明）
-        assert!(a.push(&vec![2i16; 60]).is_empty());
+        assert!(a.push(&[2i16; 60]).is_empty());
         assert_eq!(a.pending_len(), 120);
 
         // 补满剩下 200 → 凑出第 3 帧，且前 60 个是 1、后 260 个是 2（顺序与边界正确）
@@ -1305,9 +1315,7 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].len(), 320);
         // 逐样本检查转换（16k→16k 直通，只差量化）
-        for (i, (&f32_sample, &i16_sample)) in
-            input.iter().zip(frames[0].iter()).enumerate()
-        {
+        for (i, (&f32_sample, &i16_sample)) in input.iter().zip(frames[0].iter()).enumerate() {
             let want = crate::audio::f32_to_i16(f32_sample);
             assert!(
                 (i16_sample as i32 - want as i32).abs() <= 1,

@@ -11,9 +11,9 @@
 //!   set -a; . ~/.diemeng/credentials; set +a
 //!   cargo run -q -p morphofly-core --example wake_word -- --seconds 20
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::session::{OrbState, SessionMachine, Stimulus};
-use diemeng_core::spectrum::rms_to_visual;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
+use morphofly_core::spectrum::rms_to_visual;
 use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
     while start.elapsed().as_secs() < seconds {
         match frames.blocking_recv() {
             Ok(frame) => {
-                let rms = diemeng_core::spectrum::rms_i16(&frame);
+                let rms = morphofly_core::spectrum::rms_i16(&frame);
                 let visual = rms_to_visual(rms);
 
                 // 占位「唤醒检测」：大声说话 = 唤醒
@@ -100,7 +100,10 @@ fn main() -> anyhow::Result<()> {
         machine.state().as_str()
     );
     let _ = announced;
-    anyhow::ensure!(machine.transitions > 0 || seconds < 5, "一次状态迁移都没发生（没喊？）");
+    anyhow::ensure!(
+        machine.transitions > 0 || seconds < 5,
+        "一次状态迁移都没发生（没喊？）"
+    );
     println!("[wake_word] ✅ 唤醒接缝（KWS → 状态机 → 云端）结构就位");
     Ok(())
 }

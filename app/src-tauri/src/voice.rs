@@ -11,16 +11,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::dispatch::Dispatcher;
-use diemeng_core::dsh::DshBridge;
-use diemeng_core::tasks::TaskStore;
-use diemeng_core::audio::playback::AudioPlayer;
-use diemeng_core::realtime::{RealtimeClient, RealtimeEvent};
-use diemeng_core::session::{OrbState, SessionMachine, Stimulus};
-use diemeng_core::spectrum::Spectrum;
-use diemeng_core::tools::tool_defs;
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::audio::playback::AudioPlayer;
+use morphofly_core::dispatch::Dispatcher;
+use morphofly_core::dsh::DshBridge;
+use morphofly_core::realtime::{RealtimeClient, RealtimeEvent};
+use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
+use morphofly_core::spectrum::Spectrum;
+use morphofly_core::tasks::TaskStore;
+use morphofly_core::tools::tool_defs;
+use morphofly_core::Config;
 use tokio::sync::Mutex;
 
 /// 语音会话（一次唤醒 = 一个会话）
@@ -48,7 +48,7 @@ impl VoiceSession {
         let player = Arc::new(AudioPlayer::open()?);
         let mic = Arc::new(AudioCapture::start_default()?);
         // 工具分发器：语音模型调 delegate_task → 这里转交给 DSH
-        diemeng_core::config::ensure_data_dir(cfg)?;
+        morphofly_core::config::ensure_data_dir(cfg)?;
         let store = Arc::new(Mutex::new(TaskStore::open(cfg.task_store_path())?));
         let bridge = Arc::new(DshBridge::from_config(cfg));
         let dispatcher = Arc::new(Dispatcher::new(
@@ -117,7 +117,8 @@ impl VoiceSession {
             //   1. 打断（用户说话 → 立刻停播）
             //   2. 判定「说完了」→ 立刻 commit（不等服务端 VAD 的 1.95s）
             #[cfg(feature = "kws")]
-            let vad = diemeng_core::vad::LocalVad::new(&diemeng_core::vad::VadConfig::default()).ok();
+            let vad =
+                morphofly_core::vad::LocalVad::new(&morphofly_core::vad::VadConfig::default()).ok();
             #[cfg(feature = "kws")]
             let mut vad_cooldown = 0u32;
             // 「说完」判定（本地 VAD 的简化版）。
@@ -137,10 +138,10 @@ impl VoiceSession {
                 Cooldown,
             }
             let mut talk = Talk::Idle;
-            let mut voiced_run = 0u32;   // 连续有声帧数
-            let mut silent_run = 0u32;   // 连续静音帧数
+            let mut voiced_run = 0u32; // 连续有声帧数
+            let mut silent_run = 0u32; // 连续静音帧数
             const VOICE_RMS: f32 = 0.02; // 有声阈值
-            const NEED_VOICE: u32 = 3;   // 连续 3 帧（60ms）才算真开口
+            const NEED_VOICE: u32 = 3; // 连续 3 帧（60ms）才算真开口
             const NEED_SILENCE: u32 = 10; // 连续 10 帧（200ms）才算说完
             loop {
                 if stop2.load(Ordering::Relaxed) {
@@ -148,9 +149,9 @@ impl VoiceSession {
                 }
                 match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
                     Ok(Ok(frame)) => {
-                        let rms = diemeng_core::spectrum::rms_i16(&frame);
+                        let rms = morphofly_core::spectrum::rms_i16(&frame);
                         let bins = spectrum.analyze_i16(&frame);
-                        on_spec(bins, diemeng_core::spectrum::rms_to_visual(rms));
+                        on_spec(bins, morphofly_core::spectrum::rms_to_visual(rms));
                         // ★ 本地 VAD 先停，再推流（顺序不能反）
                         #[cfg(feature = "kws")]
                         {
@@ -238,7 +239,8 @@ impl VoiceSession {
                 if stop3.load(Ordering::Relaxed) {
                     break;
                 }
-                let ev = match tokio::time::timeout(Duration::from_millis(120), ev_rx.recv()).await {
+                let ev = match tokio::time::timeout(Duration::from_millis(120), ev_rx.recv()).await
+                {
                     Ok(Ok(e)) => e,
                     Ok(Err(_)) => break,
                     Err(_) => continue,
@@ -248,10 +250,8 @@ impl VoiceSession {
                     RealtimeEvent::AudioDelta { pcm, sample_rate } => {
                         if first_audio.load(Ordering::Relaxed) == u64::MAX {
                             if let Some(t) = speech_started {
-                                first_audio.store(
-                                    t.elapsed().as_millis() as u64,
-                                    Ordering::Relaxed,
-                                );
+                                first_audio
+                                    .store(t.elapsed().as_millis() as u64, Ordering::Relaxed);
                             }
                         }
                         let n = player2.append_pcm16(&pcm, sample_rate);
@@ -281,7 +281,11 @@ impl VoiceSession {
                             break;
                         }
                     }
-                    RealtimeEvent::ToolCall { call_id, name, arguments } => {
+                    RealtimeEvent::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                    } => {
                         tracing::info!(%name, %arguments, "🔧 工具调用");
                         let _ = m.handle(Stimulus::Thinking);
                         // 分发到真实动作（派活给 DSH / 查进度 / 取消 / 追加）
@@ -328,12 +332,21 @@ impl VoiceSession {
                     s.all()
                         .iter()
                         .filter(|t| t.status.is_terminal() && !already.contains(&t.id))
-                        .map(|t| (t.id.clone(), t.status.spoken().to_string(), t.summary.clone()))
+                        .map(|t| {
+                            (
+                                t.id.clone(),
+                                t.status.spoken().to_string(),
+                                t.summary.clone(),
+                            )
+                        })
                         .collect::<Vec<_>>()
                 };
                 for (id, spoken, summary) in pending {
                     reported.lock().await.insert(id.clone());
-                    let line = format!("{spoken}：{}", diemeng_core::dispatch::clean_for_speech(&summary));
+                    let line = format!(
+                        "{spoken}：{}",
+                        morphofly_core::dispatch::clean_for_speech(&summary)
+                    );
                     tracing::info!(task = %id, report = %line, "🔔 主动汇报");
                     // 注入会话 + 触发开口
                     let _ = client_rep.send_item(serde_json::json!({
@@ -409,7 +422,13 @@ mod tests {
     #[test]
     fn session_opens_only_at_wake() {
         assert!(should_open_session(OrbState::S1));
-        for s in [OrbState::S0, OrbState::S2, OrbState::S3, OrbState::S4, OrbState::S5] {
+        for s in [
+            OrbState::S0,
+            OrbState::S2,
+            OrbState::S3,
+            OrbState::S4,
+            OrbState::S5,
+        ] {
             assert!(!should_open_session(s), "{s:?} 不该新建会话");
         }
     }
@@ -425,7 +444,11 @@ mod tests {
 
     #[test]
     fn stats_serializes() {
-        let s = SessionStats { played_frames: 100, interruptions: 1, first_audio_ms: Some(429) };
+        let s = SessionStats {
+            played_frames: 100,
+            interruptions: 1,
+            first_audio_ms: Some(429),
+        };
         let j = serde_json::to_string(&s).unwrap();
         assert!(j.contains("\"first_audio_ms\":429"));
     }

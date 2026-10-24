@@ -23,10 +23,16 @@ pub enum TaskStatus {
 
 impl TaskStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled)
+        matches!(
+            self,
+            TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
+        )
     }
     pub fn is_active(&self) -> bool {
-        matches!(self, TaskStatus::Pending | TaskStatus::Running | TaskStatus::Blocked)
+        matches!(
+            self,
+            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Blocked
+        )
     }
     /// 念给用户听的中文
     pub fn spoken(&self) -> &'static str {
@@ -73,7 +79,9 @@ fn now_ms() -> u128 {
 
 /// 生成 task id：task_<yyyymmdd>_<hhmm>_<seq>
 fn make_id(seq: usize) -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs();
     // 用 UTC 秒数拆日期时间（不引入 chrono）
     let days = secs / 86_400;
@@ -124,7 +132,11 @@ impl TaskStore {
     /// 打开（不存在则空表）
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let mut store = Self { path, tasks: Vec::new(), seq: 0 };
+        let mut store = Self {
+            path,
+            tasks: Vec::new(),
+            seq: 0,
+        };
         store.reload()?;
         Ok(store)
     }
@@ -145,7 +157,10 @@ impl TaskStore {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let f = TaskFile { tasks: self.tasks.clone(), seq: self.seq };
+        let f = TaskFile {
+            tasks: self.tasks.clone(),
+            seq: self.seq,
+        };
         let text = serde_json::to_string_pretty(&f)?;
         // 原子写：先写临时文件再 rename，避免掉电写坏
         let tmp = self.path.with_extension("json.tmp");
@@ -238,7 +253,8 @@ mod tests {
     use super::*;
 
     fn tmp_store(name: &str) -> TaskStore {
-        let p = std::env::temp_dir().join(format!("diemeng-test-{}-{}.json", name, std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("diemeng-test-{}-{}.json", name, std::process::id()));
         let _ = std::fs::remove_file(&p);
         TaskStore::open(p).unwrap()
     }

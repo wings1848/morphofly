@@ -8,8 +8,8 @@
 //!   cargo run -q -p morphofly-core --features kws --example wake_integration -- \
 //!     --file testdata/audio/01_wake_short.mp3
 
-use diemeng_core::kws::{detect_in_file, wake_stimulus_for, KwsConfig};
-use diemeng_core::session::{OrbState, SessionMachine, Stimulus};
+use morphofly_core::kws::{detect_in_file, wake_stimulus_for, KwsConfig};
+use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
 use std::path::Path;
 use std::time::Duration;
 
@@ -59,8 +59,13 @@ fn main() -> anyhow::Result<()> {
 
     // 2) 命中 → 状态机 S0 → S1
     let stim = wake_stimulus_for(machine.state()).expect("S0 应该能接收唤醒");
-    machine.handle(stim).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    println!("[wake] 唤醒刺激 → 状态 {}（应 S1）", machine.state().as_str());
+    machine
+        .handle(stim)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    println!(
+        "[wake] 唤醒刺激 → 状态 {}（应 S1）",
+        machine.state().as_str()
+    );
     anyhow::ensure!(machine.state() == OrbState::S1, "应进入 S1");
 
     // 3) 重复唤醒词不应再次触发（已在 S1）
@@ -71,13 +76,21 @@ fn main() -> anyhow::Result<()> {
     println!("[wake] 重复唤醒词被忽略 ✓");
 
     // 4) 连上云端 → S2
-    machine.handle(Stimulus::Connected).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    println!("[wake] 连上云端 → 状态 {}（应 S2）", machine.state().as_str());
+    machine
+        .handle(Stimulus::Connected)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    println!(
+        "[wake] 连上云端 → 状态 {}（应 S2）",
+        machine.state().as_str()
+    );
     anyhow::ensure!(machine.state() == OrbState::S2, "应进入 S2");
 
     // 5) 静音超时 → 回 S0
     machine.tick(std::time::Instant::now() + Duration::from_secs(31));
-    println!("[wake] 静音超时 → 状态 {}（应 S0）", machine.state().as_str());
+    println!(
+        "[wake] 静音超时 → 状态 {}（应 S0）",
+        machine.state().as_str()
+    );
     anyhow::ensure!(machine.state() == OrbState::S0, "应回到 S0");
 
     println!("[wake] 迁移次数: {}", machine.transitions);

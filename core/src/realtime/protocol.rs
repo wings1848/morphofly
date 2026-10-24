@@ -233,8 +233,8 @@ impl Default for TurnDetection {
         //    error "commit when server vad"。轮次完全由服务端 VAD 驱动。
         Self {
             kind: "server_vad".into(),
-            prefix_padding_ms: Some(300),  // 300：曾用 500，降到 300 减少用户等待
-            silence_duration_ms: Some(300),  // 300：原 450 让「说完」判定太慢（占 P1 延迟大头）
+            prefix_padding_ms: Some(300), // 300：曾用 500，降到 300 减少用户等待
+            silence_duration_ms: Some(300), // 300：原 450 让「说完」判定太慢（占 P1 延迟大头）
             energy_awakeness_threshold: Some(500),
         }
     }
@@ -309,7 +309,10 @@ mod tests {
         let td = &v["session"]["turn_detection"];
         assert!(td.is_null(), "必须真的是 null，不是被省略");
         let text = serde_json::to_string(&v).unwrap();
-        assert!(text.contains("\"turn_detection\":null"), "序列化后要能看到 null: {text}");
+        assert!(
+            text.contains("\"turn_detection\":null"),
+            "序列化后要能看到 null: {text}"
+        );
     }
 
     /// turn_detection=None 必须序列化成 `null`，不能省略。
@@ -351,7 +354,7 @@ mod tests {
             .collect();
         schema_kinds.sort();
 
-        let mut our_kinds: Vec<String> = vec![
+        let mut our_kinds: Vec<String> = [
             RealtimeEvent::SessionCreated {
                 session_id: "sess_1".into(),
                 model: "m".into(),
@@ -392,7 +395,10 @@ mod tests {
         .collect();
         our_kinds.sort();
 
-        assert_eq!(our_kinds, schema_kinds, "RealtimeEvent 与 schema 契约不一致");
+        assert_eq!(
+            our_kinds, schema_kinds,
+            "RealtimeEvent 与 schema 契约不一致"
+        );
     }
 
     #[test]
@@ -455,16 +461,20 @@ mod tests {
             .unwrap()
             .contains("小蝶"));
         // 默认 use_local_vad=true → turn_detection 应为 null（关掉服务端 VAD）
-        assert!(v["session"]["turn_detection"].is_null(),
+        assert!(
+            v["session"]["turn_detection"].is_null(),
             "默认配置用本地 VAD，turn_detection 应为 null，实际 {:?}",
-            v["session"]["turn_detection"]);
+            v["session"]["turn_detection"]
+        );
     }
 
     /// 反过来：use_local_vad=false 时必须恢复 server_vad
     #[test]
     fn server_vad_mode_restores_turn_detection() {
-        let mut rc = crate::config::RealtimeConfig::default();
-        rc.use_local_vad = false;
+        let rc = crate::config::RealtimeConfig {
+            use_local_vad: false,
+            ..Default::default()
+        };
         let sc = SessionConfig::from_realtime_config(&rc);
         let v = client_command_json(&ClientCommand::SessionUpdate { session: sc });
         assert_eq!(v["session"]["turn_detection"]["type"], "server_vad");

@@ -193,16 +193,15 @@ impl DshClient {
         self.initialized.store(true, Ordering::SeqCst);
 
         // session/new 的回复由 reader 解析并把 sessionId 写进 session_id
-        self.send_request(
-            "session/new",
-            json!({"cwd": cwd, "mcpServers": []}),
-        )
-        .await?;
+        self.send_request("session/new", json!({"cwd": cwd, "mcpServers": []}))
+            .await?;
 
         // 等 sessionId 出现（最多 20s）
         for _ in 0..200 {
             if let Some(sid) = self.session_id.lock().await.clone() {
-                let _ = self.events_tx.send(DshEvent::SessionReady { session_id: sid.clone() });
+                let _ = self.events_tx.send(DshEvent::SessionReady {
+                    session_id: sid.clone(),
+                });
                 return Ok(sid);
             }
             if self.closed.load(Ordering::SeqCst) {
@@ -233,12 +232,7 @@ impl DshClient {
 
     /// 取消当前这一轮
     pub async fn cancel(&mut self) -> Result<()> {
-        let sid = self
-            .session_id
-            .lock()
-            .await
-            .clone()
-            .context("还没有会话")?;
+        let sid = self.session_id.lock().await.clone().context("还没有会话")?;
         self.send_notification("session/cancel", json!({"sessionId": sid}))
             .await
     }
@@ -256,7 +250,9 @@ impl DshClient {
     pub async fn shutdown(&mut self) {
         let sid = self.session_id.lock().await.clone();
         if let Some(sid) = sid {
-            let _ = self.send_notification("session/close", json!({"sessionId": sid})).await;
+            let _ = self
+                .send_notification("session/close", json!({"sessionId": sid}))
+                .await;
         }
         let _ = self.child.kill().await;
     }
@@ -286,15 +282,20 @@ async fn handle_message(
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown")
                             .to_string();
-                        let _ = events_tx.send(DshEvent::TurnDone { stop_reason: reason });
+                        let _ = events_tx.send(DshEvent::TurnDone {
+                            stop_reason: reason,
+                        });
                     }
                     _ => {}
                 }
                 return;
             }
             if let Some(err) = msg.get("error") {
-                let m = err.get("message").and_then(|v| v.as_str()).unwrap_or("未知错误");
-                let _ = events_tx.send(DshEvent::Error(format!("{m}")));
+                let m = err
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("未知错误");
+                let _ = events_tx.send(DshEvent::Error(m.to_string()));
             }
             return;
         }
@@ -306,18 +307,33 @@ async fn handle_message(
     match method {
         "session/update" => {
             let update = params.get("update").cloned().unwrap_or(Value::Null);
-            let kind = update.get("sessionUpdate").and_then(|v| v.as_str()).unwrap_or("");
+            let kind = update
+                .get("sessionUpdate")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             match kind {
                 "agent_message_chunk" => {
                     let content = update.get("content").cloned().unwrap_or(Value::Null);
                     if content.get("type").and_then(|v| v.as_str()) == Some("text") {
-                        let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let text = content
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let _ = events_tx.send(DshEvent::TextDelta(text));
                     }
                 }
                 "tool_call" => {
-                    let title = update.get("title").and_then(|v| v.as_str()).unwrap_or("工具").to_string();
-                    let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let title = update
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("工具")
+                        .to_string();
+                    let status = update
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let _ = events_tx.send(DshEvent::ToolCall { title, status });
                 }
                 _ => {}
@@ -331,7 +347,10 @@ async fn handle_message(
                 .and_then(|v| v.as_str())
                 .unwrap_or("操作")
                 .to_string();
-            let _ = events_tx.send(DshEvent::PermissionRequest { title, auto_approved: true });
+            let _ = events_tx.send(DshEvent::PermissionRequest {
+                title,
+                auto_approved: true,
+            });
         }
         _ => {}
     }
@@ -425,7 +444,10 @@ mod tests {
         });
         handle_message(msg, &pending, &t, &sid).await;
         match rx.recv().await.unwrap() {
-            DshEvent::PermissionRequest { title, auto_approved } => {
+            DshEvent::PermissionRequest {
+                title,
+                auto_approved,
+            } => {
                 assert_eq!(title, "跑 cargo test");
                 assert!(auto_approved);
             }

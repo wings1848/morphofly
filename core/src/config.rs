@@ -9,16 +9,12 @@ use std::path::PathBuf;
 /// 支持的 provider
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Provider {
+    #[default]
     Stepfun,
     Qwen,
     Mock,
-}
-
-impl Default for Provider {
-    fn default() -> Self {
-        Provider::Stepfun
-    }
 }
 
 impl std::fmt::Display for Provider {
@@ -170,7 +166,13 @@ pub fn bundle_data_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     // Tauri/deb：exe 在 /usr/bin，资源在 /usr/lib/<product> 或同级 resources/
-    for rel in ["resources", "../resources", "../lib/diemeng", "data", "../share/diemeng"] {
+    for rel in [
+        "resources",
+        "../resources",
+        "../lib/morphofly",
+        "data",
+        "../share/diemeng",
+    ] {
         let cand = dir.join(rel);
         if cand.is_dir() {
             return Some(cand);
@@ -354,7 +356,10 @@ mod tests {
         let mut c = Config::default();
         c.realtime.api_key_env = "MORPHOFLY_TEST_KEY2".into();
         let s = toml::to_string_pretty(&c).unwrap();
-        assert!(!s.contains("supersecretvalue"), "密钥不能出现在配置序列化里");
+        assert!(
+            !s.contains("supersecretvalue"),
+            "密钥不能出现在配置序列化里"
+        );
         std::env::remove_var("MORPHOFLY_TEST_KEY2");
     }
 }

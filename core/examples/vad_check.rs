@@ -3,7 +3,7 @@
 //! 用法（wings-pc，需 --features kws）：
 //!   cargo run -q -p morphofly-core --features kws --example vad_check -- testdata/audio/
 
-use diemeng_core::vad::{frame_to_f32, LocalVad, VadConfig};
+use morphofly_core::vad::{frame_to_f32, LocalVad, VadConfig};
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
@@ -13,12 +13,12 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let dir = std::env::args().nth(1).unwrap_or_else(|| "testdata/audio".into());
+    let dir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "testdata/audio".into());
     let cfg = VadConfig {
-        model: PathBuf::from(
-            std::env::var("HOME").unwrap_or_else(|_| ".".into()),
-        )
-        .join(".diemeng/vad-model/silero_vad.onnx"),
+        model: PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+            .join(".diemeng/vad-model/silero_vad.onnx"),
         ..Default::default()
     };
     println!("[vad_check] 模型: {}", cfg.model.display());
@@ -27,12 +27,21 @@ fn main() -> anyhow::Result<()> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| matches!(p.extension().and_then(|s| s.to_str()), Some("mp3") | Some("wav")))
+        .filter(|p| {
+            matches!(
+                p.extension().and_then(|s| s.to_str()),
+                Some("mp3") | Some("wav")
+            )
+        })
         .collect();
     files.sort();
 
     for f in &files {
-        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = f
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         vad.reset();
         // 解码 → 16k mono
         use rodio::Source;
@@ -74,11 +83,13 @@ fn main() -> anyhow::Result<()> {
             }
         }
         let total = pcm.len() / 512;
-        let ratio = if total > 0 { speech_frames as f32 / total as f32 * 100.0 } else { 0.0 };
-        println!(
-            "{name:<34} 开口 {starts} 次，说话占比 {ratio:>5.1}%"
-        );
-        let _ = frame_to_f32(&[]);  // 保证函数被引用
+        let ratio = if total > 0 {
+            speech_frames as f32 / total as f32 * 100.0
+        } else {
+            0.0
+        };
+        println!("{name:<34} 开口 {starts} 次，说话占比 {ratio:>5.1}%");
+        let _ = frame_to_f32(&[]); // 保证函数被引用
     }
     println!("\n[vad_check] 判定：语音文件应该有「开口」次数 > 0，静音/纯噪声应该很少");
     Ok(())

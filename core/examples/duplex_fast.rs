@@ -11,10 +11,10 @@
 //!   cargo run -q -p morphofly-core --features kws --example duplex_fast -- \
 //!     --file testdata/audio/04_ack_zai.mp3
 
-use diemeng_core::audio::playback::AudioPlayer;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::vad::{LocalVad, VadConfig};
-use diemeng_core::Config;
+use morphofly_core::audio::playback::AudioPlayer;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::vad::{LocalVad, VadConfig};
+use morphofly_core::Config;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -40,7 +40,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let cfg = Config::load()?;
-    println!("[fast] model={} 模式=本地VAD+手动commit", cfg.realtime.model);
+    println!(
+        "[fast] model={} 模式=本地VAD+手动commit",
+        cfg.realtime.model
+    );
 
     let mut samples = Vec::new();
 
@@ -58,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
             "output_audio_format": "pcm16",
             "turn_detection": serde_json::Value::Null
         }))?;
-        client.send_tools(&diemeng_core::tools::tool_defs())?;
+        client.send_tools(&morphofly_core::tools::tool_defs())?;
 
         let t_commit = Arc::new(Mutex::new(None::<Instant>));
         let first_audio = Arc::new(AtomicU64::new(u64::MAX));
@@ -99,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         });
 
         // 推流 + 本地 VAD 判定说完即 commit
-        let mic = diemeng_core::audio::capture::AudioCapture::file_source(&file)?;
+        let mic = morphofly_core::audio::capture::AudioCapture::file_source(&file)?;
         let mut rx = mic.subscribe();
         let vad_cfg = VadConfig {
             model: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
@@ -118,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
             match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
                 Ok(Ok(frame)) => {
                     let f32s: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
-                    let rms = diemeng_core::spectrum::rms_i16(&frame);
+                    let rms = morphofly_core::spectrum::rms_i16(&frame);
                     if rms > 0.02 {
                         t_last_voiced = Some(Instant::now());
                         silence_after_voice = 0;
@@ -164,7 +167,10 @@ async fn main() -> anyhow::Result<()> {
         let fa = first_audio.load(Ordering::Relaxed);
         if fa != u64::MAX {
             samples.push(fa);
-            println!("[fast] 第{i}轮：commit → 首音频 {fa}ms，播放 {} 帧", played.load(Ordering::Relaxed));
+            println!(
+                "[fast] 第{i}轮：commit → 首音频 {fa}ms，播放 {} 帧",
+                played.load(Ordering::Relaxed)
+            );
         } else {
             println!("[fast] 第{i}轮：没收到音频");
         }
@@ -176,15 +182,24 @@ async fn main() -> anyhow::Result<()> {
         samples.sort_unstable();
         let n = samples.len();
         let p = |q: f64| samples[((n as f64 - 1.0) * q).round() as usize];
-        println!(
-            "\n===== 本地 VAD + 手动 commit ====="
-        );
+        println!("\n===== 本地 VAD + 手动 commit =====");
         println!(
             "commit → 首音频: n={n} 均值 {:.0}ms 最小 {}ms 中位 {}ms p90 {}ms 最大 {}ms",
-            samples.iter().sum::<u64>() as f64 / n as f64, samples[0], p(0.5), p(0.9), samples[n-1]
+            samples.iter().sum::<u64>() as f64 / n as f64,
+            samples[0],
+            p(0.5),
+            p(0.9),
+            samples[n - 1]
         );
         let p90 = p(0.9);
-        println!("判定：p90={p90}ms → {}", if p90 < 800 { "✅ 达到合格值 <800ms" } else { "❌ 不达标" });
+        println!(
+            "判定：p90={p90}ms → {}",
+            if p90 < 800 {
+                "✅ 达到合格值 <800ms"
+            } else {
+                "❌ 不达标"
+            }
+        );
     }
     Ok(())
 }

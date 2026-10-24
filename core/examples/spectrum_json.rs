@@ -3,7 +3,7 @@
 //! 无音频设备也能验：用合成信号算出 64 bin，按 30fps 打印 JSON 行。
 //! 验收命令：cargo run -p morphofly-core --example spectrum_json -- --seconds 2
 
-use diemeng_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
+use morphofly_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -59,6 +59,9 @@ fn main() -> anyhow::Result<()> {
         n += 1;
         std::thread::sleep(frame);
     }
-    eprintln!("[spectrum_json] 输出 {n} 帧，{:.0} fps", n as f32 / seconds.max(0.001));
+    eprintln!(
+        "[spectrum_json] 输出 {n} 帧，{:.0} fps",
+        n as f32 / seconds.max(0.001)
+    );
     Ok(())
 }

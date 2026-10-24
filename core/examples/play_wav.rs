@@ -6,7 +6,7 @@
 //! **注意**：默认 sink 是虚拟设备时（snd_aloop）也会「成功」——那是数据流动成功，不是出声。
 //! 真要确认出声：先跑 `tools/pc_audio_route.sh --physical` 切到物理设备。
 
-use diemeng_core::audio::playback::AudioPlayer;
+use morphofly_core::audio::playback::AudioPlayer;
 use std::time::{Duration, Instant};
 
 fn main() -> anyhow::Result<()> {
@@ -32,7 +32,11 @@ fn main() -> anyhow::Result<()> {
             acc += samples[i * channels + c];
         }
         let v = acc / channels as f32;
-        pcm16.push((v.clamp(-1.0, 1.0) * 32768.0).round().clamp(-32768.0, 32767.0) as i16);
+        pcm16.push(
+            (v.clamp(-1.0, 1.0) * 32768.0)
+                .round()
+                .clamp(-32768.0, 32767.0) as i16,
+        );
     }
     println!(
         "[play_wav] 解码：{rate}Hz {channels}ch → mono {} 采样（{:.2}s）",

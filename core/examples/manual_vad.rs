@@ -11,10 +11,10 @@
 //!
 //! 用法：cargo run -q -p morphofly-core --example manual_vad -- --rounds 5 --file testdata/audio/04_ack_zai.mp3
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::spectrum::rms_i16;
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::spectrum::rms_i16;
+use morphofly_core::Config;
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -64,13 +64,19 @@ async fn main() -> anyhow::Result<()> {
         let t_wait = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             match tokio::time::timeout_at(t_wait, ev_rx.recv()).await {
-                Ok(Ok(RealtimeEvent::SessionUpdated)) => { println!("[manual] session.updated 已收到（VAD 应为 null）"); break; }
+                Ok(Ok(RealtimeEvent::SessionUpdated)) => {
+                    println!("[manual] session.updated 已收到（VAD 应为 null）");
+                    break;
+                }
                 Ok(Ok(RealtimeEvent::Error { message, code })) => {
                     println!("[manual] ⚠️ session.update 被拒: {message} ({code:?})");
                     break;
                 }
                 Ok(Ok(_)) => continue,
-                _ => { println!("[manual] ⚠️ 没等到 session.updated"); break; }
+                _ => {
+                    println!("[manual] ⚠️ 没等到 session.updated");
+                    break;
+                }
             }
         }
 
@@ -166,6 +172,15 @@ async fn main() -> anyhow::Result<()> {
         e2e.iter().sum::<u64>() as f64 / n as f64, p(0.5), p(0.9), e2e[n - 1]
     );
     let p90 = p(0.9);
-    println!("判定：p90={p90}ms → {}", if p90 < 500 { "达到理想值 ✅✅" } else if p90 < 800 { "达到合格值 ✅" } else { "仍不达标 ❌" });
+    println!(
+        "判定：p90={p90}ms → {}",
+        if p90 < 500 {
+            "达到理想值 ✅✅"
+        } else if p90 < 800 {
+            "达到合格值 ✅"
+        } else {
+            "仍不达标 ❌"
+        }
+    );
     Ok(())
 }

@@ -28,10 +28,7 @@ use crate::config::{Provider, RealtimeConfig};
 use anyhow::{bail, Result};
 
 /// 已知的 Qwen realtime 模型（写死会过期，优先用配置里的 `model`）
-pub const KNOWN_MODELS: &[&str] = &[
-    "qwen3.8-omni-flash-realtime",
-    "qwen3.5-omni-plus-realtime",
-];
+pub const KNOWN_MODELS: &[&str] = &["qwen3.8-omni-flash-realtime", "qwen3.5-omni-plus-realtime"];
 
 /// 构造 Qwen 的 WS 端点。
 ///

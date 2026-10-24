@@ -4,8 +4,8 @@
 //!   cargo run -p morphofly-core --example delegate -- '列一下 /tmp 里有什么'
 //!   DELEGATE_TIMEOUT=120 cargo run ... （默认 180s）
 
-use diemeng_core::dsh::acp::{DshClient, DshEvent};
-use diemeng_core::Config;
+use morphofly_core::dsh::acp::{DshClient, DshEvent};
+use morphofly_core::Config;
 use std::time::Duration;
 
 #[tokio::main]
@@ -16,10 +16,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let task = std::env::args()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .join(" ");
+    let task = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
     let task = if task.trim().is_empty() {
         "运行 `ls /home/wings/Code_Project/morphofly`，用一句话告诉我里面有哪些文件。不要修改任何文件。".to_string()
     } else {
@@ -68,7 +65,10 @@ async fn main() -> anyhow::Result<()> {
             Ok(Ok(DshEvent::ToolCall { title, status })) => {
                 eprintln!("\n[delegate] 工具 {title} → {status}");
             }
-            Ok(Ok(DshEvent::PermissionRequest { title, auto_approved })) => {
+            Ok(Ok(DshEvent::PermissionRequest {
+                title,
+                auto_approved,
+            })) => {
                 eprintln!("\n[delegate] 请求权限 {title}，自动批准={auto_approved}");
             }
             Ok(Ok(DshEvent::TurnDone { stop_reason: r })) => {
@@ -89,7 +89,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let total = t1.elapsed().as_millis();
-    println!("\n[delegate] stopReason={stop_reason} 本轮耗时 {total}ms 文本 {} 字", text.chars().count());
+    println!(
+        "\n[delegate] stopReason={stop_reason} 本轮耗时 {total}ms 文本 {} 字",
+        text.chars().count()
+    );
     client.shutdown().await;
 
     if stop_reason == "end_turn" && !text.trim().is_empty() {
@@ -102,7 +105,8 @@ async fn main() -> anyhow::Result<()> {
             "text": text,
             "cwd": cwd,
         });
-        let p = std::env::var("DELEGATE_OUT").unwrap_or_else(|_| "/tmp/diemeng-delegate.json".into());
+        let p =
+            std::env::var("DELEGATE_OUT").unwrap_or_else(|_| "/tmp/diemeng-delegate.json".into());
         std::fs::write(&p, serde_json::to_string_pretty(&out)?)?;
         println!("[delegate] ✅ 结果已写 {p}");
         Ok(())

@@ -15,9 +15,9 @@ pub mod realtime;
 pub mod session;
 pub mod spectrum;
 pub mod tasks;
+pub mod tools;
 #[cfg(feature = "kws")]
 pub mod vad;
-pub mod tools;
 
 pub use config::Config;
 pub use session::{OrbState, SessionMachine};

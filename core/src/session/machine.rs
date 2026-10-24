@@ -64,7 +64,10 @@ impl OrbState {
     }
 
     pub fn is_active_call(&self) -> bool {
-        matches!(self, OrbState::S1 | OrbState::S2 | OrbState::S3 | OrbState::S4)
+        matches!(
+            self,
+            OrbState::S1 | OrbState::S2 | OrbState::S3 | OrbState::S4
+        )
     }
 }
 
@@ -161,11 +164,9 @@ impl SessionMachine {
             return;
         }
         // 断线：除了「还没连过」的初始态，一律进异常
-        if self.ever_connected || self.state.is_active_call() {
-            if self.state != OrbState::S5 {
-                self.state = OrbState::S5;
-                self.transitions += 1;
-            }
+        if (self.ever_connected || self.state.is_active_call()) && self.state != OrbState::S5 {
+            self.state = OrbState::S5;
+            self.transitions += 1;
         }
     }
 
@@ -230,8 +231,7 @@ impl SessionMachine {
 
     /// 时间驱动的迁移：静音超时回待机。
     pub fn tick(&mut self, now: Instant) -> bool {
-        if self.state == OrbState::S2
-            && now.duration_since(self.last_activity) >= self.idle_timeout
+        if self.state == OrbState::S2 && now.duration_since(self.last_activity) >= self.idle_timeout
         {
             self.goto(OrbState::S0);
             return true;
@@ -280,7 +280,11 @@ mod tests {
         m.handle(Stimulus::ModelSpeaking).unwrap();
         assert_eq!(m.state(), OrbState::S4);
         m.handle(Stimulus::UserSpeechStarted).unwrap();
-        assert_eq!(m.state(), OrbState::S2, "打断是核心体验：S4 听到人声立即回 S2");
+        assert_eq!(
+            m.state(),
+            OrbState::S2,
+            "打断是核心体验：S4 听到人声立即回 S2"
+        );
     }
 
     #[test]
@@ -316,7 +320,13 @@ mod tests {
 
     #[test]
     fn connection_failure_from_any_state_goes_s5() {
-        for pre in [OrbState::S0, OrbState::S1, OrbState::S2, OrbState::S3, OrbState::S4] {
+        for pre in [
+            OrbState::S0,
+            OrbState::S1,
+            OrbState::S2,
+            OrbState::S3,
+            OrbState::S4,
+        ] {
             let mut m = m();
             match pre {
                 OrbState::S0 => {}
@@ -400,10 +410,21 @@ mod tests {
 
     #[test]
     fn visual_params_differ_between_states() {
-        let states = [OrbState::S0, OrbState::S1, OrbState::S2, OrbState::S3, OrbState::S4, OrbState::S5];
+        let states = [
+            OrbState::S0,
+            OrbState::S1,
+            OrbState::S2,
+            OrbState::S3,
+            OrbState::S4,
+            OrbState::S5,
+        ];
         let mut seen = std::collections::HashSet::new();
         for s in states {
-            assert!(seen.insert(format!("{:?}", s.visual())), "视觉参数必须可区分: {:?}", s);
+            assert!(
+                seen.insert(format!("{:?}", s.visual())),
+                "视觉参数必须可区分: {:?}",
+                s
+            );
         }
     }
 }

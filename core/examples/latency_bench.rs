@@ -7,9 +7,9 @@
 //! 每轮：新连接 → 推流 → 等 speech_started/stopped → 记首音频 → 断开
 //! 为什么每轮新连接：避免上下文累积影响延迟测量（也顺便验证连接稳定性）
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::Config;
 use std::time::{Duration, Instant};
 
 #[tokio::main]
@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         loop {
             let ev = tokio::select! {
                 biased;
-                r = ev_rx.recv() => match r { Ok(e)=>Some(e), Err(_)=>None },
+                r = ev_rx.recv() => r.ok(),
                 r = mic_rx.recv() => {
                     if let Ok(frame) = r { let _ = client.send_audio(&frame); }
                     continue;
@@ -94,8 +94,14 @@ async fn main() -> anyhow::Result<()> {
         if let (Some(a), Some(b)) = (t_speech_stopped, t_first_audio) {
             let ms = b.duration_since(a).as_millis() as u64;
             first_audio_ms.push(ms);
-            println!("[bench] 第 {i:>2}/{rounds} 轮：首音频 {ms:>4}ms{}",
-                if done { "" } else { " (未收到 response.done)" });
+            println!(
+                "[bench] 第 {i:>2}/{rounds} 轮：首音频 {ms:>4}ms{}",
+                if done {
+                    ""
+                } else {
+                    " (未收到 response.done)"
+                }
+            );
         } else if done {
             println!("[bench] 第 {i:>2}/{rounds} 轮：收到 response.done 但没测到延迟");
             failures += 1;
@@ -119,13 +125,20 @@ async fn main() -> anyhow::Result<()> {
         let p = |q: f64| v[((n as f64 - 1.0) * q).round() as usize];
         println!(
             "{name}: n={n} 均值 {mean:.0}ms 最小 {}ms 中位 {}ms p90 {}ms p95 {}ms 最大 {}ms",
-            v[0], p(0.5), p(0.9), p(0.95), v[n - 1]
+            v[0],
+            p(0.5),
+            p(0.9),
+            p(0.95),
+            v[n - 1]
         );
     }
 
     println!("\n===== 验收 P1 采样结果（{rounds} 轮，音频 {file}）=====");
     stats(&mut connect_ms, "连接耗时");
-    stats(&mut first_audio_ms, "首音频延迟（speech_stopped → 第一个 delta）");
+    stats(
+        &mut first_audio_ms,
+        "首音频延迟（speech_stopped → 第一个 delta）",
+    );
     println!("失败轮数: {failures}/{rounds}");
 
     // 验收标准：p90 < 800ms（合格） / < 500ms（理想）
@@ -136,9 +149,13 @@ async fn main() -> anyhow::Result<()> {
         let ok = p90 < 800;
         println!(
             "判定：p90={p90}ms → {}",
-            if ideal { "达到理想值 <500ms ✅✅" }
-            else if ok { "达到合格值 <800ms ✅" }
-            else { "不达标 ❌" }
+            if ideal {
+                "达到理想值 <500ms ✅✅"
+            } else if ok {
+                "达到合格值 <800ms ✅"
+            } else {
+                "不达标 ❌"
+            }
         );
         anyhow::ensure!(ok, "P1 不达标：p90={p90}ms");
     }

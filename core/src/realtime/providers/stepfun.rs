@@ -54,7 +54,11 @@ pub fn parse_event(raw: &str, sample_rate: u32) -> Option<RealtimeEvent> {
             Some(RealtimeEvent::TranscriptDelta { text })
         }
         "response.audio_transcript.done" => {
-            let text = v.get("transcript").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = v
+                .get("transcript")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             Some(RealtimeEvent::TranscriptDone { text })
         }
 
@@ -65,7 +69,11 @@ pub fn parse_event(raw: &str, sample_rate: u32) -> Option<RealtimeEvent> {
         // 文本模式没有独立的「done」事件位（schema v1 只有 TextDelta）。
         // 语义等同 TranscriptDone：整句文本一次给全，字幕侧用它替换累积内容。
         "response.text.done" => {
-            let text = v.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = v
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             Some(RealtimeEvent::TranscriptDone { text })
         }
 
@@ -261,7 +269,10 @@ mod tests {
 
     #[test]
     fn session_updated() {
-        assert_eq!(p(r#"{"type":"session.updated"}"#), Some(RealtimeEvent::SessionUpdated));
+        assert_eq!(
+            p(r#"{"type":"session.updated"}"#),
+            Some(RealtimeEvent::SessionUpdated)
+        );
     }
 
     #[test]
@@ -280,7 +291,10 @@ mod tests {
             encode_pcm16_base64(&pcm)
         );
         match p(raw.as_str()) {
-            Some(RealtimeEvent::AudioDelta { pcm: got, sample_rate }) => {
+            Some(RealtimeEvent::AudioDelta {
+                pcm: got,
+                sample_rate,
+            }) => {
                 assert_eq!(got, pcm, "解出的 PCM 必须逐样本一致");
                 assert_eq!(sample_rate, RATE);
             }
@@ -296,10 +310,7 @@ mod tests {
         // 奇数字节
         let raw = format!(
             r#"{{"type":"response.audio.delta","delta":"{}"}}"#,
-            base64::prelude::Engine::encode(
-                &base64::prelude::BASE64_STANDARD,
-                &[1u8, 2, 3][..]
-            )
+            base64::prelude::Engine::encode(&base64::prelude::BASE64_STANDARD, &[1u8, 2, 3][..])
         );
         assert_eq!(p(raw.as_str()), None);
     }
@@ -378,7 +389,8 @@ mod tests {
     #[test]
     fn error_event_keeps_session_alive() {
         // F15 实测原文
-        let raw = r#"{"type":"error","error":{"message":"voice default is not valid","code":"400"}}"#;
+        let raw =
+            r#"{"type":"error","error":{"message":"voice default is not valid","code":"400"}}"#;
         assert_eq!(
             p(raw),
             Some(RealtimeEvent::Error {
@@ -412,7 +424,11 @@ mod tests {
             "status":"completed","call_id":"call_abc","name":"delegate_task",
             "arguments":"{\"task\":\"列目录\"}"}}"#;
         match p(raw) {
-            Some(RealtimeEvent::ToolCall { call_id, name, arguments }) => {
+            Some(RealtimeEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            }) => {
                 assert_eq!(call_id, "call_abc");
                 assert_eq!(name, "delegate_task");
                 let args: Value = serde_json::from_str(&arguments).unwrap();
@@ -496,17 +512,26 @@ mod tests {
         assert_eq!(p(r#"{"no_type":true}"#), None);
         assert_eq!(p(r#"{"type":123}"#), None);
         // 类型对但字段类型怪：不 panic
-        assert_eq!(p(r#"{"type":"session.created","session":"oops"}"#), Some(RealtimeEvent::SessionCreated {
-            session_id: String::new(),
-            model: String::new(),
-        }));
-        assert_eq!(p(r#"{"type":"response.done","response":{"status":42}}"#), Some(RealtimeEvent::ResponseDone {
-            status: "unknown".into()
-        }));
-        assert_eq!(p(r#"{"type":"error","error":{"message":["x"],"code":null}}"#), Some(RealtimeEvent::Error {
-            message: "服务端未知错误".into(),
-            code: None,
-        }));
+        assert_eq!(
+            p(r#"{"type":"session.created","session":"oops"}"#),
+            Some(RealtimeEvent::SessionCreated {
+                session_id: String::new(),
+                model: String::new(),
+            })
+        );
+        assert_eq!(
+            p(r#"{"type":"response.done","response":{"status":42}}"#),
+            Some(RealtimeEvent::ResponseDone {
+                status: "unknown".into()
+            })
+        );
+        assert_eq!(
+            p(r#"{"type":"error","error":{"message":["x"],"code":null}}"#),
+            Some(RealtimeEvent::Error {
+                message: "服务端未知错误".into(),
+                code: None,
+            })
+        );
     }
 
     #[test]
@@ -560,7 +585,12 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            vec!["append_requirement", "cancel_task", "delegate_task", "query_progress"],
+            vec![
+                "append_requirement",
+                "cancel_task",
+                "delegate_task",
+                "query_progress"
+            ],
             "不变量 I1：归一化后仍然只有这 4 个工具"
         );
     }

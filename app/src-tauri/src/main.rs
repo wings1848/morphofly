@@ -15,9 +15,9 @@ mod voice;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use diemeng_core::session::{OrbState, SessionMachine, Stimulus};
-use diemeng_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
-use diemeng_core::Config;
+use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
+use morphofly_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
+use morphofly_core::Config;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
@@ -26,7 +26,7 @@ struct AppState {
     machine: Arc<Mutex<SessionMachine>>,
     caption: Arc<Mutex<String>>,
     #[allow(dead_code)] // 预留给「改配置不重启」等命令
-    cfg: Arc<diemeng_core::Config>,
+    cfg: Arc<morphofly_core::Config>,
 }
 
 #[tauri::command]
@@ -108,8 +108,8 @@ fn spawn_state_walker(machine: Arc<Mutex<SessionMachine>>) {
             tokio::time::sleep(Duration::from_secs(3)).await;
             {
                 let mut m = machine.lock().await;
-                m.set_connected(true);   // 让 ever_connected = true
-                m.set_connected(false);  // 断开 → S5
+                m.set_connected(true); // 让 ever_connected = true
+                m.set_connected(false); // 断开 → S5
                 tracing::info!(state = m.state().as_str(), "视觉巡检 → S5 异常");
             }
             tokio::time::sleep(Duration::from_secs(3)).await;
@@ -150,20 +150,23 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
                 for (i, slot) in pcm.iter_mut().enumerate() {
                     let tt = i as f32 / 16_000.0;
                     let wobble = 1.0 + 0.35 * (t * 3.7).sin();
-                    *slot = ((amp * wobble
-                        * (2.0 * std::f32::consts::PI * freq * tt + phase).sin()
-                        + amp * 0.35 * (2.0 * std::f32::consts::PI * (freq * 2.7) * tt).sin())
-                        * 32767.0) as i16;
+                    *slot =
+                        ((amp * wobble * (2.0 * std::f32::consts::PI * freq * tt + phase).sin()
+                            + amp * 0.35 * (2.0 * std::f32::consts::PI * (freq * 2.7) * tt).sin())
+                            * 32767.0) as i16;
                 }
                 phase += 0.05;
                 let bins = spectrum.analyze_i16(&pcm);
                 (bins, rms_to_visual(rms_i16(&pcm)))
             } else {
-                (vec![0.0f32; diemeng_core::SPECTRUM_BINS], 0.0)
+                (vec![0.0f32; morphofly_core::SPECTRUM_BINS], 0.0)
             };
 
             if app
-                .emit("spectrum", serde_json::json!({ "bins": bins, "rms": energy }))
+                .emit(
+                    "spectrum",
+                    serde_json::json!({ "bins": bins, "rms": energy }),
+                )
                 .is_err()
             {
                 break;
@@ -195,7 +198,7 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
 fn spawn_session_guard(
     app: AppHandle,
     machine: Arc<Mutex<SessionMachine>>,
-    cfg: Arc<diemeng_core::Config>,
+    cfg: Arc<morphofly_core::Config>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut current: Option<voice::VoiceSession> = None;
@@ -258,7 +261,7 @@ fn spawn_session_guard(
 /// 这里只做「命中即唤醒」；真正连云端在阶段 1 的 duplex 链路里。
 #[cfg(feature = "kws")]
 fn spawn_wake_listener(machine: Arc<Mutex<SessionMachine>>) {
-    use diemeng_core::kws::{wake_stimulus_for, KwsConfig, WakeEvent, WakeListener};
+    use morphofly_core::kws::{wake_stimulus_for, KwsConfig, WakeEvent, WakeListener};
 
     let cfg = KwsConfig::default();
     if let Err(e) = cfg.validate() {
@@ -299,7 +302,9 @@ fn spawn_wake_listener(_machine: Arc<Mutex<SessionMachine>>) {
 
 /// 演示模式（MORPHOFLY_DEMO_STATES）下不启动 KWS，避免抢麦克风
 fn demo_states_placeholder() -> bool {
-    std::env::var("MORPHOFLY_DEMO_STATES").map(|v| v != "0").unwrap_or(false)
+    std::env::var("MORPHOFLY_DEMO_STATES")
+        .map(|v| v != "0")
+        .unwrap_or(false)
 }
 
 fn main() {
@@ -317,7 +322,7 @@ fn main() {
         key = %cfg.masked_key(),
         "蝶梦启动"
     );
-    let _ = diemeng_core::config::ensure_data_dir(&cfg);
+    let _ = morphofly_core::config::ensure_data_dir(&cfg);
 
     let machine = Arc::new(Mutex::new(SessionMachine::new(Duration::from_millis(
         cfg.idle_timeout_ms,
@@ -328,11 +333,16 @@ fn main() {
         .unwrap_or(true);
     // 唤醒词常驻监听的启动挪到 .setup() 里 —— 必须在 MORPHOFLY_BUNDLE_DIR 设好之后，
     // 否则 AppImage 场景下会去 ~/.diemeng 找模型（找不到就静默降级）。
-    let enable_kws = std::env::var("MORPHOFLY_KWS").map(|v| v != "0").unwrap_or(true);
+    let enable_kws = std::env::var("MORPHOFLY_KWS")
+        .map(|v| v != "0")
+        .unwrap_or(true);
     let skip_kws = demo_states_placeholder();
 
     // 自动点击（仅 QA：绕开 X11 点击不达 WebView 的问题，直接驱动状态机）
-    if std::env::var("MORPHOFLY_AUTOCLICK").map(|v| v != "0").unwrap_or(false) {
+    if std::env::var("MORPHOFLY_AUTOCLICK")
+        .map(|v| v != "0")
+        .unwrap_or(false)
+    {
         let m = machine.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -345,7 +355,9 @@ fn main() {
     }
 
     // 视觉巡检（仅 QA 用，见 spawn_state_walker 文档）
-    let demo_states = std::env::var("MORPHOFLY_DEMO_STATES").map(|v| v != "0").unwrap_or(false);
+    let demo_states = std::env::var("MORPHOFLY_DEMO_STATES")
+        .map(|v| v != "0")
+        .unwrap_or(false);
     if demo_states {
         spawn_state_walker(machine.clone());
     }
@@ -357,7 +369,12 @@ fn main() {
             caption: Arc::new(Mutex::new(String::new())),
             cfg: cfg.clone(),
         })
-        .invoke_handler(tauri::generate_handler![orb_click, orb_state, set_caption, poke])
+        .invoke_handler(tauri::generate_handler![
+            orb_click,
+            orb_state,
+            set_caption,
+            poke
+        ])
         .setup(move |app| {
             // ★ 让 core 能找到随包资源（唤醒词模型 / VAD 模型 / 关键词表）。
             //

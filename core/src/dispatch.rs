@@ -5,7 +5,7 @@
 //! 那些能力全在 DSH 那边。
 
 use crate::dsh::DshBridge;
-use crate::tasks::{spoken_summary, TaskStore, TaskStatus};
+use crate::tasks::{spoken_summary, TaskStatus, TaskStore};
 use crate::tools::{self, APPEND_REQUIREMENT, CANCEL_TASK, DELEGATE_TASK, QUERY_PROGRESS};
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -33,7 +33,11 @@ impl Dispatcher {
         bridge: Arc<DshBridge>,
         default_dir: String,
     ) -> Self {
-        Self { store, bridge, default_dir }
+        Self {
+            store,
+            bridge,
+            default_dir,
+        }
     }
 
     /// 分发一次工具调用。name 不在 4 个里 → Err（不变量 I1）。
@@ -44,7 +48,8 @@ impl Dispatcher {
         let v: Value = if args.trim().is_empty() {
             Value::Object(Default::default())
         } else {
-            serde_json::from_str(args).with_context(|| format!("工具 {name} 参数不是合法 JSON: {args}"))?
+            serde_json::from_str(args)
+                .with_context(|| format!("工具 {name} 参数不是合法 JSON: {args}"))?
         };
 
         match name {
@@ -227,7 +232,12 @@ fn suggest_dir(bad: &str, default_dir: &str) -> String {
             let n: Vec<char> = name.chars().collect();
             // 简单判定：任一方向包含，或有 2 个以上相同字符
             let common = n.iter().filter(|c| needle.contains(c)).count();
-            if name.contains(bad.trim_matches('/')) || needle.windows(2).any(|w| name.contains(&w.iter().collect::<String>())) || common >= 3 {
+            if name.contains(bad.trim_matches('/'))
+                || needle
+                    .windows(2)
+                    .any(|w| name.contains(&w.iter().collect::<String>()))
+                || common >= 3
+            {
                 candidates.push(name);
             }
         }
@@ -240,7 +250,12 @@ fn suggest_dir(bad: &str, default_dir: &str) -> String {
         format!(
             "路径「{}」不存在，你是说 {} 吗？",
             bad,
-            candidates.iter().take(3).cloned().collect::<Vec<_>>().join(" 还是 ")
+            candidates
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" 还是 ")
         )
     }
 }
@@ -335,7 +350,11 @@ mod tests {
     fn clean_for_speech_truncates_long_text() {
         let long = "这是一句很长的话。".repeat(50);
         let c = clean_for_speech(&long);
-        assert!(c.chars().count() <= 160, "必须截断，实际 {}", c.chars().count());
+        assert!(
+            c.chars().count() <= 160,
+            "必须截断，实际 {}",
+            c.chars().count()
+        );
     }
 
     #[test]

@@ -75,10 +75,7 @@ pub trait Transport: Send + Sync + 'static {
 /// 否则 `response.create` 会卡到下一帧音频才发出去。
 pub struct WsTransport {
     sink: tokio::sync::Mutex<
-        futures_util::stream::SplitSink<
-            WebSocketStream<MaybeTlsStream<TcpStream>>,
-            Message,
-        >,
+        futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     >,
     stream: tokio::sync::Mutex<
         futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
@@ -249,8 +246,7 @@ impl RealtimeClient {
         // 注意 voice 非法只会收到 error 事件、不会断链（实测 F15），所以这里不预校验音色。
         let template = SessionConfig::from_realtime_config(rc);
         let transport = Arc::new(WsTransport::new(ws));
-        let client =
-            Self::with_transport_and_session(transport, template, rc.output_sample_rate)?;
+        let client = Self::with_transport_and_session(transport, template, rc.output_sample_rate)?;
         client.send_session_update(client.session_template.clone())?;
         Ok(client)
     }
@@ -298,21 +294,22 @@ impl RealtimeClient {
             seen_tool_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
 
-        let mut tasks = Vec::with_capacity(2);
-        tasks.push(tokio::spawn(reader_loop(
-            transport.clone(),
-            evt_tx.clone(),
-            shared.clone(),
-            sample_rate,
-            shutdown_rx.clone(),
-        )));
-        tasks.push(tokio::spawn(writer_loop(
-            transport,
-            cmd_rx,
-            evt_tx.clone(),
-            shared.clone(),
-            shutdown_rx,
-        )));
+        let tasks = vec![
+            tokio::spawn(reader_loop(
+                transport.clone(),
+                evt_tx.clone(),
+                shared.clone(),
+                sample_rate,
+                shutdown_rx.clone(),
+            )),
+            tokio::spawn(writer_loop(
+                transport,
+                cmd_rx,
+                evt_tx.clone(),
+                shared.clone(),
+                shutdown_rx,
+            )),
+        ];
 
         Ok(Self {
             cmd_tx,
@@ -410,7 +407,11 @@ impl RealtimeClient {
         // StepFun 实测要 OpenAI 嵌套格式（扁平格式会回 error），在 provider 边界归一化一次。
         let normalized = crate::realtime::providers::stepfun::normalize_tools(tools);
         // 基于当前会话模板，只改 tools；voice 去掉（StepFun 的 voice 不可在 update 里改）。
-        let session = self.session_template.clone().without_voice().with_tools(normalized);
+        let session = self
+            .session_template
+            .clone()
+            .without_voice()
+            .with_tools(normalized);
         self.send_session_update(session)
     }
 
@@ -734,7 +735,9 @@ mod tests {
         let mut events = client.events();
 
         inbound.send("这不是 JSON".into()).unwrap();
-        inbound.send(r#"{"type":"brand.new.event"}"#.into()).unwrap();
+        inbound
+            .send(r#"{"type":"brand.new.event"}"#.into())
+            .unwrap();
         inbound
             .send(
                 serde_json::json!({
@@ -803,7 +806,10 @@ mod tests {
         client.send_audio(&[]).unwrap();
         // 给 writer 一点时间；如果发了就会出现在 sent 里
         tokio::time::sleep(Duration::from_millis(60)).await;
-        assert!(fake.sent_json().await.is_empty(), "空音频不应产生 append（会触发服务端 400）");
+        assert!(
+            fake.sent_json().await.is_empty(),
+            "空音频不应产生 append（会触发服务端 400）"
+        );
     }
 
     #[tokio::test]
@@ -815,10 +821,7 @@ mod tests {
         client.clear_input().unwrap();
 
         let sent = wait_sent(&fake, 4).await;
-        let types: Vec<&str> = sent
-            .iter()
-            .map(|v| v["type"].as_str().unwrap())
-            .collect();
+        let types: Vec<&str> = sent.iter().map(|v| v["type"].as_str().unwrap()).collect();
         assert_eq!(
             types,
             vec![
@@ -856,7 +859,12 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            vec!["append_requirement", "cancel_task", "delegate_task", "query_progress"]
+            vec![
+                "append_requirement",
+                "cancel_task",
+                "delegate_task",
+                "query_progress"
+            ]
         );
         assert!(
             msg["session"].get("voice").is_none(),
@@ -1047,8 +1055,11 @@ mod tests {
     #[test]
     fn build_request_url_appends_model_when_missing() {
         assert_eq!(
-            build_request_url("wss://api.stepfun.com/v1/realtime", "stepaudio-3-realtime-preview")
-                .unwrap(),
+            build_request_url(
+                "wss://api.stepfun.com/v1/realtime",
+                "stepaudio-3-realtime-preview"
+            )
+            .unwrap(),
             "wss://api.stepfun.com/v1/realtime?model=stepaudio-3-realtime-preview"
         );
         assert_eq!(
@@ -1095,10 +1106,9 @@ mod tests {
     fn session_info_parser_ignores_other_events() {
         assert!(parse_session_info(r#"{"type":"session.updated"}"#).is_none());
         assert!(parse_session_info("garbage").is_none());
-        let info = parse_session_info(
-            r#"{"type":"session.created","session":{"id":"s1","model":"m1"}}"#,
-        )
-        .unwrap();
+        let info =
+            parse_session_info(r#"{"type":"session.created","session":{"id":"s1","model":"m1"}}"#)
+                .unwrap();
         assert_eq!(info.voice, None, "服务端没给 voice 时不能瞎猜");
     }
 }

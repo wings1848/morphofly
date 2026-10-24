@@ -82,6 +82,8 @@ impl Spectrum {
         if half == 0 {
             return bins;
         }
+        #[allow(clippy::needless_range_loop)]
+        // 这里 i 同时用于算 lo/hi 和写入 bins[i]，用 enumerate 反而更绕
         for i in 0..SPECTRUM_BINS {
             // 对数分布：低频给更多 bin（人声集中在低频）
             let lo = ((i as f32 / SPECTRUM_BINS as f32).powi(2) * half as f32) as usize;
@@ -106,10 +108,13 @@ pub fn rms_i16(pcm: &[i16]) -> f32 {
     if pcm.is_empty() {
         return 0.0;
     }
-    let sum: f64 = pcm.iter().map(|&s| {
-        let v = s as f64 / 32768.0;
-        v * v
-    }).sum();
+    let sum: f64 = pcm
+        .iter()
+        .map(|&s| {
+            let v = s as f64 / 32768.0;
+            v * v
+        })
+        .sum();
     (sum / pcm.len() as f64).sqrt() as f32
 }
 
@@ -172,7 +177,10 @@ mod tests {
         let high = s.analyze_i16(&sine(6000.0, 16_000, 512, 0.8));
         let low_peak = argmax(&low);
         let high_peak = argmax(&high);
-        assert!(high_peak > low_peak, "6kHz 的峰值 bin 应高于 200Hz: {high_peak} vs {low_peak}");
+        assert!(
+            high_peak > low_peak,
+            "6kHz 的峰值 bin 应高于 200Hz: {high_peak} vs {low_peak}"
+        );
     }
 
     fn argmax(v: &[f32]) -> usize {
@@ -189,7 +197,7 @@ mod tests {
         let pcm: Vec<i16> = vec![32767; 100];
         assert!((rms_i16(&pcm) - 1.0).abs() < 0.01);
         // 静音 = 0
-        assert_eq!(rms_i16(&vec![0i16; 100]), 0.0);
+        assert_eq!(rms_i16(&[0i16; 100]), 0.0);
         // 空输入不 panic
         assert_eq!(rms_i16(&[]), 0.0);
     }
@@ -212,6 +220,9 @@ mod tests {
     fn bins_are_in_range() {
         let mut s = Spectrum::with_default_window();
         let bins = s.analyze_i16(&sine(1000.0, 16_000, 512, 1.0));
-        assert!(bins.iter().all(|&b| (0.0..=1.0).contains(&b)), "bin 必须在 0..1");
+        assert!(
+            bins.iter().all(|&b| (0.0..=1.0).contains(&b)),
+            "bin 必须在 0..1"
+        );
     }
 }

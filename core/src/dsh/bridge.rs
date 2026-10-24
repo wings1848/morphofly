@@ -49,7 +49,11 @@ impl DshBridge {
     ///
     /// `task` 必须是自包含的（验收 A6）——调用方负责保证。
     pub async fn run_task(&self, task: &str, cwd: &str) -> Result<String> {
-        let cwd = if cwd.trim().is_empty() { &self.default_cwd } else { cwd };
+        let cwd = if cwd.trim().is_empty() {
+            &self.default_cwd
+        } else {
+            cwd
+        };
         let mut client = DshClient::spawn(&self.command)
             .await
             .context("拉不起 DSH")?;
@@ -89,7 +93,10 @@ impl DshBridge {
                 DshEvent::ToolCall { title, status } => {
                     tracing::debug!(%title, %status, "DSH 工具");
                 }
-                DshEvent::PermissionRequest { title, auto_approved } => {
+                DshEvent::PermissionRequest {
+                    title,
+                    auto_approved,
+                } => {
                     tracing::info!(%title, %auto_approved, "DSH 请求权限");
                 }
                 DshEvent::TurnDone { stop_reason: r } => {

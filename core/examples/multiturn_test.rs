@@ -5,10 +5,10 @@
 //! 用法（wings-pc）：
 //!   cargo run -q -p morphofly-core --example multiturn_test
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::audio::playback::AudioPlayer;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::audio::playback::AudioPlayer;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::Config;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     let player = Arc::new(AudioPlayer::open()?);
     let client = Arc::new(RealtimeClient::connect(&cfg).await?);
     let mut ev = client.events();
-    client.send_tools(&diemeng_core::tools::tool_defs())?;
+    client.send_tools(&morphofly_core::tools::tool_defs())?;
 
     let audio_frames = Arc::new(AtomicU64::new(0));
     let transcript = Arc::new(tokio::sync::Mutex::new(String::new()));
@@ -61,7 +61,11 @@ async fn main() -> anyhow::Result<()> {
                     RealtimeEvent::TranscriptDelta { text } => {
                         tr.lock().await.push_str(&text);
                     }
-                    RealtimeEvent::ToolCall { call_id, name, arguments } => {
+                    RealtimeEvent::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                    } => {
                         println!("[multi]   🔧 工具调用 {name}({arguments})");
                         // 工具调用后服务端会再发一轮 response，所以要等两次 done
                         df.fetch_add(1, Ordering::Relaxed);
@@ -100,9 +104,15 @@ async fn main() -> anyhow::Result<()> {
         let mut rx = mic.subscribe();
         loop {
             match tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
-                Ok(Ok(f)) => { let _ = client.send_audio(&f); }
+                Ok(Ok(f)) => {
+                    let _ = client.send_audio(&f);
+                }
                 Ok(Err(_)) => break,
-                Err(_) => { if mic.is_file_finished() { break; } }
+                Err(_) => {
+                    if mic.is_file_finished() {
+                        break;
+                    }
+                }
             }
         }
         // 手动 commit（因为默认关服务端 VAD）
@@ -140,7 +150,9 @@ async fn main() -> anyhow::Result<()> {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let frames = audio_frames.load(Ordering::Relaxed).saturating_sub(frames_before);
+        let frames = audio_frames
+            .load(Ordering::Relaxed)
+            .saturating_sub(frames_before);
         let text = transcript.lock().await.clone();
         if frames == 0 {
             println!("[multi]   ❌ 没有音频回应");
@@ -148,8 +160,13 @@ async fn main() -> anyhow::Result<()> {
         } else {
             println!(
                 "[multi]   ✅ 首音频 {}ms，{} 帧音频，字幕：「{}」",
-                first_audio_ms.unwrap_or(0), frames,
-                if text.is_empty() { "（无）" } else { text.trim() }
+                first_audio_ms.unwrap_or(0),
+                frames,
+                if text.is_empty() {
+                    "（无）"
+                } else {
+                    text.trim()
+                }
             );
             results.push(true);
         }

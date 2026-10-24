@@ -77,7 +77,11 @@ impl KwsConfig {
                     .any(|e| e.file_name().to_string_lossy().ends_with(".onnx"))
             })
             .unwrap_or(false);
-        anyhow::ensure!(has_onnx, "模型目录里没有 .onnx 文件: {}", self.model_dir.display());
+        anyhow::ensure!(
+            has_onnx,
+            "模型目录里没有 .onnx 文件: {}",
+            self.model_dir.display()
+        );
         anyhow::ensure!(
             self.num_trailing_blanks >= 4,
             "num_trailing_blanks 必须 >= 4（默认 1 会让「小蝶儿」误唤醒，见实测记录），当前 {}",
@@ -122,7 +126,7 @@ impl WakeListener {
         let cfg2 = cfg.clone();
 
         let handle = std::thread::Builder::new()
-            .name("diemeng-kws".into())
+            .name("morphofly-kws".into())
             .spawn(move || {
                 if let Err(e) = run_kws(cfg2, r, d.clone(), vf, &mut on_wake) {
                     tracing::error!(error = %e, "KWS 监听线程异常退出");
@@ -282,7 +286,12 @@ fn build_config(cfg: &KwsConfig) -> Result<sherpa_onnx::KeywordSpotterConfig> {
     c.model_config.transducer.encoder = Some(enc.to_string_lossy().to_string());
     c.model_config.transducer.decoder = Some(dec.to_string_lossy().to_string());
     c.model_config.transducer.joiner = Some(joi.to_string_lossy().to_string());
-    c.model_config.tokens = Some(cfg.model_dir.join("tokens.txt").to_string_lossy().to_string());
+    c.model_config.tokens = Some(
+        cfg.model_dir
+            .join("tokens.txt")
+            .to_string_lossy()
+            .to_string(),
+    );
     c.model_config.num_threads = 1;
     c.model_config.model_type = Some("zipformer2".into());
     c.keywords_file = Some(cfg.keywords_file.to_string_lossy().to_string());
@@ -321,7 +330,10 @@ where
             }
         }
         best.map(|(_, p)| p).ok_or_else(|| {
-            anyhow::anyhow!("模型目录里找不到 {prefix}*.onnx: {}", cfg.model_dir.display())
+            anyhow::anyhow!(
+                "模型目录里找不到 {prefix}*.onnx: {}",
+                cfg.model_dir.display()
+            )
         })
     };
     let encoder = find("encoder-")?;
@@ -354,10 +366,7 @@ where
         if rms > 0.005 {
             voice_frames.fetch_add(1, Ordering::Relaxed);
         }
-        let samples: Vec<f32> = frame
-            .iter()
-            .map(|&s| s as f32 / 32768.0)
-            .collect();
+        let samples: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
         anyhow::ensure!(
             samples.len() == frame_samples,
             "帧长必须是 {frame_samples}，实际 {}",
@@ -373,7 +382,9 @@ where
                 }
                 detections.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(keyword = %res.keyword, at_sec = res.start_time, "🔊 检测到唤醒词");
-                on_wake(WakeEvent::Detected { keyword: res.keyword });
+                on_wake(WakeEvent::Detected {
+                    keyword: res.keyword,
+                });
                 spotter.reset(&stream);
             }
         }
@@ -490,7 +501,10 @@ mod tests {
         assert!(e.contains("num_trailing_blanks"), "错误信息要指明参数: {e}");
 
         // 改成 4 就应该通过（证明这条校验是「只卡 <4」而不是别的）
-        let ok = KwsConfig { num_trailing_blanks: 4, ..c };
+        let ok = KwsConfig {
+            num_trailing_blanks: 4,
+            ..c
+        };
         assert!(ok.validate().is_ok(), "4 应该通过: {:?}", ok.validate());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -513,7 +527,13 @@ mod tests {
     #[test]
     fn wake_only_triggers_from_standby() {
         assert_eq!(wake_stimulus_for(OrbState::S0), Some(Stimulus::WakeWord));
-        for s in [OrbState::S1, OrbState::S2, OrbState::S3, OrbState::S4, OrbState::S5] {
+        for s in [
+            OrbState::S1,
+            OrbState::S2,
+            OrbState::S3,
+            OrbState::S4,
+            OrbState::S5,
+        ] {
             assert_eq!(wake_stimulus_for(s), None, "{s:?} 不该被重复唤醒");
         }
     }
@@ -534,18 +554,29 @@ mod tests {
         };
         assert!(!is_real_hit(&empty), "空 keyword 必须判为非命中");
 
-        let blank = sherpa_onnx::KeywordResult { keyword: "   ".into(), ..empty.clone() };
+        let blank = sherpa_onnx::KeywordResult {
+            keyword: "   ".into(),
+            ..empty.clone()
+        };
         assert!(!is_real_hit(&blank), "全空格也算空");
 
-        let real = sherpa_onnx::KeywordResult { keyword: "小蝶".into(), start_time: 1.1, ..empty };
+        let real = sherpa_onnx::KeywordResult {
+            keyword: "小蝶".into(),
+            start_time: 1.1,
+            ..empty
+        };
         assert!(is_real_hit(&real), "真命中要通过");
     }
 
     #[test]
     fn wake_event_equality() {
         assert_eq!(
-            WakeEvent::Detected { keyword: "小蝶".into() },
-            WakeEvent::Detected { keyword: "小蝶".into() }
+            WakeEvent::Detected {
+                keyword: "小蝶".into()
+            },
+            WakeEvent::Detected {
+                keyword: "小蝶".into()
+            }
         );
     }
 }

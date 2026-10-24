@@ -11,12 +11,12 @@
 //!
 //! 这就是开发方案 4.1「本地先停，服务端后确认」的真实实现。
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::audio::playback::AudioPlayer;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::spectrum::{rms_i16, rms_to_visual};
-use diemeng_core::tools::tool_defs;
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::audio::playback::AudioPlayer;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::spectrum::{rms_i16, rms_to_visual};
+use morphofly_core::tools::tool_defs;
+use morphofly_core::Config;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -90,13 +90,17 @@ async fn main() -> anyhow::Result<()> {
     let stop_flag = Arc::new(AtomicBool::new(false));
     let first_audio_ms = Arc::new(AtomicU64::new(u64::MAX));
     let speech_started_at = Arc::new(std::sync::Mutex::new(None::<Instant>));
-    let last_speech_stop: Arc<std::sync::Mutex<Option<Instant>>> =
+    let _last_speech_stop: Arc<std::sync::Mutex<Option<Instant>>> =
         Arc::new(std::sync::Mutex::new(None));
 
     // --- 任务1：采集 → WS ---
     let mic_rx = mic.subscribe();
     let c_push = client.clone();
-    let (f1, e1, s1) = (mic_frames.clone(), mic_energy_peak.clone(), stop_flag.clone());
+    let (f1, e1, s1) = (
+        mic_frames.clone(),
+        mic_energy_peak.clone(),
+        stop_flag.clone(),
+    );
     let lv1 = last_voiced_at.clone();
     let push_task = tokio::spawn(async move {
         let mut rx = mic_rx;
@@ -195,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
     // --- 主循环：打印状态 ---
     let start = Instant::now();
     let mut last_print = Instant::now();
-    let mut transcript_done_at: Option<Instant> = None;
+    let _transcript_done_at: Option<Instant> = None;
     while start.elapsed().as_secs() < seconds {
         tokio::time::sleep(Duration::from_millis(200)).await;
         if last_print.elapsed() >= Duration::from_millis(700) {

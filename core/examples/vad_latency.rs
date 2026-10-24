@@ -7,10 +7,10 @@
 //! 实现要点：推流用独立任务，主循环只收事件 —— 避免 select! 里文件流结束后
 //! 忙循环把事件饿死（2026-10-24 踩过这个坑）。
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::spectrum::rms_i16;
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::spectrum::rms_i16;
+use morphofly_core::Config;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -103,7 +103,9 @@ async fn main() -> anyhow::Result<()> {
                 let b = au.duration_since(lv_at).as_millis() as u64;
                 vad_stop.push(a);
                 e2e.push(b);
-                println!("[vad] 第 {i}/{rounds} 轮：最后有声帧 → speech_stopped {a}ms；→ 首个音频 {b}ms");
+                println!(
+                    "[vad] 第 {i}/{rounds} 轮：最后有声帧 → speech_stopped {a}ms；→ 首个音频 {b}ms"
+                );
             }
             (Some(st), None) => {
                 let a = st.duration_since(lv_at).as_millis() as u64;

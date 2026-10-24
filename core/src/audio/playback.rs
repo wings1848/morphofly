@@ -27,9 +27,7 @@ use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate
 
 use super::capture::LinearResampler;
 use super::ring::SampleRing;
-use super::{
-    AudioError, DOWNLINK_SAMPLE_RATE, JITTER_MAX_MS, f32_to_i16, pcm16_to_f32,
-};
+use super::{f32_to_i16, pcm16_to_f32, AudioError, DOWNLINK_SAMPLE_RATE, JITTER_MAX_MS};
 
 /// 环内一次批量取样的默认块大小（减少锁竞争）。
 const REFILL_BLOCK: usize = 512;
@@ -268,7 +266,8 @@ impl AppendConverter {
 
         self.scratch.clear();
         self.scratch.reserve(pcm_i16.len());
-        self.scratch.extend(pcm_i16.iter().map(|&s| super::i16_to_f32(s)));
+        self.scratch
+            .extend(pcm_i16.iter().map(|&s| super::i16_to_f32(s)));
 
         let mut out = Vec::new();
         if let Some((_, resampler)) = self.state.as_mut() {
@@ -299,7 +298,7 @@ pub struct OutputFormat {
 ///
 /// 用法：
 /// ```no_run
-/// # use diemeng_core::audio::playback::AudioPlayer;
+/// # use morphofly_core::audio::playback::AudioPlayer;
 /// let p = AudioPlayer::open().expect("打开扬声器"); // 无设备时 Err，不 panic
 /// p.append_pcm16(&vec![0i16; 480], 24_000);         // 20ms @24k
 /// assert!(p.queued_frames() > 0);
@@ -363,7 +362,7 @@ impl AudioPlayer {
             }
             _ => DeviceSinkBuilder::open_default_sink(),
         }
-            .map_err(|e| map_sink_error(e, true))?;
+        .map_err(|e| map_sink_error(e, true))?;
         sink.log_on_drop(false); // 别在 stderr 刷 "Dropping DeviceSink"
 
         let cfg = *sink.config();
@@ -572,7 +571,7 @@ mod tests {
     fn queue_bounded_overwrites_oldest() {
         let q = PlaybackQueue::new(1_000, 10); // 10 样本
         assert_eq!(q.capacity(), 10);
-        q.push(&vec![1.0f32; 25]);
+        q.push(&[1.0f32; 25]);
         assert_eq!(q.queued_frames(), 10, "有界：最多 10");
         assert_eq!(q.overwritten(), 15);
         // 留下的是最新的 10 个（全是 1.0，这里再验证顺序）
@@ -623,7 +622,7 @@ mod tests {
         let mut src = RingSource::new(q.clone(), 24_000);
 
         q.push(&vec![0.9f32; 2_000]); // 远超 REFILL_BLOCK，会预取
-        // 先取一个，触发预取
+                                      // 先取一个，触发预取
         assert_eq!(src.next(), Some(0.9));
 
         q.stop_now();

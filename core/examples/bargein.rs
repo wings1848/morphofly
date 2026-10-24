@@ -15,14 +15,13 @@
 //!  3. 立刻推 interrupt 音频
 //!  4. 量「SpeechStarted 到达 → 队列清零」耗时
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::audio::playback::AudioPlayer;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::audio::playback::AudioPlayer;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::Config;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let player = Arc::new(AudioPlayer::open()?);
     let client = Arc::new(RealtimeClient::connect(&cfg).await?);
     let mut ev_rx = client.events();
-    client.send_tools(&diemeng_core::tools::tool_defs())?;
+    client.send_tools(&morphofly_core::tools::tool_defs())?;
 
     let played = Arc::new(AtomicU64::new(0));
     let stop_us = Arc::new(AtomicU64::new(u64::MAX));
@@ -85,16 +84,22 @@ async fn main() -> anyhow::Result<()> {
                             qb.store(queued, Ordering::Relaxed);
                             player2.stop_now();
                             let us = t.elapsed().as_micros() as u64;
-                            let _ = su.compare_exchange(u64::MAX, us, Ordering::Relaxed, Ordering::Relaxed);
+                            let _ = su.compare_exchange(
+                                u64::MAX,
+                                us,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            );
                             it.store(true, Ordering::Relaxed);
-                            println!("[bargein] ★ 打断生效：清空 {queued} 帧，耗时 {:.2}ms", us as f64 / 1000.0);
+                            println!(
+                                "[bargein] ★ 打断生效：清空 {queued} 帧，耗时 {:.2}ms",
+                                us as f64 / 1000.0
+                            );
                         }
                     }
                 }
-                RealtimeEvent::ResponseDone { .. } => {
-                    if it.load(Ordering::Relaxed) {
-                        break;
-                    }
+                RealtimeEvent::ResponseDone { .. } if it.load(Ordering::Relaxed) => {
+                    break;
                 }
                 _ => {}
             }
@@ -123,10 +128,14 @@ async fn main() -> anyhow::Result<()> {
 
     // 等模型真的开始说话（有 AudioDelta 进队列）
     let wait_start = Instant::now();
-    while !model_speaking.load(Ordering::Relaxed) && wait_start.elapsed() < Duration::from_secs(20) {
+    while !model_speaking.load(Ordering::Relaxed) && wait_start.elapsed() < Duration::from_secs(20)
+    {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    anyhow::ensure!(model_speaking.load(Ordering::Relaxed), "模型一直没开口，没法测打断");
+    anyhow::ensure!(
+        model_speaking.load(Ordering::Relaxed),
+        "模型一直没开口，没法测打断"
+    );
     // 让它多说一会儿，队列里攒点东西
     tokio::time::sleep(Duration::from_millis(1200)).await;
     println!(
@@ -170,7 +179,11 @@ async fn main() -> anyhow::Result<()> {
         println!("[bargein]    可能原因：服务端 VAD 要 1.6s 才判定，而模型那时已经说完了");
         return Ok(());
     }
-    println!("[bargein] 队列原有 {} 帧，清空耗时 {:.2}ms", queued_before.load(Ordering::Relaxed), us as f64 / 1000.0);
+    println!(
+        "[bargein] 队列原有 {} 帧，清空耗时 {:.2}ms",
+        queued_before.load(Ordering::Relaxed),
+        us as f64 / 1000.0
+    );
     println!("[bargein] ✅ 打断生效");
     Ok(())
 }

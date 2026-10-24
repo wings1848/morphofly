@@ -93,7 +93,10 @@ pub fn assert_tool_invariant(tools: &[Value]) -> Result<(), String> {
     if names != expect {
         return Err(format!("工具名不匹配：{names:?} != {expect:?}"));
     }
-    if tools.iter().any(|t| t.get("type").and_then(|v| v.as_str()) != Some("function")) {
+    if tools
+        .iter()
+        .any(|t| t.get("type").and_then(|v| v.as_str()) != Some("function"))
+    {
         return Err("所有工具 type 必须是 function".into());
     }
     Ok(())
@@ -118,8 +121,18 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
             .collect();
-        for forbidden in ["bash", "read_file", "write_file", "run_command", "ls", "edit"] {
-            assert!(!granted.iter().any(|g| g == forbidden), "不允许出现 {forbidden}");
+        for forbidden in [
+            "bash",
+            "read_file",
+            "write_file",
+            "run_command",
+            "ls",
+            "edit",
+        ] {
+            assert!(
+                !granted.iter().any(|g| g == forbidden),
+                "不允许出现 {forbidden}"
+            );
         }
     }
 
@@ -144,13 +157,16 @@ mod tests {
         let req = d["parameters"]["required"].as_array().unwrap();
         assert!(req.iter().any(|v| v == "task"));
         // task 的描述必须强调自包含（验收 A6）
-        let desc = d["parameters"]["properties"]["task"]["description"].as_str().unwrap();
+        let desc = d["parameters"]["properties"]["task"]["description"]
+            .as_str()
+            .unwrap();
         assert!(desc.contains("自包含"));
     }
 
     #[test]
     fn voice_tool_payloads_serialize() {
-        let payload = json!({"name": DELEGATE_TASK, "task": "把 README 补一段怎么跑", "dir": "/tmp"});
+        let payload =
+            json!({"name": DELEGATE_TASK, "task": "把 README 补一段怎么跑", "dir": "/tmp"});
         let s = serde_json::to_string(&payload).unwrap();
         assert!(s.contains("delegate_task"));
     }

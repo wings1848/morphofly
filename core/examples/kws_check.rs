@@ -13,11 +13,13 @@
 //! - 负样本（04_/05_/10_/11_~/15_）不应唤醒
 //! - 末尾打印召回/误唤醒统计
 
-use diemeng_core::kws::{detect_in_file, KwsConfig};
+use morphofly_core::kws::{detect_in_file, KwsConfig};
 use std::path::{Path, PathBuf};
 
 /// 正样本（应该唤醒）：含「小蝶」的唤醒句
-const POSITIVE: &[&str] = &["01_", "02_", "03_", "06_", "07_", "08_", "09_", "16_", "17_"];
+const POSITIVE: &[&str] = &[
+    "01_", "02_", "03_", "06_", "07_", "08_", "09_", "16_", "17_",
+];
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -43,12 +45,10 @@ fn main() -> anyhow::Result<()> {
             other => targets.push(PathBuf::from(other)),
         }
     }
-    let model_dir = model_dir.unwrap_or_else(|| {
-        diemeng_core::config::default_data_dir().join("kws-model")
-    });
-    let keywords = keywords.unwrap_or_else(|| {
-        diemeng_core::config::default_data_dir().join("keywords.txt")
-    });
+    let model_dir =
+        model_dir.unwrap_or_else(|| morphofly_core::config::default_data_dir().join("kws-model"));
+    let keywords =
+        keywords.unwrap_or_else(|| morphofly_core::config::default_data_dir().join("keywords.txt"));
     anyhow::ensure!(!targets.is_empty(), "至少给一个音频文件或目录");
 
     let cfg = KwsConfig {
@@ -59,7 +59,10 @@ fn main() -> anyhow::Result<()> {
     };
     println!("[kws_check] 模型: {}", cfg.model_dir.display());
     println!("[kws_check] 关键词: {}", cfg.keywords_file.display());
-    println!("[kws_check] num_trailing_blanks = {}", cfg.num_trailing_blanks);
+    println!(
+        "[kws_check] num_trailing_blanks = {}",
+        cfg.num_trailing_blanks
+    );
 
     // 收集音频文件
     let mut files: Vec<PathBuf> = Vec::new();
@@ -87,7 +90,11 @@ fn main() -> anyhow::Result<()> {
     let mut neg_total = 0;
 
     for f in &files {
-        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = f
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let should_wake = POSITIVE.iter().any(|p| name.starts_with(p));
         let hits = match detect_in_file(&cfg, f) {
             Ok(h) => h,
@@ -103,10 +110,18 @@ fn main() -> anyhow::Result<()> {
             .map(|(t, k)| format!("{t:.1}s {k}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let expect = if should_wake { "应唤醒" } else { "不应唤醒" };
+        let expect = if should_wake {
+            "应唤醒"
+        } else {
+            "不应唤醒"
+        };
         println!(
             "{mark} {name:<32} {expect:<8} {}",
-            if woke { format!("[{detail}]") } else { String::new() }
+            if woke {
+                format!("[{detail}]")
+            } else {
+                String::new()
+            }
         );
         if should_wake {
             pos_total += 1;
@@ -124,15 +139,29 @@ fn main() -> anyhow::Result<()> {
     println!("\n===== 统计 =====");
     println!(
         "召回：{pos_hit}/{pos_total} = {:.0}%",
-        if pos_total > 0 { pos_hit as f32 / pos_total as f32 * 100.0 } else { 0.0 }
+        if pos_total > 0 {
+            pos_hit as f32 / pos_total as f32 * 100.0
+        } else {
+            0.0
+        }
     );
     println!(
         "误唤醒：{neg_hit}/{neg_total} = {:.0}%",
-        if neg_total > 0 { neg_hit as f32 / neg_total as f32 * 100.0 } else { 0.0 }
+        if neg_total > 0 {
+            neg_hit as f32 / neg_total as f32 * 100.0
+        } else {
+            0.0
+        }
     );
     anyhow::ensure!(pos_total > 0 && neg_total > 0, "样本不足，无法判定");
-    anyhow::ensure!(pos_hit == pos_total, "召回不是 100%（{pos_hit}/{pos_total}）");
-    anyhow::ensure!(neg_hit == 0, "有误唤醒（{neg_hit}/{neg_total}）—— 检查 num_trailing_blanks 是否 >= 4");
+    anyhow::ensure!(
+        pos_hit == pos_total,
+        "召回不是 100%（{pos_hit}/{pos_total}）"
+    );
+    anyhow::ensure!(
+        neg_hit == 0,
+        "有误唤醒（{neg_hit}/{neg_total}）—— 检查 num_trailing_blanks 是否 >= 4"
+    );
     println!("✅ Rust 侧 KWS 与 Python 侧结果一致：全召回、零误唤醒");
     Ok(())
 }

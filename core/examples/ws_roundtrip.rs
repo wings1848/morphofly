@@ -13,11 +13,9 @@
 //!
 //! 输出 JSON 到 /tmp/diemeng-ws-roundtrip.json（不进仓库），供断言脚本用。
 
-use diemeng_core::realtime::{
-    ensure_crypto_provider, encode_pcm16_base64, RealtimeClient, RealtimeEvent,
-};
-use diemeng_core::tools::tool_defs;
-use diemeng_core::Config;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::tools::tool_defs;
+use morphofly_core::Config;
 use std::time::{Duration, Instant};
 
 fn main() -> anyhow::Result<()> {
@@ -67,16 +65,20 @@ async fn decode_to_uplink(path: &str) -> anyhow::Result<Vec<i16>> {
         let a = mono.get(idx).copied().unwrap_or(0.0);
         let b = mono.get(idx + 1).copied().unwrap_or(a);
         let v = a + (b - a) * frac;
-        out.push((v.clamp(-1.0, 1.0) * 32768.0).round().clamp(-32768.0, 32767.0) as i16);
+        out.push(
+            (v.clamp(-1.0, 1.0) * 32768.0)
+                .round()
+                .clamp(-32768.0, 32767.0) as i16,
+        );
     }
     println!(
         "[ws_roundtrip] 解码 {}：{}Hz {}ch {} 采样 → 16k mono {} 采样（{:.2}s）",
-         path,
-         rate,
-         channels,
-         frames,
-         out.len(),
-         out.len() as f32 / 16_000.0
+        path,
+        rate,
+        channels,
+        frames,
+        out.len(),
+        out.len() as f32 / 16_000.0
     );
     Ok(out)
 }
@@ -86,7 +88,10 @@ async fn run(path: &str) -> anyhow::Result<()> {
     let cfg = Config::load()?;
     println!(
         "[ws_roundtrip] provider={} model={} key={} endpoint={}",
-        cfg.realtime.provider, cfg.realtime.model, cfg.masked_key(), cfg.realtime.endpoint
+        cfg.realtime.provider,
+        cfg.realtime.model,
+        cfg.masked_key(),
+        cfg.realtime.endpoint
     );
 
     let pcm = decode_to_uplink(path).await?;
@@ -103,12 +108,15 @@ async fn run(path: &str) -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let ev = match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Err(_) => break,                       // 没等到 session.created，后面靠 response 判
-            Ok(Err(_)) => break,                   // 通道关闭
+            Err(_) => break,     // 没等到 session.created，后面靠 response 判
+            Ok(Err(_)) => break, // 通道关闭
             Ok(Ok(e)) => e,
         };
         match ev {
-            RealtimeEvent::SessionCreated { session_id: sid, model } => {
+            RealtimeEvent::SessionCreated {
+                session_id: sid,
+                model,
+            } => {
                 session_id = sid;
                 session_model = model;
                 break;
@@ -128,7 +136,7 @@ async fn run(path: &str) -> anyhow::Result<()> {
     // 下发 4 个工具（不变量 I1）
     let tools = tool_defs();
     assert!(
-        diemeng_core::tools::assert_tool_invariant(&tools).is_ok(),
+        morphofly_core::tools::assert_tool_invariant(&tools).is_ok(),
         "工具不变量被破坏"
     );
     client.send_tools(&tools)?;
@@ -136,7 +144,7 @@ async fn run(path: &str) -> anyhow::Result<()> {
 
     // 按 20ms 帧推流
     let t_send = Instant::now();
-    let frame = diemeng_core::FRAME_SAMPLES;
+    let frame = morphofly_core::FRAME_SAMPLES;
     let mut sent = 0usize;
     for chunk in pcm.chunks(frame) {
         client.send_audio(chunk)?;
@@ -147,7 +155,7 @@ async fn run(path: &str) -> anyhow::Result<()> {
     println!("[ws_roundtrip] 推流 {sent} 采样，耗时 {send_ms}ms");
 
     // 服务端 VAD：推完后补一段静音（1.5s）让它判定「说完了」并自动开一轮
-    let silence = vec![0i16; diemeng_core::FRAME_SAMPLES];
+    let silence = vec![0i16; morphofly_core::FRAME_SAMPLES];
     for _ in 0..75 {
         client.send_audio(&silence)?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -202,7 +210,9 @@ async fn run(path: &str) -> anyhow::Result<()> {
                 let _ = std::io::stdout().flush();
                 transcript.push_str(&text);
             }
-            RealtimeEvent::ToolCall { name, arguments, .. } => {
+            RealtimeEvent::ToolCall {
+                name, arguments, ..
+            } => {
                 println!("\n[ws_roundtrip] 工具调用 {name}({arguments})");
             }
             RealtimeEvent::ResponseDone { status } => {
@@ -231,8 +241,8 @@ async fn run(path: &str) -> anyhow::Result<()> {
         "stop": stop,
         "errors": errors,
     });
-    let p = std::env::var("ROUNDTRIP_OUT")
-        .unwrap_or_else(|_| "/tmp/diemeng-ws-roundtrip.json".into());
+    let p =
+        std::env::var("ROUNDTRIP_OUT").unwrap_or_else(|_| "/tmp/diemeng-ws-roundtrip.json".into());
     std::fs::write(&p, serde_json::to_string_pretty(&out)?)?;
 
     println!(
@@ -244,8 +254,10 @@ async fn run(path: &str) -> anyhow::Result<()> {
     );
     client.close();
 
-    anyhow::ensure!(audio_bytes > 0 || !transcript.trim().is_empty(),
-        "既没收到音频也没收到文字（stop={stop}）");
+    anyhow::ensure!(
+        audio_bytes > 0 || !transcript.trim().is_empty(),
+        "既没收到音频也没收到文字（stop={stop}）"
+    );
     println!("[ws_roundtrip] ✅ WS 往返成功，结果已写 {p}");
     Ok(())
 }

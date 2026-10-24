@@ -5,9 +5,9 @@
 //!
 //! 用法：cargo run -q -p morphofly-core --example latency2 -- --rounds 8 --file testdata/audio/04_ack_zai.mp3
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::Config;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,9 +47,15 @@ async fn main() -> anyhow::Result<()> {
         let push = tokio::spawn(async move {
             loop {
                 match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-                    Ok(Ok(f)) => { let _ = c.send_audio(&f); }
+                    Ok(Ok(f)) => {
+                        let _ = c.send_audio(&f);
+                    }
                     Ok(Err(_)) => break,
-                    Err(_) => { if mic.is_file_finished() { break; } }
+                    Err(_) => {
+                        if mic.is_file_finished() {
+                            break;
+                        }
+                    }
                 }
             }
             t0.elapsed().as_millis() as u64
@@ -64,8 +70,16 @@ async fn main() -> anyhow::Result<()> {
                 Ok(Ok(e)) => e,
             };
             match evv {
-                RealtimeEvent::SpeechStopped => { if t_stop.is_none() { t_stop = Some(Instant::now()); } }
-                RealtimeEvent::AudioDelta { .. } => { if t_audio.is_none() { t_audio = Some(Instant::now()); } }
+                RealtimeEvent::SpeechStopped => {
+                    if t_stop.is_none() {
+                        t_stop = Some(Instant::now());
+                    }
+                }
+                RealtimeEvent::AudioDelta { .. } => {
+                    if t_audio.is_none() {
+                        t_audio = Some(Instant::now());
+                    }
+                }
                 RealtimeEvent::ResponseDone { .. } => break,
                 _ => {}
             }
@@ -81,8 +95,11 @@ async fn main() -> anyhow::Result<()> {
             (Some(s), Some(a)) => {
                 let v = s.duration_since(t_push_done).as_millis() as i64;
                 let e = a.duration_since(t_push_done).as_millis() as i64;
-                vad.push(v); e2e.push(e);
-                println!("[lat2] 第 {i}/{rounds} 轮：推流完 → VAD判完 {v:>6}ms，→ 首个音频 {e:>6}ms");
+                vad.push(v);
+                e2e.push(e);
+                println!(
+                    "[lat2] 第 {i}/{rounds} 轮：推流完 → VAD判完 {v:>6}ms，→ 首个音频 {e:>6}ms"
+                );
             }
             _ => println!("[lat2] 第 {i}/{rounds} 轮：没触发（推流 {pushed_ms}ms）"),
         }
@@ -90,12 +107,21 @@ async fn main() -> anyhow::Result<()> {
     }
 
     fn stat(v: &mut Vec<i64>, n: &str) {
-        if v.is_empty() { println!("{n}: 无数据"); return; }
+        if v.is_empty() {
+            println!("{n}: 无数据");
+            return;
+        }
         v.sort_unstable();
         let len = v.len();
         let p = |q: f64| v[((len as f64 - 1.0) * q).round() as usize];
-        println!("{n}: n={len} 均值 {}ms 最小 {}ms 中位 {}ms p90 {}ms 最大 {}ms",
-            v.iter().sum::<i64>() as f64 / len as f64, v[0], p(0.5), p(0.9), v[len-1]);
+        println!(
+            "{n}: n={len} 均值 {}ms 最小 {}ms 中位 {}ms p90 {}ms 最大 {}ms",
+            v.iter().sum::<i64>() as f64 / len as f64,
+            v[0],
+            p(0.5),
+            p(0.9),
+            v[len - 1]
+        );
     }
     println!("\n===== 从「推流结束」算起 =====");
     stat(&mut vad, "→ VAD 判定说完");

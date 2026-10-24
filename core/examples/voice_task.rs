@@ -7,13 +7,13 @@
 //!   cargo run -q -p morphofly-core --example voice_task -- --file testdata/audio/07_cmd_fix_bug.mp3
 //!   cargo run -q -p morphofly-core --example voice_task -- --text "列一下 /tmp 里有什么"
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::dispatch::Dispatcher;
-use diemeng_core::dsh::DshBridge;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::tasks::TaskStore;
-use diemeng_core::tools::tool_defs;
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::dispatch::Dispatcher;
+use morphofly_core::dsh::DshBridge;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::tasks::TaskStore;
+use morphofly_core::tools::tool_defs;
+use morphofly_core::Config;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let cfg = Config::load()?;
-    diemeng_core::config::ensure_data_dir(&cfg)?;
+    morphofly_core::config::ensure_data_dir(&cfg)?;
     let store = Arc::new(tokio::sync::Mutex::new(TaskStore::open(
         cfg.task_store_path(),
     )?));
@@ -83,7 +83,11 @@ async fn main() -> anyhow::Result<()> {
                 RealtimeEvent::SpeechStarted => println!("{ms:>6}ms  用户开口"),
                 RealtimeEvent::SpeechStopped => println!("{ms:>6}ms  用户说完"),
                 RealtimeEvent::TranscriptDelta { text } => println!("{ms:>6}ms  它说: {text}"),
-                RealtimeEvent::ToolCall { call_id, name, arguments } => {
+                RealtimeEvent::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
                     println!("{ms:>6}ms  🔧 工具调用 {name}({arguments})");
                     tool_calls.push((call_id, name, arguments));
                 }
@@ -96,7 +100,8 @@ async fn main() -> anyhow::Result<()> {
                             match dispatcher.dispatch(&name, &args).await {
                                 Ok(r) => {
                                     println!("[voice_task] → 会说：{}", r.speech);
-                                    if let Some(id) = r.data.get("task_id").and_then(|x| x.as_str()) {
+                                    if let Some(id) = r.data.get("task_id").and_then(|x| x.as_str())
+                                    {
                                         dispatched.push(id.to_string());
                                     }
                                     client.send_function_call_output(&call_id, &r.speech)?;
@@ -121,14 +126,19 @@ async fn main() -> anyhow::Result<()> {
                     let _ = pcm;
                 }
                 RealtimeEvent::AudioDone => println!("{ms:>6}ms  audio.done"),
-                RealtimeEvent::SessionCreated { model, .. } => println!("{ms:>6}ms  session={model}"),
+                RealtimeEvent::SessionCreated { model, .. } => {
+                    println!("{ms:>6}ms  session={model}")
+                }
                 RealtimeEvent::SessionUpdated => println!("{ms:>6}ms  会话配置已更新"),
                 other => {
                     println!("{ms:>6}ms  · {}", other.kind());
                 }
             }
         }
-        println!("[voice_task] 事件循环结束，已派 {} 个任务", dispatched.len());
+        println!(
+            "[voice_task] 事件循环结束，已派 {} 个任务",
+            dispatched.len()
+        );
 
         // ---- 阶段 3：主动汇报 ----
         // 任务干完后，不等用户问，主动把结果说出来。
@@ -143,7 +153,11 @@ async fn main() -> anyhow::Result<()> {
                     for id in &dispatched {
                         if let Some(t) = s.get(id) {
                             if t.status.is_terminal() {
-                                finished = Some((t.id.clone(), t.status.spoken().to_string(), t.summary.clone()));
+                                finished = Some((
+                                    t.id.clone(),
+                                    t.status.spoken().to_string(),
+                                    t.summary.clone(),
+                                ));
                                 break;
                             }
                         }
@@ -206,7 +220,9 @@ async fn fs_mode_text(
     };
     println!("[voice_task] 直接派活: {task}");
     let args = serde_json::json!({"task": task, "dir": std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())});
-    let r = dispatcher.dispatch("delegate_task", &args.to_string()).await?;
+    let r = dispatcher
+        .dispatch("delegate_task", &args.to_string())
+        .await?;
     println!("[voice_task] → 语音会说：{}", r.speech);
     let task_id = r.data["task_id"].as_str().unwrap_or("").to_string();
 

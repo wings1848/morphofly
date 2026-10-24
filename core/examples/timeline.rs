@@ -4,10 +4,10 @@
 //!   set -a; . ~/.diemeng/credentials; set +a
 //!   cargo run -q -p morphofly-core --example timeline -- testdata/audio/04_ack_zai.mp3
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::spectrum::rms_i16;
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::spectrum::rms_i16;
+use morphofly_core::Config;
 use std::time::{Duration, Instant};
 
 #[tokio::main]
@@ -19,13 +19,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
     ensure_crypto_provider();
 
-    let path = std::env::args().nth(1).unwrap_or_else(|| "testdata/audio/04_ack_zai.mp3".into());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "testdata/audio/04_ack_zai.mp3".into());
     let cfg = Config::load()?;
     let mic = AudioCapture::file_source(&path)?;
     let mut mic_rx = mic.subscribe();
     let client = RealtimeClient::connect(&cfg).await?;
     let mut ev_rx = client.events();
-    client.send_tools(&diemeng_core::tools::tool_defs())?;
+    client.send_tools(&morphofly_core::tools::tool_defs())?;
 
     let t0 = Instant::now();
     let mut last_voiced: Option<Instant> = None;
@@ -63,11 +65,14 @@ async fn main() -> anyhow::Result<()> {
             RealtimeEvent::AudioDelta { pcm, .. } => {
                 if first_audio.is_none() {
                     first_audio = Some(now);
-                    println!("{ms:>6}ms  ★ 第一个 response.audio.delta（{} 采样）", pcm.len());
+                    println!(
+                        "{ms:>6}ms  ★ 第一个 response.audio.delta（{} 采样）",
+                        pcm.len()
+                    );
                 }
             }
             RealtimeEvent::TranscriptDelta { text } => {
-                print!("{ms:>6}ms  transcript: {text}\n");
+                println!("{ms:>6}ms  transcript: {text}");
             }
             RealtimeEvent::ResponseDone { status } => {
                 println!("{ms:>6}ms  response.done {status}");
@@ -79,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 单独再统计上行帧的「最后一个有声帧」时刻
-    let mut mic2 = AudioCapture::file_source(&path)?;
+    let mic2 = AudioCapture::file_source(&path)?;
     let mut rx2 = mic2.subscribe();
     let t1 = Instant::now();
     while let Ok(Ok(frame)) = tokio::time::timeout(Duration::from_millis(800), rx2.recv()).await {
@@ -97,7 +102,10 @@ async fn main() -> anyhow::Result<()> {
         last_frame_at.map(|t| t.duration_since(t1).as_millis())
     );
     if let (Some(fa), Some(lv)) = (first_audio, last_voiced) {
-        println!("★ 最后有声帧 → 首个音频 = {}ms", fa.duration_since(lv).as_millis());
+        println!(
+            "★ 最后有声帧 → 首个音频 = {}ms",
+            fa.duration_since(lv).as_millis()
+        );
     }
     client.close();
     Ok(())

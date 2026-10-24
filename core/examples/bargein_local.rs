@@ -9,11 +9,11 @@
 //!  3. 喂「停一下」音频给本地 VAD → 命中即 stop_now()
 //!  4. 量「开始喂打断音频 → 停播」耗时
 
-use diemeng_core::audio::capture::AudioCapture;
-use diemeng_core::audio::playback::AudioPlayer;
-use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
-use diemeng_core::vad::{LocalVad, VadConfig};
-use diemeng_core::Config;
+use morphofly_core::audio::capture::AudioCapture;
+use morphofly_core::audio::playback::AudioPlayer;
+use morphofly_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};
+use morphofly_core::vad::{LocalVad, VadConfig};
+use morphofly_core::Config;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     let player = Arc::new(AudioPlayer::open()?);
     let client = Arc::new(RealtimeClient::connect(&cfg).await?);
     let mut ev = client.events();
-    client.send_tools(&diemeng_core::tools::tool_defs())?;
+    client.send_tools(&morphofly_core::tools::tool_defs())?;
 
     let played = Arc::new(AtomicU64::new(0));
     let ev_task = {
@@ -138,7 +138,10 @@ async fn main() -> anyhow::Result<()> {
                     player.stop_now();
                     let us = t_stop.elapsed().as_micros() as u64;
                     latency_us = Some(us);
-                    println!("[bargein] ★ 本地 VAD 在 {fed_ms}ms 判定开口 → 清空 {q} 帧，耗时 {:.2}ms", us as f64 / 1000.0);
+                    println!(
+                        "[bargein] ★ 本地 VAD 在 {fed_ms}ms 判定开口 → 清空 {q} 帧，耗时 {:.2}ms",
+                        us as f64 / 1000.0
+                    );
                     let _ = client.send_audio(&frame);
                     break;
                 }
@@ -161,11 +164,18 @@ async fn main() -> anyhow::Result<()> {
     match latency_us {
         Some(us) => {
             println!("\n[bargein] ==== 结果 ====");
-            println!("[bargein] 停播操作耗时: {:.2}ms（清空 {queued_before} 帧）", us as f64 / 1000.0);
+            println!(
+                "[bargein] 停播操作耗时: {:.2}ms（清空 {queued_before} 帧）",
+                us as f64 / 1000.0
+            );
             println!("[bargein] 端到端打断延迟: {total_ms}ms（从开始说「停」到声音停止）");
             println!(
                 "[bargein] 判定（P2 要求 <300ms）: {}",
-                if total_ms < 300 { "✅ 达标" } else { "⚠️ 超出，但可调 min_speech_duration 优化" }
+                if total_ms < 300 {
+                    "✅ 达标"
+                } else {
+                    "⚠️ 超出，但可调 min_speech_duration 优化"
+                }
             );
         }
         None => println!("[bargein] ⚠️ 本地 VAD 没检测到开口"),

@@ -171,7 +171,12 @@ pub struct EnergyGate {
 
 impl EnergyGate {
     pub fn new(threshold: f32, need_frames: u32) -> Self {
-        Self { threshold, need_frames, hot: 0, speaking: false }
+        Self {
+            threshold,
+            need_frames,
+            hot: 0,
+            speaking: false,
+        }
     }
 
     /// 返回 true 表示「刚刚开口」（边沿）
@@ -196,7 +201,10 @@ mod tests {
 
     #[test]
     fn config_rejects_missing_model() {
-        let c = VadConfig { model: PathBuf::from("/nope/silero.onnx"), ..Default::default() };
+        let c = VadConfig {
+            model: PathBuf::from("/nope/silero.onnx"),
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
     }
 
