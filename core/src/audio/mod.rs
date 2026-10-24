@@ -16,10 +16,12 @@
 
 pub mod aec;
 pub mod capture;
+pub mod device;
 pub mod playback;
 pub mod ring;
 
 pub use capture::{AudioCapture, CaptureConfig, CaptureFormat, CapturePipeline, LinearResampler};
+pub use device::DeviceEntry;
 pub use playback::{AppendConverter, AudioPlayer, OutputFormat, PlaybackQueue, RingSource};
 pub use ring::SampleRing;
 

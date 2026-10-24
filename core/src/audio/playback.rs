@@ -341,34 +341,44 @@ impl AudioPlayer {
         Self::open_with_rate(DOWNLINK_SAMPLE_RATE)
     }
 
-    /// 指定 nominal 采样率打开默认输出设备。
+    /// 指定 nominal 采样率打开输出设备。
+    ///
+    /// 设备选择顺序：
+    /// 1. 环境变量 `MORPHOFLY_OUTPUT_DEVICE`（配置文件的 `[audio] output_device` 会在
+    ///    启动时映射到这个变量）→ 按名字精确/子串匹配，见 [`super::device`]；
+    /// 2. 都没配或找不到 → 系统默认 sink。
+    ///
+    /// ⚠️ 为什么不能只信「系统默认」：2026-10-25 真机踩坑 —— 默认 sink 被改回板载
+    /// 喇叭（不出声），模型回了 17 秒语音用户一个字都听不到，日志却完全正常。
+    /// 也不能只靠外部先改默认 sink（`tools/pc_audio_route.sh` 那套）：别的东西会再改回去。
     pub fn open_with_rate(nominal_rate: u32) -> Result<Self, AudioError> {
         if nominal_rate == 0 {
             return Err(AudioError::InvalidConfig("nominal 采样率为 0".into()));
         }
-        // 设备选择：优先环境变量 MORPHOFLY_OUTPUT_DEVICE（PulseAudio/PipeWire sink 名），
-        // 否则用系统默认 sink。
-        //
-        // ⚠️ 2026-10-24 审计发现：wings-pc 的默认 sink 曾是 `platform-snd_aloop`
-        // （虚拟回环设备，声音不会真正从扬声器出来）。所有「真正出声」的说法
-        // 只有在确认 sink 是物理设备时才成立。见 docs/音频路由.md。
-        let mut sink = match std::env::var("MORPHOFLY_OUTPUT_DEVICE") {
-            Ok(name) if !name.trim().is_empty() => {
-                match DeviceSinkBuilder::from_default_device() {
-                    Ok(_) => DeviceSinkBuilder::open_default_sink(),
-                    Err(_) => DeviceSinkBuilder::open_default_sink(),
+        let mut sink = match super::device::wanted_output() {
+            Some(want) => match super::device::find_output(&want) {
+                Some((dev, entry)) => {
+                    tracing::info!(
+                        wanted = %want,
+                        device = %entry.display(),
+                        "输出设备：按配置指定（不跟随系统默认）"
+                    );
+                    DeviceSinkBuilder::from_device(dev)
+                        .and_then(|b| b.open_stream())
+                        .map_err(|e| map_sink_error(e, true))?
                 }
-                .and_then(|_| {
-                    // rodio 0.23 没有「按名字打开」的公开 API，
-                    // 这里通过设置在进程启动前切换 PulseAudio 默认 sink 实现，
-                    // 见 tools/pc_audio_route.sh。
-                    tracing::info!(device = %name, "使用 MORPHOFLY_OUTPUT_DEVICE 指定的输出");
-                    DeviceSinkBuilder::open_default_sink()
-                })
-            }
-            _ => DeviceSinkBuilder::open_default_sink(),
-        }
-        .map_err(|e| map_sink_error(e, true))?;
+                // 配置写错不该让 App 变哑巴：告警 + 回默认。
+                None => {
+                    tracing::warn!(
+                        wanted = %want,
+                        available = ?super::device::output_labels(),
+                        "指定的输出设备不存在，回退系统默认"
+                    );
+                    DeviceSinkBuilder::open_default_sink().map_err(|e| map_sink_error(e, true))?
+                }
+            },
+            None => DeviceSinkBuilder::open_default_sink().map_err(|e| map_sink_error(e, true))?,
+        };
         sink.log_on_drop(false); // 别在 stderr 刷 "Dropping DeviceSink"
 
         let cfg = *sink.config();

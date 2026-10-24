@@ -1022,9 +1022,33 @@ impl AudioCapture {
         }
 
         let host = pick_host();
-        let device = host
-            .default_input_device()
-            .ok_or(AudioError::NoInputDevice)?;
+        // 设备选择：显式配置优先（`MORPHOFLY_INPUT_DEVICE`），否则系统默认。
+        // 为什么不能只信默认：默认录音源会被外部程序/系统记忆反复改回虚拟声卡，
+        // App 就会「录到空气」而日志一切正常。见 `audio::device` 模块注释。
+        let device = match super::device::wanted_input() {
+            Some(want) => match super::device::find_input(&want) {
+                Some((d, entry)) => {
+                    tracing::info!(
+                        wanted = %want,
+                        device = %entry.display(),
+                        "输入设备：按配置指定（不跟随系统默认）"
+                    );
+                    d
+                }
+                None => {
+                    tracing::warn!(
+                        wanted = %want,
+                        available = ?super::device::input_labels(),
+                        "指定的输入设备不存在，回退系统默认"
+                    );
+                    host.default_input_device()
+                        .ok_or(AudioError::NoInputDevice)?
+                }
+            },
+            None => host
+                .default_input_device()
+                .ok_or(AudioError::NoInputDevice)?,
+        };
 
         let device_name = device
             .description()

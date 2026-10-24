@@ -148,11 +148,41 @@ impl Default for DshConfig {
     }
 }
 
+/// 音频设备配置。
+///
+/// ## 为什么要能指定设备
+///
+/// 2026-10-25 真机踩坑：App 跟着「系统默认设备」跑时，默认录音源被外部程序
+/// （测试脚本建的虚拟声卡、WirePlumber 记住的历史默认）反复改回**虚拟静音源**，
+/// 于是用户说话云端一句都收不到；默认输出被改回**不出声的板载喇叭**，
+/// 模型说了 17 秒话用户什么都听不到。日志看起来一切正常。
+///
+/// 显式指定设备名后，App 不再受系统默认影响。名字匹配规则：**不区分大小写的
+/// 子串**，可以写 PipeWire/ALSA 全名，也可以只写 `USB` / `KTMicro` / `录音1`。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    /// 麦克风设备名。`None` = 系统默认。
+    pub input_device: Option<String>,
+    /// 扬声器/耳机设备名。`None` = 系统默认。
+    pub output_device: Option<String>,
+}
+
+impl AudioConfig {
+    /// 配置里有没有显式指定（托盘菜单/日志用）。
+    #[must_use]
+    pub fn is_custom(name: &Option<String>) -> bool {
+        name.as_deref().is_some_and(|s| !s.trim().is_empty())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub realtime: RealtimeConfig,
     pub dsh: DshConfig,
+    /// 音频设备（输入/输出）
+    pub audio: AudioConfig,
     /// 唤醒词（阶段 4 用）
     pub wake_word: String,
     /// 静音多少毫秒后回到待机
@@ -166,6 +196,7 @@ impl Default for Config {
         Self {
             realtime: RealtimeConfig::default(),
             dsh: DshConfig::default(),
+            audio: AudioConfig::default(),
             wake_word: "小蝶".into(),
             idle_timeout_ms: 30_000,
             data_dir: default_data_dir(),
@@ -316,6 +347,15 @@ impl Config {
         if let Ok(v) = std::env::var("MORPHOFLY_API_KEY_ENV") {
             self.realtime.api_key_env = v;
         }
+        // 音频设备：环境变量优先于配置文件（便于临时排查，不用改文件）
+        if let Ok(v) = std::env::var("MORPHOFLY_INPUT_DEVICE") {
+            let v = v.trim().to_string();
+            self.audio.input_device = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Ok(v) = std::env::var("MORPHOFLY_OUTPUT_DEVICE") {
+            let v = v.trim().to_string();
+            self.audio.output_device = if v.is_empty() { None } else { Some(v) };
+        }
     }
 
     /// 读取密钥。密钥只从环境变量/凭据文件读，绝不写进仓库或前端产物。
@@ -364,6 +404,117 @@ impl Config {
 
 pub fn config_path() -> PathBuf {
     default_data_dir().join("config.toml")
+}
+
+/// 音频设备种类（读写配置/环境变量时用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioDeviceKind {
+    /// 麦克风
+    Input,
+    /// 扬声器/耳机
+    Output,
+}
+
+impl AudioDeviceKind {
+    /// 配置 TOML 里的键名
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Input => "input_device",
+            Self::Output => "output_device",
+        }
+    }
+
+    /// 对应的环境变量名（`audio::capture` / `audio::playback` 读的就是它）
+    #[must_use]
+    pub fn env_key(self) -> &'static str {
+        match self {
+            Self::Input => "MORPHOFLY_INPUT_DEVICE",
+            Self::Output => "MORPHOFLY_OUTPUT_DEVICE",
+        }
+    }
+
+    /// 界面文案
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Input => "输入设备",
+            Self::Output => "输出设备",
+        }
+    }
+}
+
+/// 把设备选择写进**当前进程**的环境变量。
+///
+/// `AudioCapture::start()` / `AudioPlayer::open()` 每次开流都会读环境变量，
+/// 所以改完这里，下一轮会话（以及重启后的唤醒监听）就用新设备，不用重启进程。
+pub fn apply_audio_device_env(kind: AudioDeviceKind, name: Option<&str>) {
+    match name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(n) => std::env::set_var(kind.env_key(), n),
+        None => std::env::remove_var(kind.env_key()),
+    }
+}
+
+/// 启动时把配置文件里的设备选择同步到环境变量（环境变量本身优先，见 `apply_env`）。
+pub fn export_audio_device_env(cfg: &Config) {
+    for (kind, value) in [
+        (AudioDeviceKind::Input, &cfg.audio.input_device),
+        (AudioDeviceKind::Output, &cfg.audio.output_device),
+    ] {
+        // 没配就保持现状 —— 别把用户显式设的环境变量删掉
+        if let Some(name) = value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            std::env::set_var(kind.env_key(), name);
+        }
+    }
+}
+
+/// 只改配置文件的 `[audio]` 段，**其它字段原样保留**。
+///
+/// 为什么不 `Config::load()` 改完再整体写回：`load()` 会把环境变量的覆盖值
+/// 一起读进来，整体写回等于把「临时覆盖」固化成配置文件内容（比如把
+/// `MORPHOFLY_PROVIDER` 的值写死进文件）。
+pub fn save_audio_device(kind: AudioDeviceKind, name: Option<&str>) -> Result<()> {
+    save_audio_device_at(&config_path(), kind, name)
+}
+
+/// [`save_audio_device`] 的可测版本（显式传入配置文件路径）。
+pub fn save_audio_device_at(
+    path: &std::path::Path,
+    kind: AudioDeviceKind,
+    name: Option<&str>,
+) -> Result<()> {
+    let mut root: toml::Table = match std::fs::read_to_string(path) {
+        Ok(text) => {
+            toml::from_str(&text).with_context(|| format!("解析配置失败: {}", path.display()))?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(e).with_context(|| format!("读配置失败: {}", path.display())),
+    };
+    let audio = root
+        .entry("audio")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let audio = audio
+        .as_table_mut()
+        .with_context(|| format!("配置里的 [audio] 不是表: {}", path.display()))?;
+    match name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(n) => {
+            audio.insert(kind.key().to_string(), toml::Value::String(n.to_string()));
+        }
+        None => {
+            audio.remove(kind.key());
+        }
+    }
+    let text = toml::to_string_pretty(&root)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, text).with_context(|| format!("写配置失败: {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 /// 写一份配置模板（不覆盖已存在的）
@@ -489,5 +640,70 @@ mod tests {
             "密钥不能出现在配置序列化里"
         );
         std::env::remove_var("MORPHOFLY_TEST_KEY2");
+    }
+
+    /// 老配置文件（没有 [audio] 段）必须还能读，且设备默认为「系统默认」。
+    #[test]
+    fn old_config_without_audio_section_still_loads() {
+        let c: Config = toml::from_str(
+            r#"
+wake_word = "小蝶"
+idle_timeout_ms = 1000
+"#,
+        )
+        .unwrap();
+        assert!(c.audio.input_device.is_none());
+        assert!(c.audio.output_device.is_none());
+    }
+
+    #[test]
+    fn audio_section_parses() {
+        let c: Config = toml::from_str(
+            r#"
+[audio]
+input_device = "USB 耳机"
+output_device = "alsa_output.usb-KTMicro"
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.audio.input_device.as_deref(), Some("USB 耳机"));
+        assert_eq!(
+            c.audio.output_device.as_deref(),
+            Some("alsa_output.usb-KTMicro")
+        );
+    }
+
+    /// 保存只动 [audio]，别的字段必须原样保留（用户手写的配置不能被覆盖）。
+    #[test]
+    fn save_audio_device_keeps_other_fields() {
+        let dir = std::env::temp_dir().join(format!("mf-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+wake_word = "小蝶"
+
+[realtime]
+model = "step-1o-audio"
+"#,
+        )
+        .unwrap();
+
+        save_audio_device_at(&path, AudioDeviceKind::Input, Some("USB 麦")).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("USB 麦"));
+        assert!(text.contains("step-1o-audio"), "其它字段必须保留");
+
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.audio.input_device.as_deref(), Some("USB 麦"));
+
+        // 恢复「系统默认」= 删掉键
+        save_audio_device_at(&path, AudioDeviceKind::Input, None).unwrap();
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(cfg.audio.input_device.is_none());
+        assert!(cfg.audio.output_device.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

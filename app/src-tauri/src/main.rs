@@ -15,10 +15,12 @@ mod voice;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use morphofly_core::audio::device as audio_device;
+use morphofly_core::config::AudioDeviceKind;
 use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
 use morphofly_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
 use morphofly_core::Config;
-use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tokio::sync::Mutex;
@@ -528,6 +530,39 @@ fn spawn_session_guard(
 ///
 /// 接法：KWS 命中 → 状态机 S0 --WakeWord--> S1 → 连云端 → S2。
 /// 这里只做「命中即唤醒」；真正连云端在阶段 1 的 duplex 链路里。
+/// 常驻唤醒监听的句柄。
+///
+/// 为什么要存起来：换麦克风（托盘「输入设备」）之后必须**重启**它 ——
+/// 它内部是一条常驻采集流，不重启就还录着老设备，用户会觉得
+/// 「换了设备喊小蝶没反应」。以前是 `mem::forget` 泄漏，改设备就重启不了。
+#[cfg(feature = "kws")]
+static WAKE_LISTENER: std::sync::Mutex<Option<morphofly_core::kws::WakeListener>> =
+    std::sync::Mutex::new(None);
+
+/// 停掉常驻唤醒监听（下一次 `spawn_wake_listener` 会重新开流）。
+#[cfg(feature = "kws")]
+fn stop_wake_listener() {
+    if let Ok(mut g) = WAKE_LISTENER.lock() {
+        if let Some(mut l) = g.take() {
+            l.stop();
+        }
+    }
+}
+
+/// 重启唤醒监听：换麦克风后调用，让新设备立刻生效。
+fn restart_wake_listener(machine: Arc<Mutex<SessionMachine>>) {
+    #[cfg(feature = "kws")]
+    {
+        stop_wake_listener();
+        spawn_wake_listener(machine);
+    }
+    #[cfg(not(feature = "kws"))]
+    {
+        let _ = machine;
+        tracing::info!("唤醒词未编译进来，换设备不影响常驻采集");
+    }
+}
+
 #[cfg(feature = "kws")]
 fn spawn_wake_listener(machine: Arc<Mutex<SessionMachine>>) {
     use morphofly_core::kws::{wake_stimulus_for, KwsConfig, WakeEvent, WakeListener};
@@ -557,8 +592,12 @@ fn spawn_wake_listener(machine: Arc<Mutex<SessionMachine>>) {
     }) {
         Ok(l) => {
             tracing::info!("唤醒词常驻监听已启动（喊「小蝶」试试）");
-            // 泄漏到进程结束：App 生命周期内一直监听
-            std::mem::forget(l);
+            if let Ok(mut g) = WAKE_LISTENER.lock() {
+                // 覆盖前先停旧实例，避免两条监听抢同一个麦克风
+                if let Some(mut old) = g.replace(l) {
+                    old.stop();
+                }
+            }
         }
         Err(e) => tracing::error!(error = %e, "唤醒词启动失败"),
     }
@@ -820,6 +859,100 @@ fn snap_to_edge(win: &WebviewWindow, mode: SnapMode) {
     }
 }
 
+/// 托盘里的「输入/输出设备」子菜单：`系统默认` + 枚举到的设备（当前项打勾）。
+///
+/// 设备列表在**建菜单时**枚举一次；插拔设备后重启 App 才刷新。
+/// （Tauri 托盘菜单不能动态增删项，重建菜单可以但收益不大 —— 插拔音频设备
+/// 本来就会让 App 的音频流重建，顺手重启更干净。）
+fn build_device_menu(
+    app: &tauri::App,
+    title: &str,
+    prefix: &str,
+    names: &[String],
+    current: Option<&str>,
+) -> tauri::Result<(Submenu<tauri::Wry>, Vec<CheckMenuItem<tauri::Wry>>)> {
+    let mut items: Vec<CheckMenuItem<tauri::Wry>> = Vec::with_capacity(names.len() + 1);
+    items.push(CheckMenuItem::with_id(
+        app,
+        format!("{prefix}:default"),
+        "系统默认（不指定）",
+        true,
+        current.is_none(),
+        None::<&str>,
+    )?);
+    for (i, name) in names.iter().enumerate() {
+        let checked = current.is_some_and(|want| audio_device_name_matches(name, want));
+        items.push(CheckMenuItem::with_id(
+            app,
+            format!("{prefix}:{i}"),
+            name,
+            true,
+            checked,
+            None::<&str>,
+        )?);
+    }
+    let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items
+        .iter()
+        .map(|it| it as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    let menu = Submenu::with_items(app, title, true, &refs)?;
+    Ok((menu, items))
+}
+
+/// 菜单里给设备打勾用：和 core 的匹配规则保持一致（不区分大小写的子串）。
+fn audio_device_name_matches(label: &str, wanted: &str) -> bool {
+    let (label, wanted) = (label.trim().to_lowercase(), wanted.trim().to_lowercase());
+    !wanted.is_empty() && (label == wanted || label.contains(&wanted))
+}
+
+/// 切换音频设备：写配置文件 + 更新进程环境变量 + （输入设备）立刻重启唤醒监听。
+///
+/// 为什么写配置文件而不是只设环境变量：用户点一下就该「以后都这样」，
+/// 而不是每次启动都重新点。
+fn change_audio_device(app: &tauri::AppHandle, kind: AudioDeviceKind, name: Option<String>) {
+    let shown = name.clone().unwrap_or_else(|| "系统默认".into());
+    if let Err(e) = morphofly_core::config::save_audio_device(kind, name.as_deref()) {
+        // 保存失败不影响本次生效（可能是只读配置），所以只告警不中断
+        tracing::warn!(error = %e, kind = kind.label(), "保存音频设备失败（本次仍生效）");
+    }
+    morphofly_core::config::apply_audio_device_env(kind, name.as_deref());
+    tracing::info!(kind = kind.label(), device = %shown, "托盘：切换音频设备");
+
+    // 输入设备必须立刻生效：唤醒监听里是一条常驻采集流，不重启还录老设备。
+    if kind == AudioDeviceKind::Input {
+        let machine = {
+            let st = app.state::<AppState>();
+            st.machine.clone()
+        };
+        restart_wake_listener(machine);
+    }
+}
+
+/// 当前（刚改完的）设备选择 —— 用来把菜单勾选状态刷新对。
+fn picked_after_change(kind: AudioDeviceKind) -> Option<String> {
+    match kind {
+        AudioDeviceKind::Input => audio_device::wanted_input(),
+        AudioDeviceKind::Output => audio_device::wanted_output(),
+    }
+}
+
+/// 刷新勾选：第 0 项是「系统默认」，其余按设备顺序。
+fn update_device_checks(
+    items: &[CheckMenuItem<tauri::Wry>],
+    names: &[String],
+    current: Option<&str>,
+) {
+    if let Some(first) = items.first() {
+        let _ = first.set_checked(current.is_none());
+    }
+    for (i, name) in names.iter().enumerate() {
+        if let Some(item) = items.get(i + 1) {
+            let on = current.is_some_and(|want| audio_device_name_matches(name, want));
+            let _ = item.set_checked(on);
+        }
+    }
+}
+
 /// 建系统托盘图标（用户要求「支持跨平台任务栏图标」）。
 ///
 /// 这是 V1 最严重的体验问题：窗口无边框 + 始终置顶 + 任务栏不显示，
@@ -841,59 +974,123 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let agent_codex = MenuItem::with_id(app, "agent-codex", "用 codex 干活", true, None::<&str>)?;
     let switch_menu = Submenu::with_items(app, "切换 agent", true, &[&agent_dsh, &agent_codex])?;
 
-    let menu = Menu::with_items(app, &[&show, &hide, &switch_menu, &quit])?;
+    // ── 音频设备（输入/输出）──
+    //
+    // 用户要求「支持设置输入输出声音的设备」。不是锦上添花：跟着系统默认设备跑
+    // 已被真机证明会出事 —— 默认录音源被外部改回虚拟声卡（录到空气）、
+    // 默认输出被改回不出声的板载喇叭（模型说了话听不到），而日志一切正常。
+    // 详见 core/src/audio/device.rs 的模块注释。
+    let in_names = audio_device::input_labels();
+    let out_names = audio_device::output_labels();
+    let cur_in = audio_device::wanted_input();
+    let cur_out = audio_device::wanted_output();
+    let (in_menu, in_items) = build_device_menu(
+        app,
+        "输入设备（麦克风）",
+        "in",
+        &in_names,
+        cur_in.as_deref(),
+    )?;
+    let (out_menu, out_items) = build_device_menu(
+        app,
+        "输出设备（耳机/音箱）",
+        "out",
+        &out_names,
+        cur_out.as_deref(),
+    )?;
+
+    let menu = Menu::with_items(
+        app,
+        &[&show, &hide, &switch_menu, &in_menu, &out_menu, &quit],
+    )?;
+
+    // 菜单点击时要用：设备名表 + 勾选项（点完立刻更新勾选状态）
+    let in_names_for_menu = in_names.clone();
+    let out_names_for_menu = out_names.clone();
 
     let mut builder = TrayIconBuilder::with_id("main-tray")
         .tooltip("蝶梦 · 语音智能体")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if let Some(w) = app.get_webview_window("orb") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
+        .on_menu_event(move |app, event| {
+            let id = event.id.as_ref();
+            // 音频设备：in:default / in:3 / out:default / out:1
+            for (kind, prefix, names, items) in [
+                (AudioDeviceKind::Input, "in:", &in_names_for_menu, &in_items),
+                (
+                    AudioDeviceKind::Output,
+                    "out:",
+                    &out_names_for_menu,
+                    &out_items,
+                ),
+            ] {
+                let Some(rest) = id.strip_prefix(prefix) else {
+                    continue;
+                };
+                let picked = if rest == "default" {
+                    None
+                } else {
+                    rest.parse::<usize>()
+                        .ok()
+                        .and_then(|i| names.get(i))
+                        .cloned()
+                };
+                if rest != "default" && picked.is_none() {
+                    tracing::warn!(id, "托盘：音频设备菜单项不认识（设备可能已拔出）");
+                    return;
                 }
+                change_audio_device(app, kind, picked);
+                update_device_checks(items, names, picked_after_change(kind).as_deref());
+                return;
             }
-            "hide" => {
-                if let Some(w) = app.get_webview_window("orb") {
-                    let _ = w.hide();
+            match id {
+                "show" => {
+                    if let Some(w) = app.get_webview_window("orb") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                 }
-            }
-            "agent-dsh" => {
-                tracing::info!("托盘菜单：切到 dsh");
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let st = app.state::<AppState>();
-                    match st
-                        .dispatcher
-                        .dispatch("set_context", r#"{"agent":"dsh"}"#)
-                        .await
-                    {
-                        Ok(r) => tracing::info!("切换结果: {}", r.speech),
-                        Err(e) => tracing::warn!(error = %e, "切换失败"),
+                "hide" => {
+                    if let Some(w) = app.get_webview_window("orb") {
+                        let _ = w.hide();
                     }
-                });
+                }
+                "agent-dsh" => {
+                    tracing::info!("托盘菜单：切到 dsh");
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let st = app.state::<AppState>();
+                        match st
+                            .dispatcher
+                            .dispatch("set_context", r#"{"agent":"dsh"}"#)
+                            .await
+                        {
+                            Ok(r) => tracing::info!("切换结果: {}", r.speech),
+                            Err(e) => tracing::warn!(error = %e, "切换失败"),
+                        }
+                    });
+                }
+                "agent-codex" => {
+                    tracing::info!("托盘菜单：切到 codex");
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let st = app.state::<AppState>();
+                        match st
+                            .dispatcher
+                            .dispatch("set_context", r#"{"agent":"codex"}"#)
+                            .await
+                        {
+                            Ok(r) => tracing::info!("切换结果: {}", r.speech),
+                            Err(e) => tracing::warn!(error = %e, "切换失败"),
+                        }
+                    });
+                }
+                "quit" => {
+                    tracing::info!("托盘菜单：退出");
+                    app.exit(0);
+                }
+                _ => {}
             }
-            "agent-codex" => {
-                tracing::info!("托盘菜单：切到 codex");
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let st = app.state::<AppState>();
-                    match st
-                        .dispatcher
-                        .dispatch("set_context", r#"{"agent":"codex"}"#)
-                        .await
-                    {
-                        Ok(r) => tracing::info!("切换结果: {}", r.speech),
-                        Err(e) => tracing::warn!(error = %e, "切换失败"),
-                    }
-                });
-            }
-            "quit" => {
-                tracing::info!("托盘菜单：退出");
-                app.exit(0);
-            }
-            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             // 左键单击 = 显示/隐藏切换（符合常见托盘交互习惯）
@@ -990,6 +1187,16 @@ fn main() {
         model = %cfg.realtime.model,
         key = %cfg.masked_key(),
         "蝶梦启动"
+    );
+    // ★ 把配置里的音频设备映射成环境变量 —— capture/playback 每次开流都读它。
+    //
+    // 不这样做就会跟着「系统默认设备」跑，而那玩意儿会被外部程序/系统记忆
+    // 反复改回虚拟声卡或不出声的板载喇叭（真机踩过，见 audio/device.rs 注释）。
+    morphofly_core::config::export_audio_device_env(&cfg);
+    tracing::info!(
+        input = %cfg.audio.input_device.as_deref().unwrap_or("<系统默认>"),
+        output = %cfg.audio.output_device.as_deref().unwrap_or("<系统默认>"),
+        "音频设备配置"
     );
     let _ = morphofly_core::config::ensure_data_dir(&cfg);
 
