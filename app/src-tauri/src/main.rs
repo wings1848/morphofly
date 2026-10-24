@@ -40,8 +40,169 @@ struct AppState {
 /// 且拖动过程中频繁触发会抖。由前端在 mouseup 时主动调一次更可控。
 #[tauri::command]
 async fn snap_orb(window: WebviewWindow) -> Result<(), String> {
+    // 拖动循环可能还在跑（松手事件比它晚到），先让它停，否则贴完边又被搬回去
+    DRAG_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
     snap_to_edge(&window, SnapMode::NearestHorizontal);
     Ok(())
+}
+
+// ────────────────────────────── 拖动 ──────────────────────────────
+//
+// 真机实测（gpd，KWin/XWayland）：前端直接调 `startDragging()` 窗口一动不动，
+// 用户反馈「悬浮球拖不动」。所以拖动改成自己搬窗口：
+//   orb_drag_begin  开始拖动（Linux 起一个后台循环，每 16ms 读全局指针搬窗口）
+//   orb_drag_end    结束拖动（前端松手/失焦时调）
+//   orb_metrics     窗口物理尺寸，前端用来算 CSS→物理像素比
+// 证据与复现步骤见 docs/v2/orb-drag.md。
+
+/// 手动拖动是否进行中（true 时后台循环跟着指针搬窗口）
+static DRAG_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 把窗口位置夹到当前显示器范围内，别把球拖丢（拖出屏幕就再也点不到了）
+fn clamp_to_monitor(win: &WebviewWindow, x: i32, y: i32) -> tauri::PhysicalPosition<i32> {
+    let mut tx = x;
+    let mut ty = y;
+    if let Ok(Some(mon)) = win.current_monitor() {
+        let mpos = mon.position();
+        let msize = mon.size();
+        let size = win
+            .outer_size()
+            .unwrap_or(tauri::PhysicalSize::new(ORB_SIZE, ORB_SIZE));
+        let max_x = (mpos.x + msize.width as i32 - size.width as i32).max(mpos.x);
+        let max_y = (mpos.y + msize.height as i32 - size.height as i32).max(mpos.y);
+        tx = tx.clamp(mpos.x, max_x);
+        ty = ty.clamp(mpos.y, max_y);
+    }
+    tauri::PhysicalPosition::new(tx, ty)
+}
+
+/// 窗口物理尺寸 + 缩放（前端拿它算 CSS→物理像素比）
+#[tauri::command]
+fn orb_metrics(window: WebviewWindow) -> serde_json::Value {
+    let inner = window.inner_size();
+    let outer = window.outer_size();
+    let cursor = window.cursor_position().ok();
+    serde_json::json!({
+        "inner_width": inner.as_ref().map(|s| s.width).unwrap_or(0),
+        "inner_height": inner.as_ref().map(|s| s.height).unwrap_or(0),
+        "outer_width": outer.as_ref().map(|s| s.width).unwrap_or(0),
+        "outer_height": outer.as_ref().map(|s| s.height).unwrap_or(0),
+        "scale": window.scale_factor().unwrap_or(1.0),
+        "cursor_x": cursor.map(|c| c.x),
+        "cursor_y": cursor.map(|c| c.y),
+    })
+}
+
+/// 前端日志写进 journal。
+///
+/// 为什么需要：窗口透明无边框、没开 devtools，前端出错在真机上完全看不见。
+/// 拖动这类「点了没反应」的问题，没有这行日志只能瞎猜。
+#[tauri::command]
+fn orb_log(msg: String) {
+    tracing::info!(target: "morphofly_app::js", js = %msg, "前端日志");
+}
+
+/// 拖动开始：Linux 用手动伺服（后台每 16ms 读一次全局指针，把窗口摆在「指针 − 抓取偏移」）。
+///
+/// 为什么不用系统原生拖动（`start_dragging()`）：2026-10-25 真机实测，
+/// gpd 的 KWin/XWayland 上请求发出去了窗口一动不动（采样 8 秒位置零变化），
+/// 而且合成器抓一次指针会把 pointerup 吞掉。见 docs/v2/orb-drag.md。
+///
+/// 为什么改成「Rust 后台循环读指针」而不是「前端 pointermove 算位移」：
+/// 球只有 148×148，指针一动就出画面，前端收不到后续 pointermove，拖动立刻断；
+/// 全局指针位置不受窗口大小限制，拖多快都跟得上。
+#[tauri::command]
+async fn orb_drag_begin(window: WebviewWindow) -> Result<serde_json::Value, String> {
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+
+    // Windows/macOS 上原生拖动是好的，继续用
+    if !cfg!(target_os = "linux") {
+        match window.start_dragging() {
+            Ok(()) => {
+                tracing::info!(x = pos.x, y = pos.y, "拖动开始：用系统原生拖动");
+                return Ok(serde_json::json!({ "native": true, "x": pos.x, "y": pos.y }));
+            }
+            Err(e) => tracing::warn!(error = %e, "原生拖动失败，改手动"),
+        }
+    }
+
+    let cursor = window.cursor_position().ok();
+    // 抓取偏移 = 指针 − 窗口左上角（物理像素）。按下时指针应该在球上，
+    // 所以偏移应落在 [0, 148] 内；越界说明坐标系不是物理像素，用球心兜底。
+    let (ox, oy) = match cursor {
+        Some(c) => {
+            let dx = c.x - f64::from(pos.x);
+            let dy = c.y - f64::from(pos.y);
+            let size = f64::from(ORB_SIZE);
+            if (-size..=size * 2.0).contains(&dx) && (-size..=size * 2.0).contains(&dy) {
+                (dx, dy)
+            } else {
+                tracing::warn!(dx, dy, "指针坐标看起来不是物理像素，按球心算抓取偏移");
+                (size / 2.0, size / 2.0)
+            }
+        }
+        None => (f64::from(ORB_SIZE) / 2.0, f64::from(ORB_SIZE) / 2.0),
+    };
+    tracing::info!(
+        win_x = pos.x,
+        win_y = pos.y,
+        cursor_x = ?cursor.map(|c| c.x),
+        cursor_y = ?cursor.map(|c| c.y),
+        offset_x = ox,
+        offset_y = oy,
+        "拖动开始：后台跟指针搬窗口"
+    );
+
+    DRAG_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let win = window.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut last: Option<(i32, i32)> = None;
+        let mut idle = 0u32;
+        while DRAG_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            match win.cursor_position() {
+                Ok(c) => {
+                    let target = clamp_to_monitor(
+                        &win,
+                        (c.x - ox).round() as i32,
+                        (c.y - oy).round() as i32,
+                    );
+                    if last != Some((target.x, target.y)) {
+                        last = Some((target.x, target.y));
+                        idle = 0;
+                        if DRAG_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+                            let _ = win.set_position(target);
+                        }
+                    } else {
+                        // 指针 640ms 没动 = 用户松手了（pointerup 没收到时的兜底）
+                        idle += 1;
+                        if idle > 40 {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {
+                    idle += 1;
+                    if idle > 40 {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+        DRAG_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(p) = win.outer_position() {
+            tracing::info!(x = p.x, y = p.y, "拖动结束（后台循环退出）");
+        }
+    });
+
+    Ok(serde_json::json!({ "native": false, "x": pos.x, "y": pos.y }))
+}
+
+/// 拖动结束：前端 pointerup / pointercancel / 失焦时调用
+#[tauri::command]
+fn orb_drag_end() -> serde_json::Value {
+    DRAG_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    serde_json::json!({ "ok": true })
 }
 
 #[tauri::command]
@@ -570,8 +731,27 @@ fn snap_to_edge(win: &WebviewWindow, mode: SnapMode) {
     } else {
         pos.x + margin
     };
-    // 垂直：贴底（避开底部任务栏，多留 48px）
-    let y = pos.y + screen.height as i32 - size.height as i32 - margin - (48.0 * scale) as i32;
+    // 垂直：
+    //  - 启动归位（BottomRight）贴底，避开底部任务栏，多留 48px
+    //  - 用户拖动松手（NearestHorizontal）只吸水平边，垂直保持用户放的位置。
+    //    以前这里无脑贴底，用户把球拖到屏幕上方松手，球又弹回底部，
+    //    看起来就像「拖不动」——2026-10-25 真机反馈。
+    let bottom_y = pos.y + screen.height as i32 - size.height as i32 - margin - (48.0 * scale) as i32;
+    let max_y = (pos.y + screen.height as i32 - size.height as i32).max(pos.y);
+    let y = match mode {
+        SnapMode::BottomRight => bottom_y,
+        SnapMode::NearestHorizontal => match cur {
+            Some(p) => p.y.clamp(pos.y, max_y),
+            None => bottom_y,
+        },
+    };
+    tracing::info!(
+        from = ?cur.map(|p| (p.x, p.y)),
+        to_x = x,
+        to_y = y,
+        mode = ?mode,
+        "贴边计算"
+    );
 
     let target = tauri::PhysicalPosition::new(x.max(pos.x), y.max(pos.y));
     if let Err(e) = win.set_position(target) {
@@ -827,7 +1007,11 @@ fn main() {
             orb_tip,
             set_caption,
             poke,
-            snap_orb
+            snap_orb,
+            orb_log,
+            orb_metrics,
+            orb_drag_begin,
+            orb_drag_end
         ])
         .setup(move |app| {
             // ★ 让 core 能找到随包资源（唤醒词模型 / VAD 模型 / 关键词表）。

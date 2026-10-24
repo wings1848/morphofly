@@ -58,6 +58,13 @@ function ipc(cmd, args) {
   return Promise.resolve(null);
 }
 
+// 启动自检一行，写进 journal：透明无边框窗口没开 devtools，
+// 「前端到底有没有桥」只能靠日志判断（拖动 bug 排查吃过这个亏）。
+ipc('orb_log', {
+  msg: `启动自检 tauri=${!!tauri} core=${!!tauri?.core?.invoke} win=${!!tauri?.window} `
+    + `getCurrentWindow=${!!tauri?.window?.getCurrentWindow} dpr=${window.devicePixelRatio}`,
+}).catch(() => {});
+
 function listen(event, handler) {
   if (tauri?.event?.listen) return tauri.event.listen(event, (e) => handler(e.payload));
   if (tauri?.eventListen) return tauri.eventListen(event, handler);
@@ -160,42 +167,67 @@ function updateHover(e) {
   const hit = renderer.geometry?.hitRadius || (renderer.size || 148) * 0.32;
   hover.set(dx * dx + dy * dy <= hit * hit);
 }
-document.addEventListener('pointermove', updateHover);
+// pointermove 的监听在下面「拖动」那段统一注册（那里会先调 updateHover）
 document.addEventListener('pointerleave', () => hover.set(false));
 window.addEventListener('blur', () => hover.set(false));
 
 // ---- 拖动：移动 >5px 才算拖动；松手贴边（接口 snap_orb 保留）----
-let downAt = null;
-let dragging = false;
+//
+// 为什么不用原生 startDragging：真机（gpd，KWin/XWayland）实测窗口一动不动，
+// 用户反馈「拖不动」，证据见 docs/v2/orb-drag.md。
+// 现在拖动全程在 Rust 里做：orb_drag_begin 起一个后台循环，每 16ms 读全局指针
+// 把窗口搬到「指针 − 抓取偏移」。前端只负责「什么时候算开始拖、什么时候结束」。
+//
+// 为什么不用前端算位移：球只有 148×148，指针一动就出画面，前端收不到后续
+// pointermove，拖动立刻断。全局指针位置不受窗口大小限制。
+let drag = null;
+let dragIdleTimer = null;
+
+function jsLog(msg) {
+  ipc('orb_log', { msg: String(msg) }).catch(() => {});
+}
+
+// 窗口物理尺寸（日志用；顺带确认 CSS→物理的倍数）
+ipc('orb_metrics').then((m) => {
+  jsLog(`度量 innerW=${window.innerWidth} dpr=${window.devicePixelRatio} `
+    + `物理=${m?.inner_width}x${m?.inner_height} scale=${m?.scale}`);
+}).catch(() => {});
 
 document.addEventListener('pointerdown', (e) => {
-  downAt = { x: e.clientX, y: e.clientY };
-  dragging = false;
+  drag = { anchorX: e.clientX, anchorY: e.clientY, moved: false };
 });
 
 document.addEventListener('pointermove', (e) => {
   updateHover(e);
-  if (!downAt || dragging) return;
-  const dx = Math.abs(e.clientX - downAt.x);
-  const dy = Math.abs(e.clientY - downAt.y);
-  if (dx > 5 || dy > 5) {
+  if (!drag) return;
+  // 松手却没收到 pointerup 也要收尾
+  if (e.buttons === 0) { endPointerDrag(); return; }
+  const dx = e.clientX - drag.anchorX;
+  const dy = e.clientY - drag.anchorY;
+  if (!drag.moved && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
     // 移动超过 5px 才算拖动（否则是点击）
-    dragging = true;
-    // 交给 Tauri 拖动窗口（capabilities 已允许 core:window:allow-start-dragging）
-    try {
-      tauri?.window?.getCurrentWindow?.().startDragging?.();
-    } catch { /* 没有桥/权限时忽略，拖动退化为无效 */ }
+    drag.moved = true;
+    ipc('orb_drag_begin').then((r) => {
+      jsLog(`拖动开始 native=${!!r?.native}`);
+    }).catch((e) => jsLog(`拖动开始失败 ${e}`));
   }
+  // 兜底：600ms 没有新的 pointermove 就当松手了（pointerup 被吞的情况）
+  clearTimeout(dragIdleTimer);
+  dragIdleTimer = setTimeout(() => {
+    if (drag?.moved) { jsLog('拖动：600ms 没事件，按松手处理'); endPointerDrag(); }
+  }, 600);
 });
 
 function endPointerDrag() {
-  if (dragging) {
-    dragging = false;
+  clearTimeout(dragIdleTimer);
+  if (drag?.moved) {
+    ipc('orb_drag_end').catch(() => {});
     // 拖动后浏览器可能还会补一个 click，吞掉它，避免误触发「开始说话」
     suppressClickUntil = Date.now() + 300;
+    // 松手贴最近的水平边（垂直位置保留）
     ipc('snap_orb').catch(() => {});
   }
-  downAt = null;
+  drag = null;
 }
 document.addEventListener('pointerup', endPointerDrag);
 document.addEventListener('pointercancel', endPointerDrag);
