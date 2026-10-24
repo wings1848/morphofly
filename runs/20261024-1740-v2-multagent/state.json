@@ -7,7 +7,7 @@
   "project_type": "desktop-app",
   "human_mode": "inspect",
   "stage": "S8",
-  "status": "running",
+  "status": "done",
   "owner": {
     "agent": "agent",
     "session_id": "",
@@ -51,6 +51,13 @@
       "sha256": "3f4f63de6efee1229dd75719ed85b4dda2f93029807b378440ccda9ba39dc4b0",
       "at": "2026-10-24T21:11:00+08:00",
       "note": "CI 通过（e0befed）；243 测试全绿；0 警告；密钥扫描无泄漏"
+    },
+    "G8": {
+      "status": "pass",
+      "evidence": "evidence/PROGRESS.md",
+      "sha256": "7382cb655668a70cd6e0cca21c4a5f1cc41d9e4e22ce2e745adc1c57ff454167",
+      "at": "2026-10-24T21:42:38+08:00",
+      "note": "复盘已写(retro.md)；3 条流程改进已提出；文档/canvas 已更新"
     }
   },
   "human": {},
@@ -63,7 +70,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S8：跑 G8 并落证据（devflow gate G8 pass --evidence <文件>）",
+  "next_action": "S8 闸门已过：devflow set-stage done",
   "artifacts": {
     "progress": "progress.md"
   }
