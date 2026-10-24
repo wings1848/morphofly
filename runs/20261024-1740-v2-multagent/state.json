@@ -6,7 +6,7 @@
   "tier": "standard",
   "project_type": "desktop-app",
   "human_mode": "inspect",
-  "stage": "S6",
+  "stage": "S7",
   "status": "running",
   "owner": {
     "agent": "agent",
@@ -21,7 +21,8 @@
     "S3": 1,
     "S4": 1,
     "S5": 1,
-    "S6": 1
+    "S6": 1,
+    "S7": 1
   },
   "loops": {
     "used": 0,
@@ -35,6 +36,13 @@
       "sha256": "be3f1099113b83f15cf786b5f0cb6eb7481610e51d8186073e7f2acd06053bb6",
       "at": "2026-10-24T17:39:06+08:00",
       "note": "侦察完成（2 份 subagent 报告 + 我抽样复核 4 条关键结论）；201 测试全绿"
+    },
+    "G6": {
+      "status": "pass",
+      "evidence": "evidence/critical-fabrication.md",
+      "sha256": "610ce606752c90288518ce73e81c76d535853ab1db5dfcca3c3da6884d3138c1",
+      "at": "2026-10-24T18:27:21+08:00",
+      "note": "收尾三查：残留进程已清、无密钥提交、文档数字可复现（229测试/34.5dB/8-15 e2e）"
     }
   },
   "human": {},
@@ -47,7 +55,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S6：跑 G6 并落证据（devflow gate G6 pass --evidence <文件>）",
+  "next_action": "S7：跑 G7 并落证据（devflow gate G7 pass --evidence <文件>）",
   "artifacts": {
     "progress": "progress.md"
   }
