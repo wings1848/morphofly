@@ -291,6 +291,9 @@ impl VoiceSession {
             // 光靠再问它一次不一定管用。有了原话，我们就可以直接拿这句话
             // 去调 delegate_task —— 用户说了什么就派什么，不依赖模型自觉。
             let mut user_said = String::new();
+            // 只认「整句」转写（completed）。实测 delta 是**累积快照**、
+            // 而且会把环境噪声和上一句一起吐出来，拿它拼字会串味。
+            let mut user_said_is_final = false;
             // 一次用户说话最多纠正一次，防止无限打断
             let mut correction_sent = false;
             loop {
@@ -349,6 +352,7 @@ impl VoiceSession {
                         user_spoke = true;
                         user_spoke_local.store(false, Ordering::Relaxed);
                         user_said.clear();
+                        user_said_is_final = false;
                         tool_calls_this_turn = 0;
                         pending_tool_results = 0;
                         assistant_reply.clear();
@@ -359,13 +363,17 @@ impl VoiceSession {
                         speech_started = Some(std::time::Instant::now());
                     }
                     RealtimeEvent::UserTranscript { text, is_final } => {
-                        // 增量就往后追加；整句就整句替换（云端可能修正前文）
                         if is_final {
+                            // 整句：直接采用（云端会修正前文），并用它做判断依据
                             user_said = text;
+                            user_said_is_final = true;
+                            tracing::debug!(said = %user_said, "用户转写（整句）");
                         } else {
-                            user_said.push_str(&text);
+                            // 增量：只降级到 trace。实测它是**累积快照**，
+                            // 还会把环境噪声一起吐出来（"嗯嗯嗯。无效语音…"），
+                            // 拼起来会污染判断，所以不参与逻辑。
+                            tracing::trace!(delta = %text, "用户转写（增量）");
                         }
-                        tracing::debug!(final_ = is_final, said = %user_said, "用户转写");
                     }
                     RealtimeEvent::TranscriptDelta { text } | RealtimeEvent::TextDelta { text } => {
                         // 这是**模型说的话**（`response.audio_transcript.delta` / `response.text.delta`），
@@ -409,7 +417,11 @@ impl VoiceSession {
                             // 模型嘴上说「好，查着呢」却不调工具 = 假装干活，
                             // 这时候与其再求它一次（实测时好时坏、还要多等 5 秒），
                             // 不如直接拿原话去调 delegate_task。
-                            let said = user_said.trim().to_string();
+                            let said = if user_said_is_final {
+                                user_said.trim().to_string()
+                            } else {
+                                String::new()
+                            };
                             if said.len() >= 2 {
                                 tracing::warn!(
                                     said = %said,
