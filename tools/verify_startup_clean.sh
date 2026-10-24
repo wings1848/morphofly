@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# tools/verify_startup_clean.sh — 「启动瞬间干净」回归验收
+#
+# ## 这个验收在守什么
+#
+# 用户反馈（2026-10-25）：morphofly 在 Linux KDE 桌面启动时，屏幕会弹出一个黑框 UI，
+# 字跟悬浮球叠一会儿才恢复正常。
+#
+# 拆开是三件事，本脚本逐条判：
+#   T1 启动时不该弹字幕气泡（老版本启动会显示「待机」黑色气泡 4.2 秒）
+#   T2 小球窗口必须在「前端首帧画完」之后才可见（老版本先 show 再等页面，黑框/空窗口）
+#   T3 首帧就绪不能太慢（< 3s，否则等于启动变慢，用户会觉得卡）
+#   T4 启动中（t≈3s）与稳定后（t≈12s）球左侧的「气泡区域」不应有差异
+#      （直接对真机截图做差分；没有气泡时这块区域只有静态壁纸）
+#   T5 贴边位置仍然在右下角（不能因为改启动时序把定位弄丢）
+#
+# ## 怎么判
+#
+# T1/T2/T3/T5 从 systemd journal 里读时间线 —— 重启服务是可控的，日志时间戳可靠。
+# T4 用 KWin ScreenShot2 D-Bus 连拍（见 tools/gpd_startup_frames.py），
+#    比 spectacle/portal 快两个数量级：一次 40–90ms，8fps 能拍到 4.2 秒的气泡。
+#
+# ## 用法
+#
+#   tools/verify_startup_clean.sh                 # 默认 run 目录见下
+#   tools/verify_startup_clean.sh --no-frames     # 只跑日志判据（调试用，快）
+#   tools/verify_startup_clean.sh --no-restart    # 不重启服务（服务必须已经在跑；只做静态判据）
+#
+# 环境变量：GPD / GPD_SERVICE / RUN_DIR / EVIDENCE_DIR / STARTUP_TIMEOUT_MS
+#
+# 退出码：0 全通过 / 1 有失败 / 2 跳过（设备不在线或服务没跑）
+set -uo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+
+GPD=${GPD:-}
+GPD_SERVICE=${GPD_SERVICE:-morphofly-test}
+RUN_DIR=${RUN_DIR:-$REPO_ROOT/runs/20261025-0520-startup-clean}
+EVIDENCE_DIR=${EVIDENCE_DIR:-$RUN_DIR/evidence}
+STARTUP_TIMEOUT_MS=${STARTUP_TIMEOUT_MS:-3000}
+REC_DURATION=${REC_DURATION:-13}
+REC_FPS=${REC_FPS:-8}
+EARLY_T=${EARLY_T:-3.0}
+LATE_T=${LATE_T:-12.0}
+
+NO_FRAMES=0
+NO_RESTART=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-frames) NO_FRAMES=1; shift ;;
+    --no-restart) NO_RESTART=1; shift ;;
+    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "未知参数：$1" >&2; exit 2 ;;
+  esac
+done
+
+mkdir -p "$EVIDENCE_DIR"
+
+PASS=0
+FAIL=0
+SKIP=0
+declare -a RESULTS=()
+
+ok()   { PASS=$((PASS + 1)); RESULTS+=("PASS  $1"); printf 'PASS  %s\n' "$1"; }
+bad()  { FAIL=$((FAIL + 1)); RESULTS+=("FAIL  $1"); printf 'FAIL  %s\n' "$1"; }
+skip() { SKIP=$((SKIP + 1)); RESULTS+=("SKIP  $1"); printf 'SKIP  %s\n' "$1"; }
+
+# ── 1) 找设备 ──────────────────────────────────────────────────────────────
+if [ -z "${GPD:-}" ]; then
+  GPD=$(bash "$REPO_ROOT/tools/gpd_ssh.sh" 2>/dev/null) || {
+    echo "SKIP  wings-gpd 不在线（先开机/连网）"
+    exit 2
+  }
+fi
+
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=12)
+run() { timeout 120 ssh "${SSH_OPTS[@]}" "$GPD" "$@"; }
+
+# gpd 上的桌面环境变量（ssh 不继承桌面会话）：XAUTHORITY 每次登录会换，现找。
+DISCOVER=$(cat <<'EOS'
+set -u
+X=""
+for pid in $(pgrep -f 'plasmashell|kwin_wayland|kwin_x11' 2>/dev/null | head -3); do
+  v=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^XAUTHORITY=//p' | head -1)
+  if [ -n "${v:-}" ] && [ -r "$v" ]; then X=$v; break; fi
+done
+if [ -z "$X" ]; then X=$(ls -t /run/user/1000/xauth_* 2>/dev/null | head -1); fi
+echo "$X"
+EOS
+)
+GPD_XAUTHORITY=$(run "bash -s" <<<"$DISCOVER" 2>/dev/null | tail -1)
+[ -n "${GPD_XAUTHORITY:-}" ] || { echo "SKIP  gpd 上找不到 XAUTHORITY（桌面没起？）"; exit 2; }
+
+export_env() {
+  echo "export DISPLAY=:0 XAUTHORITY='$GPD_XAUTHORITY' XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+}
+
+# ── 2) 服务在跑吗 ──────────────────────────────────────────────────────────
+STATE=$(run "systemctl --user is-active $GPD_SERVICE" 2>/dev/null || true)
+if [ "${STATE:-}" != "active" ]; then
+  echo "SKIP  $GPD_SERVICE 没在跑（先 tools/gpd_deploy_ci.sh）；当前=$STATE"
+  exit 2
+fi
+
+# ── 3) 上传帧采集器 ────────────────────────────────────────────────────────
+FRAMES_PY=/tmp/morphofly-gpd-startup-frames.py
+if [ "$NO_FRAMES" = 0 ]; then
+  timeout 60 scp -q "${SSH_OPTS[@]}" "$REPO_ROOT/tools/gpd_startup_frames.py" "$GPD:$FRAMES_PY" || {
+    echo "SKIP  上传帧采集器失败（scp 不通）"
+    exit 2
+  }
+fi
+
+# ── 4) 录屏 + 重启服务 ─────────────────────────────────────────────────────
+REC_DIR=/tmp/morphofly-startup-frames
+START_EPOCH=""
+if [ "$NO_RESTART" = 0 ]; then
+  START_EPOCH=$(date +%s)
+  if [ "$NO_FRAMES" = 0 ]; then
+    run "$(export_env); rm -rf $REC_DIR; nohup python3 $FRAMES_PY record $REC_DIR $REC_DURATION $REC_FPS >/tmp/mf-frames.log 2>&1 & echo started" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+  echo "[verify_startup_clean] 重启 $GPD_SERVICE（t0=$START_EPOCH）"
+  run "systemctl --user restart $GPD_SERVICE" || { echo "FAIL  重启服务失败"; exit 1; }
+  # 等录屏结束（最多 REC_DURATION+8s）
+  if [ "$NO_FRAMES" = 0 ]; then
+    DEADLINE=$(( $(date +%s) + REC_DURATION + 10 ))
+    while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+      if run "grep -q 'frames ' /tmp/mf-frames.log 2>/dev/null" >/dev/null 2>&1; then break; fi
+      sleep 1
+    done
+    run "tail -2 /tmp/mf-frames.log" 2>/dev/null || true
+  else
+    sleep 8
+  fi
+else
+  echo "[verify_startup_clean] --no-restart：只做静态判据（T2/T3/T5 用当前进程日志）"
+fi
+
+# ── 5) 拉 journal（从重启时刻起）──────────────────────────────────────────
+JOURNAL="$EVIDENCE_DIR/startup-journal.log"
+if [ -n "${START_EPOCH:-}" ]; then
+  run "journalctl --user -u $GPD_SERVICE --since '@$START_EPOCH' --no-pager -o cat" >"$JOURNAL" 2>/dev/null
+else
+  run "journalctl --user -u $GPD_SERVICE --no-pager -o cat -n 500" >"$JOURNAL" 2>/dev/null
+fi
+[ -s "$JOURNAL" ] || { echo "FAIL  拿不到 journal"; exit 1; }
+echo "[verify_startup_clean] journal → $JOURNAL（$(wc -l <"$JOURNAL") 行）"
+
+# ── T1 启动时不该显示任何初始字幕 ─────────────────────────────────────────
+# 两个证据缺一不可：
+#   a) 前端启动日志里 caption 必须是「无」（老版本 orb_state 把状态名「待机」当字幕，
+#      前端启动就 showCaption —— 有时窗口已展开成黑气泡，有时来不及展开只闪一下；
+#      日志判据不受这个时序影响）
+#   b) 老版本展开气泡的日志「气泡窗口已调整 show=true」也不能出现
+START_LOG=$(grep -o '启动状态 state=[^ ]* caption=[^ ]*' "$JOURNAL" | tail -1)
+if [ -z "${START_LOG:-}" ]; then
+  bad "T1 没有「启动状态 caption=无」日志（旧二进制没有这条判据；不能证明启动干净）"
+elif echo "$START_LOG" | grep -q 'caption=无'; then
+  if grep -q '气泡窗口已调整 show=true' "$JOURNAL"; then
+    bad "T1 启动时弹了字幕气泡（journal 出现 气泡窗口已调整 show=true）"
+  else
+    ok "T1 启动时没有显示初始字幕（${START_LOG}）"
+  fi
+else
+  bad "T1 启动时显示了初始字幕（${START_LOG}）"
+fi
+
+# ── T2/T3 首帧就绪必须在贴边之后，且不超时 ────────────────────────────────
+EDGE_LINE=$(grep -n '小球已贴边' "$JOURNAL" | head -1 | cut -d: -f1)
+READY_LINE=$(grep -n '启动首帧就绪' "$JOURNAL" | head -1 | cut -d: -f1)
+if [ -z "${READY_LINE:-}" ]; then
+  bad "T2 缺少「启动首帧就绪」日志（旧二进制不会打这条：说明窗口仍是先可见后出内容）"
+  bad "T3 首帧就绪耗时不可测（无日志）"
+else
+  if [ -n "${EDGE_LINE:-}" ] && [ "$READY_LINE" -lt "$EDGE_LINE" ]; then
+    bad "T2 首帧就绪日志出现在贴边之前（顺序不对：ready line=$READY_LINE edge line=$EDGE_LINE）"
+  else
+    ok "T2 首帧就绪在贴边之后（窗口内容先画好，再让用户看见）"
+  fi
+  ELAPSED=$(grep -o '启动首帧就绪.*elapsed_ms=[0-9]*' "$JOURNAL" | head -1 | grep -o '[0-9]*$')
+  if [ -n "${ELAPSED:-}" ] && [ "$ELAPSED" -lt "$STARTUP_TIMEOUT_MS" ]; then
+    ok "T3 首帧就绪耗时 ${ELAPSED}ms < ${STARTUP_TIMEOUT_MS}ms"
+  else
+    bad "T3 首帧就绪耗时 ${ELAPSED:-未知}ms ≥ ${STARTUP_TIMEOUT_MS}ms（启动变慢）"
+  fi
+fi
+
+# ── T5 贴边位置仍在右下角（复用 float-ui 的 pos 检查：python-xlib 读窗口 + xrandr 读显示器）──
+POS_OUT=$(GPD="$GPD" GPD_XAUTHORITY="$GPD_XAUTHORITY" RUN_DIR="$RUN_DIR" \
+  EVIDENCE_DIR="$EVIDENCE_DIR" timeout 90 bash "$REPO_ROOT/tools/verify_float_ui.sh" pos 2>&1)
+POS_RC=$?
+echo "$POS_OUT" >"$EVIDENCE_DIR/startup-pos-check.log"
+if [ "$POS_RC" -eq 0 ]; then
+  ok "T5 贴边位置在右下角（$(echo "$POS_OUT" | grep -m1 '右距' | sed 's/^[[:space:]]*//'))"
+elif [ "$POS_RC" -eq 2 ]; then
+  skip "T5 位置探测跳过（$(echo "$POS_OUT" | tail -1)）"
+else
+  bad "T5 贴边位置不对（$(echo "$POS_OUT" | tail -1)）"
+fi
+
+# ── T4 真机截图差分 ───────────────────────────────────────────────────────
+FRAMES_LOCAL="$EVIDENCE_DIR/startup-frames"
+if [ "$NO_FRAMES" = 0 ]; then
+  POS_LINE=$(grep -o '小球已贴边 x=[0-9-]* y=[0-9-]*' "$JOURNAL" | tail -1)
+  X=$(echo "$POS_LINE" | sed 's/.*x=\([-0-9]*\).*/\1/')
+  Y=$(echo "$POS_LINE" | sed 's/.*y=\([-0-9]*\).*/\1/')
+  DPR=$(grep -o 'dpr=[0-9.]*' "$JOURNAL" | head -1 | cut -d= -f2)
+  DPR=${DPR:-1.5}
+  RES=$(run "$(export_env); python3 $FRAMES_PY analyze $REC_DIR $LATE_T ${X:-0} ${Y:-0} $DPR" 2>&1)
+  echo "$RES" >"$EVIDENCE_DIR/startup-frames-analyze.json"
+  echo "$RES"
+  if echo "$RES" | grep -q '"verdict": "PASS"'; then
+    ok "T4 启动气泡区域差分正常（$(echo "$RES" | grep -o '"mean_abs_diff": [0-9.]*'))"
+  else
+    bad "T4 启动瞬间球左侧仍有黑框/文字（$(echo "$RES" | grep -o '"mean_abs_diff": [0-9.]*')）"
+  fi
+  # 把帧拉回来留证据（体积很小：只存了右下角 400x300）
+  rm -rf "$FRAMES_LOCAL"; mkdir -p "$FRAMES_LOCAL"
+  run "cd /tmp && tar czf /tmp/mf-frames.tgz morphofly-startup-frames" >/dev/null 2>&1 || true
+  timeout 180 scp -q "${SSH_OPTS[@]}" "$GPD:/tmp/mf-frames.tgz" "$FRAMES_LOCAL/frames.tgz" 2>/dev/null \
+    && tar xzf "$FRAMES_LOCAL/frames.tgz" -C "$FRAMES_LOCAL" 2>/dev/null \
+    && echo "[verify_startup_clean] 启动帧 → $FRAMES_LOCAL" \
+    || skip "帧回传失败（T4 已在设备端判定，不影响结论）"
+else
+  skip "T4 本次 --no-frames 没录"
+fi
+
+# ── 汇总 ──────────────────────────────────────────────────────────────────
+echo
+echo "── 启动干净度验收 ──"
+printf '%s\n' "${RESULTS[@]}"
+echo "总计：通过 $PASS / 失败 $FAIL / 跳过 $SKIP"
+{
+  echo "# 启动干净度验收（$(date '+%Y-%m-%d %H:%M:%S')）"
+  echo
+  echo "设备：$GPD  服务：$GPD_SERVICE"
+  echo "判据：T1 无启动气泡 / T2 首帧就绪在贴边后 / T3 首帧 < ${STARTUP_TIMEOUT_MS}ms / T4 截图差分 / T5 贴边位置"
+  echo
+  printf '%s\n' "${RESULTS[@]}"
+  echo
+  echo "总计：通过 $PASS / 失败 $FAIL / 跳过 $SKIP"
+} >"$EVIDENCE_DIR/startup-clean-summary.md"
+
+if [ "$FAIL" -gt 0 ]; then exit 1; fi
+exit 0

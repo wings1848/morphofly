@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "run_id": "20261025-0520-startup-clean",
+  "created_at": "2026-10-25T05:15:28+08:00",
+  "goal": "修复 morphofly 在 Linux KDE 启动瞬间的黑框气泡与文字覆盖悬浮球（启动首帧干净、位置正确、无多余字幕）",
+  "tier": "light",
+  "project_type": "desktop-app",
+  "human_mode": "inspect",
+  "stage": "S0",
+  "status": "running",
+  "owner": {
+    "agent": "agent",
+    "session_id": "",
+    "claimed_at": "2026-10-25T05:15:28+08:00",
+    "lease_until": "2026-10-25T05:15:28+08:00"
+  },
+  "attempts": {
+    "S0": 1
+  },
+  "loops": {
+    "used": 0,
+    "max": 3,
+    "last_fail_stage": null
+  },
+  "gates": {},
+  "human": {},
+  "budget": {
+    "minutes_cap": 120,
+    "minutes_used": 0,
+    "tokens": 0,
+    "tokens_cap": 50000,
+    "fanout_cap": 8,
+    "fanout_used": 0
+  },
+  "blocked_by": [],
+  "next_action": "S0：跑 G0 并落证据（devflow gate G0 pass --evidence <文件>）",
+  "artifacts": {
+    "progress": "progress.md"
+  }
+}
