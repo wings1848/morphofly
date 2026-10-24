@@ -214,12 +214,40 @@ fn spawn_session_guard(
     app: AppHandle,
     machine: Arc<Mutex<SessionMachine>>,
     cfg: Arc<morphofly_core::Config>,
+    store: Arc<Mutex<morphofly_core::tasks::store::TaskStore>>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut current: Option<voice::VoiceSession> = None;
+        // 主动汇报开窗的冷却：失败时别每 250ms 试一次
+        let mut last_proactive: Option<std::time::Instant> = None;
         loop {
             tokio::time::sleep(Duration::from_millis(250)).await;
             let st = { machine.lock().await.state() };
+
+            // ★ 任务干完了但会话已经关了 → 主动开一轮把它念出来。
+            //
+            // 真机踩坑（2026-10-25）：DSH 干一个任务要 1–3 分钟，
+            // 而语音会话 30 秒空闲就回 S0、云端 90 秒没操作直接断。
+            // 于是「主动汇报」这个核心承诺根本兑现不了 ——
+            // 日志里看到的是一次成功的派活 + 一条 `too long without operation`。
+            //
+            // 做法：S0 且有未念过的已完成任务 → 模拟一次唤醒，让守卫去建会话，
+            // 新建的会话里 report 循环会立刻发现它并开口。
+            if st == morphofly_core::session::OrbState::S0 {
+                let pending = {
+                    let s = store.lock().await;
+                    s.unreported_finished().len()
+                };
+                let cooled = last_proactive
+                    .map(|t| t.elapsed() >= Duration::from_secs(15))
+                    .unwrap_or(true);
+                if pending > 0 && cooled {
+                    tracing::info!(pending, "有任务结果还没念，主动开一轮汇报");
+                    last_proactive = Some(std::time::Instant::now());
+                    let mut m = machine.lock().await;
+                    let _ = m.handle(Stimulus::ProactiveReport);
+                }
+            }
 
             // 需要建会话？（S1 且还没有）
             if voice::should_open_session(st) && current.is_none() {
@@ -758,6 +786,7 @@ fn main() {
         morphofly_core::tasks::TaskStore::open(cfg.task_store_path()).expect("打开任务表"),
     ));
     let bridge = std::sync::Arc::new(morphofly_core::dsh::DshBridge::from_config(&cfg));
+    let store_for_guard = store.clone();
     let dispatcher = std::sync::Arc::new(morphofly_core::dispatch::Dispatcher::new(
         store,
         bridge,
@@ -801,7 +830,12 @@ fn main() {
 
             let handle = app.handle().clone();
             spawn_pump(handle.clone(), machine.clone(), demo_audio);
-            spawn_session_guard(handle, machine.clone(), cfg.clone());
+            spawn_session_guard(
+                handle,
+                machine.clone(),
+                cfg.clone(),
+                store_for_guard.clone(),
+            );
             // ★ 系统托盘（用户要求「支持跨平台任务栏图标」）
             // V1 最严重的体验问题：无边框+置顶+任务栏不显示 = 关不掉也找不到
             if let Err(e) = setup_tray(app) {

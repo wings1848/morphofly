@@ -96,6 +96,11 @@ pub enum Stimulus {
     IdleTimeout,
     /// 从异常态手动恢复
     Recover,
+    /// 有后台任务结果要念，主动开一轮
+    ///
+    /// 和 Click/WakeWord 的区别只在语义和日志（都是 S0 → S1）：
+    /// 这句是「系统主动开口」，不是用户叫醒的。
+    ProactiveReport,
 }
 
 /// 拒绝迁移的理由
@@ -188,7 +193,9 @@ impl SessionMachine {
         let from = self.state;
         let next = match (from, stim) {
             // 待机 → 唤醒：只由点击/唤醒词触发
-            (S0, Stimulus::Click) | (S0, Stimulus::WakeWord) => S1,
+            (S0, Stimulus::Click) | (S0, Stimulus::WakeWord) | (S0, Stimulus::ProactiveReport) => {
+                S1
+            }
             // 唤醒态：连接成功才能进聆听
             (S1, Stimulus::Connected) => {
                 self.connected = true;
@@ -251,6 +258,15 @@ mod tests {
     #[test]
     fn starts_idle() {
         assert_eq!(m().state(), OrbState::S0);
+    }
+
+    /// 任务干完了但会话关着 → 系统主动开一轮（S0 → S1）。
+    #[test]
+    fn proactive_report_wakes_from_idle() {
+        let mut m = m();
+        assert_eq!(m.state(), OrbState::S0);
+        assert!(m.handle(Stimulus::ProactiveReport).unwrap());
+        assert_eq!(m.state(), OrbState::S1);
     }
 
     #[test]

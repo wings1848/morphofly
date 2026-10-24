@@ -77,6 +77,11 @@ impl Dispatcher {
     }
 
     /// 读当前上下文（给 UI 显示「现在连着哪个 agent」用）
+    /// 任务表句柄（给「任务干完了没人听」这种情况，让会话守卫能主动开一轮）。
+    pub fn store(&self) -> Arc<tokio::sync::Mutex<TaskStore>> {
+        self.store.clone()
+    }
+
     /// 给一句话挑一个干活目录（本地代派 / 纠正提醒都用它）。
     ///
     /// 优先级：
