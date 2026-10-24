@@ -523,8 +523,9 @@ impl VoiceSession {
                                     r.speech
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "工具执行失败");
-                                    format!("这个没办成：{e}")
+                                    // {e:#} = 完整因果链。只打顶层消息查不出「建会话失败」的真因
+                                    tracing::warn!(error = %format!("{e:#}"), "工具执行失败");
+                                    format!("这个没办成：{e:#}")
                                 }
                             };
                             let _ = c.send_function_call_output(&cid, &speech);

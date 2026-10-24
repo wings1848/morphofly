@@ -411,7 +411,9 @@ impl Dispatcher {
                 }
                 Err(e) => {
                     let mut s = store.lock().await;
-                    let _ = s.set_summary(&id2, &clean_for_speech(&format!("出错了：{e}")));
+                    // ★ 用 {e:#} 打完整因果链。
+                    // 「建 DSH 会话失败」这种顶层消息单看没用 —— 真正原因在 cause 里。
+                    let _ = s.set_summary(&id2, &clean_for_speech(&format!("出错了：{e:#}")));
                     let _ = s.set_status(&id2, TaskStatus::Failed);
                 }
             }
