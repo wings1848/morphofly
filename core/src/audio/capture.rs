@@ -157,6 +157,36 @@ impl ToF32 for cpal::U24 {
 /// 交织多声道 f32 → mono f32（各声道取算术平均）。
 ///
 /// 末尾不足一个整帧的样本直接丢弃（cpal 只会给整帧，正常不会出现）。
+/// 选一个能用的音频 host。
+///
+/// ## 为什么不直接用 `cpal::default_host()`
+///
+/// Linux 上默认是 ALSA。但在某些设备上 ALSA→PipeWire 的桥接
+/// 对录音流有 bug：`PulseAudio: Unable to create stream: No such entity`，
+/// 导致麦克风打不开（实测 wings-gpd 的 SOF 声卡必现）。
+///
+/// 而 `parecord` 直连 Pulse 协议就没问题 —— 说明问题在 ALSA 桥接层。
+///
+/// 所以优先用 cpal 的 PulseAudio 后端（`pulseaudio` feature），
+/// 拿不到再回落到默认 host（ALSA）。
+fn pick_host() -> cpal::Host {
+    #[cfg(target_os = "linux")]
+    {
+        match cpal::host_from_id(cpal::HostId::PulseAudio) {
+            Ok(h) => {
+                tracing::info!("音频后端：PulseAudio");
+                return h;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "PulseAudio 后端不可用，回落到默认（ALSA）");
+            }
+        }
+    }
+    let h = cpal::default_host();
+    tracing::info!("音频后端：{:?}", h.id());
+    h
+}
+
 pub fn downmix_to_mono(interleaved: &[f32], channels: u16, out: &mut Vec<f32>) {
     out.clear();
     let ch = channels.max(1) as usize;
@@ -991,7 +1021,7 @@ impl AudioCapture {
             *guard = None;
         }
 
-        let host = cpal::default_host();
+        let host = pick_host();
         let device = host
             .default_input_device()
             .ok_or(AudioError::NoInputDevice)?;

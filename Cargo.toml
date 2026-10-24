@@ -23,7 +23,10 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 base64 = "0.23"
-cpal = "0.18"
+# Linux 上加 pipewire/pulseaudio 后端：ALSA 走 PipeWire 桥接在某些设备上
+# 会报 "Unable to create stream: No such entity"（实测 wings-gpd 的 SOF 声卡），
+# 直接用原生后端能绕开。
+cpal = { version = "0.18", features = ["pulseaudio"] }
 rodio = "0.23"
 realfft = "3.5"
 hound = "3.5"

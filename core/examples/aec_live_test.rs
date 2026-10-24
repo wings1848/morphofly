@@ -27,8 +27,8 @@ async fn main() -> anyhow::Result<()> {
         .without_time()
         .init();
 
-    let speech_path = std::env::var("AEC_SPEECH")
-        .unwrap_or_else(|_| "/tmp/aec_speech.pcm".to_string());
+    let speech_path =
+        std::env::var("AEC_SPEECH").unwrap_or_else(|_| "/tmp/aec_speech.pcm".to_string());
     let raw = std::fs::read(&speech_path)
         .map_err(|e| anyhow::anyhow!("读不到 {speech_path}: {e}（需要 16k mono s16le）"))?;
     let speech: Vec<i16> = raw
