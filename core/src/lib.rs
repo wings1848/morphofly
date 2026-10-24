@@ -5,6 +5,7 @@
 //! 2. 语音模型只有 4 个工具，物理上没有文件/命令能力
 //! 3. 语音链路与任务链路是两条独立连接，互不阻塞
 
+pub mod asr_fix;
 pub mod audio;
 pub mod config;
 pub mod correction;

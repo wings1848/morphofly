@@ -364,8 +364,19 @@ impl VoiceSession {
                     }
                     RealtimeEvent::UserTranscript { text, is_final } => {
                         if is_final {
-                            // 整句：直接采用（云端会修正前文），并用它做判断依据
-                            user_said = text;
+                            // 整句：直接采用（云端会修正前文），并用它做判断依据。
+                            // ★ 先本地纠正专有名词：ASR 会听错（morphofly→mosofly、
+                            //   README→vimi），不纠正的话本地代派会把错字原样交给 DSH。
+                            //   StepFun 不支持转写热词 prompt（探针实测），只能本地补。
+                            let fixed = morphofly_core::asr_fix::fix_transcript(&text);
+                            if fixed != text {
+                                tracing::info!(
+                                    before = %text,
+                                    after = %fixed,
+                                    "用户转写本地纠正（ASR 听错专有名词）"
+                                );
+                            }
+                            user_said = fixed;
                             user_said_is_final = true;
                             tracing::debug!(said = %user_said, "用户转写（整句）");
                         } else {
