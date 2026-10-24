@@ -37,6 +37,28 @@ pub struct VoiceSession {
     pub played_frames: Arc<AtomicU64>,
     pub interruptions: Arc<AtomicU64>,
     pub first_audio_ms: Arc<AtomicU64>,
+    /// 是否「本地 VAD + 手动 commit」模式（= 关掉了服务端 VAD）。
+    ///
+    /// 为 false 时服务端自己判定回合结束并自动触发推理，
+    /// 我们**不能**再发 `input_audio_buffer.commit` / `response.create`，
+    /// 否则会重复触发（两轮回复/`ongoing response` 报错）。
+    local_vad: bool,
+}
+
+/// 「这一轮什么时候该回话」的看门狗状态（commit 之后等首音频）。
+///
+/// 2026-10-25 真机：用户「说完了但它不回复」的根因就是这条路径没有任何
+/// 超时兜底 —— commit + response.create 发出去之后，如果服务端因为
+/// `ongoing response`、空缓冲区、网络抖动没回复，就永久静默。
+/// 开源框架的通用做法（LiveKit/pipecat）：1.5–2 秒没首包就 cancel + 重发一次。
+#[derive(Debug, Default)]
+struct TurnWait {
+    /// 本轮 commit/触发推理的时刻
+    since: Option<std::time::Instant>,
+    /// 本轮是否已经收到过音频
+    audio_seen: bool,
+    /// 已经重试了几次
+    retries: u8,
 }
 
 /// 打断去重窗口：本地 VAD 和云端 SpeechStarted 会**同时**报同一次打断，
@@ -92,6 +114,7 @@ impl VoiceSession {
             played_frames: Arc::new(AtomicU64::new(0)),
             interruptions: Arc::new(AtomicU64::new(0)),
             first_audio_ms: Arc::new(AtomicU64::new(u64::MAX)),
+            local_vad: cfg.realtime.use_local_vad,
         })
     }
 
@@ -121,6 +144,13 @@ impl VoiceSession {
         let dispatcher = self.dispatcher.clone();
         let store = self.store.clone();
         let mut ev_rx = client.events();
+        // 「服务端 VAD」模式：服务端自己判定回合结束并触发推理，
+        // 客户端不能再发 commit / create_response（否则重复触发）。
+        let local_vad = self.local_vad;
+        // 首包看门狗（两个任务共享）
+        let turn_wait = Arc::new(std::sync::Mutex::new(TurnWait::default()));
+        let turn_wait_push = turn_wait.clone();
+        let turn_wait_ev = turn_wait.clone();
 
         // 采集 → 推流 + 频谱
         let mic2 = mic.clone();
@@ -359,12 +389,38 @@ impl VoiceSession {
                                             "⚡ 上一轮回复还没结束 → 先取消，再开新一轮（不重复计数，打断已在开口时记过）"
                                         );
                                     }
-                                    let _ = client2.commit();
-                                    let _ = client2.create_response();
-                                    tracing::info!(
-                                        cancelled_previous = still_responding,
-                                        "本地判定说完 → commit"
-                                    );
+                                    if local_vad {
+                                        // 本地 VAD 模式：关掉了服务端 VAD，回合结束得我们自己报。
+                                        let _ = client2.commit();
+                                        let _ = client2.create_response();
+                                        // 看门狗起点：从这里开始算「等它开口」
+                                        if let Ok(mut w) = turn_wait_push.lock() {
+                                            *w = TurnWait {
+                                                since: Some(std::time::Instant::now()),
+                                                audio_seen: false,
+                                                retries: 0,
+                                            };
+                                        }
+                                        tracing::info!(
+                                            cancelled_previous = still_responding,
+                                            "本地判定说完 → commit + response.create"
+                                        );
+                                    } else {
+                                        // 服务端 VAD 模式：append 音频本身就会触发推理
+                                        // （阶跃文档：ServerVAD 模式下 append 会触发大模型推理），
+                                        // 这里发 commit/response.create 会造成两轮回复。
+                                        if let Ok(mut w) = turn_wait_push.lock() {
+                                            *w = TurnWait {
+                                                since: Some(std::time::Instant::now()),
+                                                audio_seen: false,
+                                                retries: 0,
+                                            };
+                                        }
+                                        tracing::info!(
+                                            cancelled_previous = still_responding,
+                                            "本地判定说完（服务端 VAD 模式：让服务端自己触发）"
+                                        );
+                                    }
                                 }
                                 Talk::Cooldown if silent_run >= NEED_SILENCE * 3 => {
                                     // 静音够久（600ms），回到待命
@@ -470,7 +526,48 @@ impl VoiceSession {
                 {
                     Ok(Ok(e)) => e,
                     Ok(Err(_)) => break,
-                    Err(_) => continue,
+                    Err(_) => {
+                        // ★ 首包看门狗（2026-10-25）：
+                        //
+                        // 用户最气的一个现象是「说完了它不回」。查下来这条路径
+                        // **完全没有超时兜底**：commit + response.create 发出去后，
+                        // 服务端如果因为 `ongoing response`、空缓冲区、网络抖动
+                        // 没回音频，就永久静默 —— 日志里也什么都没有。
+                        //
+                        // 开源框架（LiveKit / pipecat）的通用做法：1.5–2 秒没首包
+                        // 就 cancel + 重发一次，仍没有就报错让上层重连。
+                        let retry = {
+                            let mut w = match turn_wait_ev.lock() {
+                                Ok(g) => g,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            match w.since {
+                                Some(t)
+                                    if !w.audio_seen
+                                        && w.retries < 1
+                                        && t.elapsed() >= Duration::from_millis(2000) =>
+                                {
+                                    w.retries += 1;
+                                    w.since = Some(std::time::Instant::now());
+                                    true
+                                }
+                                _ => false,
+                            }
+                        };
+                        if retry {
+                            tracing::warn!(
+                                local_vad,
+                                "2 秒没等到回复音频 → 取消后重新触发一次（看门狗）"
+                            );
+                            if local_vad {
+                                let _ = c_ev.cancel_response();
+                            }
+                            if let Err(e) = c_ev.create_response() {
+                                tracing::warn!(error = %e, "看门狗重发 response.create 失败");
+                            }
+                        }
+                        continue;
+                    }
                 };
                 let mut m = m2.lock().await;
 
@@ -509,6 +606,23 @@ impl VoiceSession {
                         let n = player2.append_pcm16(&pcm, sample_rate);
                         resp_frames += n as u64;
                         played.fetch_add(n as u64, Ordering::Relaxed);
+                        // 记「说完 → 首音频」的真实延迟（用户体验的核心指标）
+                        {
+                            let mut w = match turn_wait_ev.lock() {
+                                Ok(g) => g,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            if !w.audio_seen {
+                                w.audio_seen = true;
+                                if let Some(t) = w.since {
+                                    tracing::info!(
+                                        wait_ms = t.elapsed().as_millis() as u64,
+                                        local_vad,
+                                        "首次音频到达（说完 → 它开口）"
+                                    );
+                                }
+                            }
+                        }
                         let _ = m.handle(Stimulus::ModelSpeaking);
                     }
                     RealtimeEvent::SpeechStarted => {
@@ -586,6 +700,10 @@ impl VoiceSession {
                         }
                     }
                     RealtimeEvent::ResponseDone { .. } => {
+                        // 这一轮结束了，看门狗归零（下一轮重新计时）
+                        if let Ok(mut w) = turn_wait_ev.lock() {
+                            *w = TurnWait::default();
+                        }
                         // 还有工具结果没回灌 → 这个 response 只是「调工具那一步」，
                         // 不是最终答复，不计入「没干活」的判断。
                         if pending_tool_results > 0 {

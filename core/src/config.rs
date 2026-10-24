@@ -347,6 +347,16 @@ impl Config {
         if let Ok(v) = std::env::var("MORPHOFLY_API_KEY_ENV") {
             self.realtime.api_key_env = v;
         }
+        // 回合判定模式：默认「本地 VAD + 手动 commit」（turn_detection: null）。
+        // `MORPHOFLY_SERVER_VAD=1` 切回服务端 VAD（服务端自己判回合、自己触发推理），
+        // 便于真机 A/B 对比两种模式的延迟与稳定性，不用重新编译。
+        if let Ok(v) = std::env::var("MORPHOFLY_SERVER_VAD") {
+            let on = matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes"
+            );
+            self.realtime.use_local_vad = !on;
+        }
         // 音频设备：环境变量优先于配置文件（便于临时排查，不用改文件）
         if let Ok(v) = std::env::var("MORPHOFLY_INPUT_DEVICE") {
             let v = v.trim().to_string();
