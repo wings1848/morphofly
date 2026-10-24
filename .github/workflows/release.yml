@@ -39,11 +39,20 @@ jobs:
       # 实测在 windows-latest 上跑了 40+ 分钟还没完，把整条流水线拖死。
       #
       # --no-bundle：只编二进制，不打安装包。这一步能过 = Windows 上真的能编。
-      - name: 编译 Windows 可执行文件（不打安装包）
+      #
+      # ⚠️ 2026-10-25 实测：带唤醒词（默认 feature `kws`）的 Windows release 构建
+      # 跑了 50 分钟没完 —— 卡在 sherpa-onnx 的 Windows 预编译库那一步。
+      # CI 里「cargo check app 外壳 --no-default-features」是过的，
+      # 带 kws 的那个 check 从来没跑成过。
+      #
+      # 所以这里先出**不带唤醒词**的 Windows 包：能编、能装、能用（点一下小球说话），
+      # 只是还没法喊「小蝶」唤醒。带 kws 的 Windows 支持要单独解决 sherpa 那边，
+      # 没解决之前不假装它能用。
+      - name: 编译 Windows 可执行文件（不带唤醒词）
         timeout-minutes: 45
         run: |
           cd app
-          tauri build --no-bundle
+          tauri build --no-bundle --no-default-features
 
       - uses: actions/upload-artifact@v4
         with:
@@ -59,7 +68,7 @@ jobs:
         timeout-minutes: 30
         run: |
           cd app
-          tauri build --bundles nsis
+          tauri build --bundles nsis --no-default-features
 
       - uses: actions/upload-artifact@v4
         if: steps.nsis.outcome == 'success'
