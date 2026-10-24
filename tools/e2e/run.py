@@ -305,6 +305,11 @@ async def main() -> int:
     for case in cases:
         print(f"\n── {case['id']} [{case.get('cat')}] {case.get('text','')[:40]!r}")
 
+        # 标了 skip 的用例不走常规流程（比如打断必须单独跑）
+        if case.get("expect", {}).get("skip"):
+            print(f"  ⏭️ 跳过（{case['expect'].get('note','需单独跑')[:60]}）")
+            continue
+
         if args.mode == "real":
             audio = AUDIO_DIR / f"{case['id']}.pcm"
             if not args.no_tts:
