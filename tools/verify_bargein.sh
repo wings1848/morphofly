@@ -22,7 +22,10 @@
 # ## 怎么造出「模型正在说话」
 #
 # gpd 没有实体音箱，用虚拟 sink（mfsink）喂音频：先唤醒，再灌一句
-# 「从一数到一百」（短指令、长回答：模型会连续念很久），S4 一出现就灌「停一下」。
+# 「从一数到一百」（短指令、长回答：模型会连续念很久），S4 一出现就灌一串「停」。
+# 灌一串而不是一个「停」：虚拟音源（paplay→null-sink→monitor→采集）本身有
+# 1–2 秒延迟，单个短音常常落在模型说话的间隙里（2026-10-25 反复踩到），
+# 灌 5 秒左右的一串才能保证和「正在说话」重叠。
 #
 # 用法：tools/verify_bargein.sh [--dry-run]
 # 退出码：0 通过 / 1 失败 / 2 跳过（设备不在线 / 服务没跑）
@@ -36,7 +39,7 @@ ASK_WAV=/tmp/bargein-ask.wav
 STOP_WAV=/tmp/bargein-stop.wav
 WAKE_TEXT="小蝶"
 ASK_TEXT="从一数到一百"
-STOP_TEXT="停"
+STOP_TEXT="停，停，停，停，停，停，停，停"
 SERVICE=morphofly-test
 MAX_DELAY_MS=6000      # 总延迟只做上限保护（虚拟音源链路可能很慢）
 MAX_REACT_MS=300       # 产品反应时间：VAD 判定人声 → 停播
@@ -154,14 +157,14 @@ while [ "$ATTEMPT" -lt 5 ]; do
       continue
     fi
   fi
-  INJECT=$(run "T=\$(date +%s%3N); timeout 15 paplay --device=$SINK $STOP_WAV; echo \"INJECT_MS=\$T\"")
+  INJECT=$(run "T=\$(date +%s%3N); nohup timeout 25 paplay --device=$SINK $STOP_WAV >/dev/null 2>&1 & echo \"INJECT_MS=\$T\"")
   INJECT_MS=$(printf '%s\n' "$INJECT" | sed -n 's/^INJECT_MS=//p' | head -1)
   [ -n "${INJECT_MS:-}" ] || fail "注入打断语音失败：$INJECT"
   say "第 ${ATTEMPT} 次注入「$STOP_TEXT」（gpd 时钟 ${INJECT_MS}ms）"
   # 灌完等 2 秒看有没有打断
   hit=0
   for _ in $(seq 1 20); do
-    if jtail | grep -q '本地 VAD 打断'; then hit=1; break; fi
+    if jtail | grep -q '记一次打断'; then hit=1; break; fi
     sleep 0.1
   done
   [ "$hit" = 1 ] && break
@@ -192,7 +195,7 @@ for line in sys.stdin:
         msg = bytes(b for b in msg if isinstance(b, int)).decode(errors="replace")
     elif isinstance(msg, bytes):
         msg = msg.decode(errors="replace")
-    if "本地 VAD 打断" in msg:
+    if "记一次打断" in msg:
         print(int(e["__REALTIME_TIMESTAMP"]) // 1000)
         break
 ' | head -1)
