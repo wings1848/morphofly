@@ -8,6 +8,7 @@
 pub mod audio;
 pub mod config;
 pub mod dispatch;
+pub mod intent;
 pub mod dsh;
 #[cfg(feature = "kws")]
 pub mod kws;

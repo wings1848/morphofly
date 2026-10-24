@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
 use morphofly_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
 use morphofly_core::Config;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tokio::sync::Mutex;
 
 /// 全局共享状态
@@ -307,6 +309,93 @@ fn demo_states_placeholder() -> bool {
         .unwrap_or(false)
 }
 
+/// 让小球贴到屏幕右下角（避开中心，不挡视线）。
+///
+/// 用户要求：「小圆球默认显示在桌面合适位置，可自动贴边」
+///
+/// 位置策略：右下角内缩 24px（不贴死，留出视觉呼吸）。
+/// 为什么是右下角：任务栏通常在底部，右下角是最不干扰主工作区的位置。
+fn place_orb_bottom_right(win: &WebviewWindow) {
+    let (Ok(Some(monitor)), Ok(size)) = (win.current_monitor(), win.outer_size()) else {
+        tracing::warn!("拿不到显示器或窗口尺寸，跳过定位");
+        return;
+    };
+    let screen = monitor.size();
+    let scale = monitor.scale_factor();
+    let margin = (24.0 * scale) as i32;
+    let x = screen.width as i32 - size.width as i32 - margin;
+    let y = screen.height as i32 - size.height as i32 - margin - (48.0 * scale) as i32;
+    if let Err(e) = win.set_position(tauri::PhysicalPosition::new(x.max(0), y.max(0))) {
+        tracing::warn!(error = %e, "设置窗口位置失败");
+    } else {
+        tracing::info!(x, y, "小球已贴到右下角");
+    }
+}
+
+/// 建系统托盘图标（用户要求「支持跨平台任务栏图标」）。
+///
+/// 这是 V1 最严重的体验问题：窗口无边框 + 始终置顶 + 任务栏不显示，
+/// 用户启动后既关不掉也找不到，只能 pkill。
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "显示小球", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "隐藏小球", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出蝶梦", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("蝶梦 · 语音智能体")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(w) = app.get_webview_window("orb") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            "hide" => {
+                if let Some(w) = app.get_webview_window("orb") {
+                    let _ = w.hide();
+                }
+            }
+            "quit" => {
+                tracing::info!("托盘菜单：退出");
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 左键单击 = 显示/隐藏切换（符合常见托盘交互习惯）
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(w) = app.get_webview_window("orb") {
+                    if w.is_visible().unwrap_or(false) {
+                        let _ = w.hide();
+                    } else {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                }
+            }
+        });
+
+    // 托盘图标：用打包进去的 32x32 png
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    } else {
+        tracing::warn!("没有默认窗口图标，托盘可能显示为空白");
+    }
+
+    builder.build(app)?;
+    tracing::info!("系统托盘已就绪（左键显示/隐藏，右键菜单）");
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -397,8 +486,21 @@ fn main() {
             let handle = app.handle().clone();
             spawn_pump(handle.clone(), machine.clone(), demo_audio);
             spawn_session_guard(handle, machine.clone(), cfg.clone());
+            // ★ 系统托盘（用户要求「支持跨平台任务栏图标」）
+            // V1 最严重的体验问题：无边框+置顶+任务栏不显示 = 关不掉也找不到
+            if let Err(e) = setup_tray(app) {
+                tracing::error!(error = %e, "创建系统托盘失败——用户将无法通过托盘退出");
+            }
+
             if let Some(win) = app.get_webview_window("orb") {
                 let _ = win.show();
+                // ★ 贴到右下角（用户要求「默认显示在桌面合适位置」）
+                // 稍等一帧让窗口完成创建，否则拿到的尺寸是 0
+                let w2 = win.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    place_orb_bottom_right(&w2);
+                });
             }
             Ok(())
         })
