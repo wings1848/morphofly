@@ -98,3 +98,43 @@ cargo run -q -p morphofly-core --example asr_probe -- /tmp/task1.wav
 source tools/dev-env.sh
 cargo run -q -p morphofly-core --example toolchoice_probe -- /tmp/task1.wav
 ```
+
+---
+
+# 探针三：`commit()` 之后立刻 `create_response()` 会抢跑吗？
+
+**结论：不会。这个假设被否证。**
+
+## 假设
+
+App 里「说完 → 200ms 静音 → commit + create_response」是一口气发的。
+如果服务端先处理 `response.create`、后处理 `commit`，这一轮就会基于不完整输入，
+模型只能敷衍一句「好，查着呢」而不调工具 —— 这能解释真机那个「时好时坏」。
+
+## 实测（2026-10-25 00:45，`core/examples/commit_race_probe.rs`）
+
+同一段音频放两遍，只改一个变量：
+
+```
+[A 轮] 推音频 → commit → **立刻** create_response
+    🔧 delegate_task
+[A 轮] 工具 1 次
+[B 轮] 推音频 → commit → **等 300ms** → create_response
+    🔧 delegate_task
+[B 轮] 工具 1 次
+
+结论：⚠️ 两轮都调了工具，看不出来 —— 这个场景不复现 App 的问题
+```
+
+**所以不是抢跑。** 在干净音频 + 单会话的条件下，模型每次都老实调工具。
+
+## 剩下的差异（下一轮要查的）
+
+探针和 App 唯一的区别是**音频来源**：
+- 探针：直连推干净的 wav
+- App：虚拟音源 → PulseAudio 采集（48k）→ 重采样 16k → **AEC（sonora）** → 推流
+
+AEC 动了音频，这是最可疑的一环。已做 A/B（`MORPHOFLY_AEC=0` 开关）：
+```
+docs/v2/aec-ab.md
+```
