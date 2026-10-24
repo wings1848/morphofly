@@ -33,7 +33,11 @@ const TERMS: &[(&str, &[&str])] = &[
             "mobile fly",
             "moto fly",
             "摩托fly",
+            "魔方fly",
+            "魔方飞",
+            "魔方 fly",
             "莫否fly",
+            "mofangfly",
             "move_forward",
             "move forward",
         ],
@@ -146,6 +150,13 @@ mod tests {
     fn case_insensitive_for_ascii() {
         assert_eq!(fix_transcript("看看 MOSOFLY 项目"), "看看 morphofly 项目");
         assert_eq!(fix_transcript("把 VIMI 读一下"), "把 README 读一下");
+    }
+
+    #[test]
+    fn fixes_mofangfly_from_real_run() {
+        // 2026-10-25 真机第二轮原话：morphofly 被听成「魔方fly」
+        let got = fix_transcript("帮我看看魔方fly项目的 limit 第一行是什么？");
+        assert_eq!(got, "帮我看看morphofly项目的 limit 第一行是什么？");
     }
 
     #[test]
