@@ -271,18 +271,25 @@ impl DshClient {
             }
         }))
         .await?;
-        self.initialized.store(true, Ordering::SeqCst);
-        // 等一下握手回复（reader 收到 result 就会把 initialized 置位）
-        for _ in 0..100 {
+        // ⚠️ 这里要**真的等握手回复**。
+        //
+        // 2026-10-25 实测：`dsh --profile acp` 的 initialize 有时只要 1 秒，
+        // 有时要 **15 秒**（大概率是在启 MCP 服务，本机配了 SSH 桥的 MCP）。
+        // 原来的写法是「最多等 2 秒就往下走」，于是后面发 session/new 时
+        // 服务端还没完成握手 → session/new 一直没回复 → 20 秒超时 →
+        // 用户听到的汇报是「失败了：建 DSH 会话失败」。
+        //
+        // 真机证据（手工复现）：initialize 15.29s、session/new 1.49s。
+        for _ in 0..600 {
             if self.initialized.load(Ordering::SeqCst) {
-                break;
+                return Ok(());
             }
             if self.closed.load(Ordering::SeqCst) {
                 bail!("DSH 进程在握手前退出");
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        Ok(())
+        bail!("DSH 握手超时（30s 没回 initialize 结果）")
     }
 
     /// 在已握手的进程上新建一个会话（每个任务一个）。
@@ -294,8 +301,9 @@ impl DshClient {
         self.send_request("session/new", json!({"cwd": cwd, "mcpServers": []}))
             .await?;
 
-        // 等 sessionId 出现（最多 20s）
-        for _ in 0..200 {
+        // 等 sessionId 出现（最多 50s）。
+        // 慢机器上 session/new 本身要 1.5s，但前面可能还排着别的事。
+        for _ in 0..500 {
             if let Some(sid) = self.session_id.lock().await.clone() {
                 let _ = self.events_tx.send(DshEvent::SessionReady {
                     session_id: sid.clone(),
@@ -307,7 +315,7 @@ impl DshClient {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        bail!("建 DSH 会话超时（20s）")
+        bail!("建 DSH 会话超时（50s）")
     }
 
     /// 派活：发一条 prompt，流式事件从 `subscribe()` 来
