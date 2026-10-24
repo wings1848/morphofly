@@ -158,15 +158,16 @@ impl VoiceSession {
             let mut rx = mic2.subscribe();
             let mut spectrum = Spectrum::with_default_window();
             let mut idle_frames = 0u64;
-            // ★ 本地 VAD：两个用途
+            // ★ 本地 VAD：三个用途
             //   1. 打断（用户说话 → 立刻停播）
-            //   2. 判定「说完了」→ 立刻 commit（不等服务端 VAD 的 1.95s）
+            //   2. 判定「开口 / 说完了」→ 立刻 commit（不等服务端 VAD 的 1.95s）
+            //   3. **「这一帧有没有人声」的唯一判据**（旧版用固定 RMS 阈值，见下）
             #[cfg(feature = "kws")]
             let vad =
                 morphofly_core::vad::LocalVad::new(&morphofly_core::vad::VadConfig::default()).ok();
             #[cfg(feature = "kws")]
             let mut vad_cooldown = 0u32;
-            // 「说完」判定（本地 VAD 的简化版）。
+            // 「说完」判定（本地 VAD 驱动）。
             //
             // 状态机：
             //   Idle     --有声--> Speaking
@@ -176,6 +177,12 @@ impl VoiceSession {
             // ⚠️ 2026-10-24 踩坑：最初写成「只要 rms>0.02 就重置 committed 标志」，
             // 结果环境底噪（风扇/键盘）让标志反复重置，一次发言触发 4 次 commit。
             // 现在用「必须连续有声才算重新开口」——底噪过不了连续 N 帧这条线。
+            //
+            // ⚠️ 2026-10-25 第二个坑（本文件这轮改的就是它）：把 `rms > 0.02`
+            // 当成「有没有人声」的判据，在真实麦克风上**根本达不到** ——
+            // 内置麦正常说话的帧 RMS 最高 0.018（实测 5 分钟，底噪中位 0.00275）→
+            // 永远判不到开口 → 永远不 commit → 云端收不到话 → 没有回复。
+            // 所以「有没有人声」交给 VAD；`VOICE_RMS` 只在没有 VAD 的构建里兜底。
             #[derive(PartialEq)]
             enum Talk {
                 Idle,
@@ -185,7 +192,8 @@ impl VoiceSession {
             let mut talk = Talk::Idle;
             let mut voiced_run = 0u32; // 连续有声帧数
             let mut silent_run = 0u32; // 连续静音帧数
-            const VOICE_RMS: f32 = 0.02; // 有声阈值
+                                       // 兜底阈值：只在 `--no-default-features`（没有 silero VAD）时使用。
+            const VOICE_RMS: f32 = 0.02;
             const NEED_VOICE: u32 = 3; // 连续 3 帧（60ms）才算真开口
                                        // ⚠️ 200ms（10 帧）太短 —— 用户反馈 + 真机日志都证明：一句话中间
                                        // 稍微换气就会被切成两段，第二段拿着「已提交」的缓冲去 create_response，
@@ -201,78 +209,95 @@ impl VoiceSession {
                         let rms = morphofly_core::spectrum::rms_i16(&frame);
                         let bins = spectrum.analyze_i16(&frame);
                         on_spec(bins, morphofly_core::spectrum::rms_to_visual(rms));
+                        // ★「这一帧算不算人声」：本地 silero VAD 判定。
+                        //
+                        // 为什么不再用固定 RMS 阈值（2026-10-25 真机实测）：
+                        // 用户正常说话经过内置麦的帧 RMS 最高只有 0.018，而旧阈值
+                        // 写死 `VOICE_RMS = 0.02` → 永远判不到「开口」→ 永远不 commit →
+                        // 云端一个字都收不到，自然也没有回复；日志上却一切正常
+                        // （只有「本地 VAD 判定人声」，没有「本地判定开口」）。
+                        // 实测依据：5 分钟录音里最响的 1 秒 RMS=0.0182，底噪中位 0.00275。
+                        // VAD 对同样这些帧能判成人声，所以「开口 / 说完」以 VAD 为准；
+                        // 没有 VAD 的构建（--no-default-features）才退回 RMS。
+                        #[cfg(feature = "kws")]
+                        let vad_voice = match vad.as_ref() {
+                            Some(v) => {
+                                let f32s: Vec<f32> =
+                                    frame.iter().map(|&s| s as f32 / 32768.0).collect();
+                                v.push(&f32s)
+                            }
+                            None => rms > VOICE_RMS,
+                        };
+                        #[cfg(not(feature = "kws"))]
+                        let vad_voice = rms > VOICE_RMS;
                         // ★ 本地 VAD 先停，再推流（顺序不能反）
                         #[cfg(feature = "kws")]
                         {
-                            if let Some(v) = vad.as_ref() {
-                                let f32s: Vec<f32> =
-                                    frame.iter().map(|&s| s as f32 / 32768.0).collect();
-                                // 冷却：刚打断完 800ms 内不重复触发
-                                if vad_cooldown > 0 {
-                                    vad_cooldown = vad_cooldown.saturating_sub(1);
-                                } else if v.push(&f32s) {
-                                    let queued = player_in_push.queued_frames();
-                                    // 「回复还在进行」也要算打断 —— 只看播放队列会漏：
-                                    // 音频边播边收，队列可能刚好空，但云端这一轮还没结束。
-                                    // 2026-10-25 用户反馈：回复进行中又来新一句时，
-                                    // 旧实现是硬发 create_response，被服务端拒
-                                    // （`ongoing response already exists`）。
-                                    let responding = {
-                                        let m = machine_in_push.lock().await;
-                                        matches!(m.state(), OrbState::S3 | OrbState::S4)
-                                    };
-                                    // 单独打一行「VAD 判定人声」：验收脚本要用它量
-                                    // 「检测到人声 → 停播」的真实反应时间
-                                    // （虚拟音源注入到被采集之间还有几百毫秒，
-                                    //   那是环境延迟，不该算进产品反应里）。
-                                    tracing::debug!(queued, responding, "本地 VAD 判定人声");
-                                    if queued > 0 || responding {
-                                        if queued > 0 {
-                                            player_in_push.stop_now();
-                                        }
-                                        // ★ 修缺陷 #5：还要告诉云端别生成了。
-                                        // 之前只停本地播放，云端继续跑 —— 浪费 token，
-                                        // 而且缓存的音频会让它「刚停又接着说」。
-                                        if let Err(e) = client_in_push.cancel_response() {
-                                            tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
-                                        }
-                                        let counted = count_interruption(
-                                            &interruptions_in_push,
-                                            &last_interrupt_in_push,
-                                        );
-                                        vad_cooldown = 40; // 40 帧 * 20ms = 800ms
-                                        if counted {
-                                            tracing::info!(
-                                                queued,
-                                                responding,
-                                                "⚡ 打断：停播 + 取消当前回复（记一次打断）"
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                queued,
-                                                responding,
-                                                "打断：同一次开口的重复信号（不重复计数）"
-                                            );
-                                        }
-                                        // ⚠️ 这里**不能** block_on。
-                                        //
-                                        // 2026-10-25 真机首次验证打断时就炸了：
-                                        // 这段代码跑在 async 任务（push_task）里，
-                                        // `block_on` 会 panic：「Cannot start a runtime
-                                        // from within a runtime」→ 整个推流任务死掉
-                                        // → 麦克风不再推流，得等下一次建会话才恢复。
-                                        // 改成 spawn 出去通知状态机。
-                                        let m_for_vad = machine_in_push.clone();
-                                        tauri::async_runtime::spawn(async move {
-                                            let mut m = m_for_vad.lock().await;
-                                            let _ = m.handle(Stimulus::UserSpeechStarted);
-                                        });
+                            // 冷却：刚打断完 800ms 内不重复触发
+                            if vad_cooldown > 0 {
+                                vad_cooldown = vad_cooldown.saturating_sub(1);
+                            } else if vad_voice {
+                                let queued = player_in_push.queued_frames();
+                                // 「回复还在进行」也要算打断 —— 只看播放队列会漏：
+                                // 音频边播边收，队列可能刚好空，但云端这一轮还没结束。
+                                // 2026-10-25 用户反馈：回复进行中又来新一句时，
+                                // 旧实现是硬发 create_response，被服务端拒
+                                // （`ongoing response already exists`）。
+                                let responding = {
+                                    let m = machine_in_push.lock().await;
+                                    matches!(m.state(), OrbState::S3 | OrbState::S4)
+                                };
+                                // 单独打一行「VAD 判定人声」：验收脚本要用它量
+                                // 「检测到人声 → 停播」的真实反应时间
+                                // （虚拟音源注入到被采集之间还有几百毫秒，
+                                //   那是环境延迟，不该算进产品反应里）。
+                                tracing::debug!(queued, responding, "本地 VAD 判定人声");
+                                if queued > 0 || responding {
+                                    if queued > 0 {
+                                        player_in_push.stop_now();
                                     }
+                                    // ★ 修缺陷 #5：还要告诉云端别生成了。
+                                    // 之前只停本地播放，云端继续跑 —— 浪费 token，
+                                    // 而且缓存的音频会让它「刚停又接着说」。
+                                    if let Err(e) = client_in_push.cancel_response() {
+                                        tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
+                                    }
+                                    let counted = count_interruption(
+                                        &interruptions_in_push,
+                                        &last_interrupt_in_push,
+                                    );
+                                    vad_cooldown = 40; // 40 帧 * 20ms = 800ms
+                                    if counted {
+                                        tracing::info!(
+                                            queued,
+                                            responding,
+                                            "⚡ 打断：停播 + 取消当前回复（记一次打断）"
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            queued,
+                                            responding,
+                                            "打断：同一次开口的重复信号（不重复计数）"
+                                        );
+                                    }
+                                    // ⚠️ 这里**不能** block_on。
+                                    //
+                                    // 2026-10-25 真机首次验证打断时就炸了：
+                                    // 这段代码跑在 async 任务（push_task）里，
+                                    // `block_on` 会 panic：「Cannot start a runtime
+                                    // from within a runtime」→ 整个推流任务死掉
+                                    // → 麦克风不再推流，得等下一次建会话才恢复。
+                                    // 改成 spawn 出去通知状态机。
+                                    let m_for_vad = machine_in_push.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        let mut m = m_for_vad.lock().await;
+                                        let _ = m.handle(Stimulus::UserSpeechStarted);
+                                    });
                                 }
                             }
                         }
                         // ★ 本地判定「说完了」→ 立刻 commit（这是 802ms 的关键）
-                        if rms > VOICE_RMS {
+                        if vad_voice {
                             voiced_run += 1;
                             silent_run = 0;
                             match talk {
