@@ -122,7 +122,11 @@ if [ "$NO_RESTART" = 0 ]; then
     sleep 1
   fi
   echo "[verify_startup_clean] 重启 $GPD_SERVICE（t0=$START_EPOCH）"
-  run "systemctl --user restart $GPD_SERVICE" || { echo "FAIL  重启服务失败"; exit 1; }
+  # epoch 用「restart 返回之后」的时间：保证分析只用新实例的帧
+  # （重启前旧实例可能正在显示正常的运行期字幕，不能算启动不干净的账）。
+  RESTART_EPOCH=$(run "systemctl --user restart $GPD_SERVICE && date +%s" 2>/dev/null | tail -1) \
+    || { echo "FAIL  重启服务失败"; exit 1; }
+  [[ "${RESTART_EPOCH:-}" =~ ^[0-9]+$ ]] || RESTART_EPOCH=0
   # 等录屏结束（最多 REC_DURATION+8s）
   if [ "$NO_FRAMES" = 0 ]; then
     DEADLINE=$(( $(date +%s) + REC_DURATION + 10 ))
@@ -146,7 +150,13 @@ else
   run "journalctl --user -u $GPD_SERVICE --no-pager -o cat -n 500" >"$JOURNAL" 2>/dev/null
 fi
 [ -s "$JOURNAL" ] || { echo "FAIL  拿不到 journal"; exit 1; }
-echo "[verify_startup_clean] journal → $JOURNAL（$(wc -l <"$JOURNAL") 行）"
+JOURNAL_RAW="$EVIDENCE_DIR/startup-journal-full.log"
+mv "$JOURNAL" "$JOURNAL_RAW"
+# 同一个 unit 重启前后的日志在 --since 里会混在一起；只从最后一次
+# 「Started ...」标记之后算本次启动的日志（重启前旧实例的字幕是正常运行行为）。
+awk '/Started MorphoFly voice agent/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' \
+  "$JOURNAL_RAW" >"$JOURNAL"
+echo "[verify_startup_clean] journal（本次实例）→ $JOURNAL（$(wc -l <"$JOURNAL") 行，原始 $(wc -l <"$JOURNAL_RAW") 行）"
 
 # ── T1 启动时不该显示任何初始字幕 ─────────────────────────────────────────
 # 两个证据缺一不可：
@@ -208,13 +218,13 @@ if [ "$NO_FRAMES" = 0 ]; then
   Y=$(echo "$POS_LINE" | sed 's/.*y=\([-0-9]*\).*/\1/')
   DPR=$(grep -o 'dpr=[0-9.]*' "$JOURNAL" | head -1 | cut -d= -f2)
   DPR=${DPR:-1.5}
-  RES=$(run "$(export_env); python3 $FRAMES_PY analyze $REC_DIR $LATE_T ${X:-0} ${Y:-0} $DPR" 2>&1)
+  RES=$(run "$(export_env); python3 $FRAMES_PY analyze $REC_DIR $LATE_T ${X:-0} ${Y:-0} $DPR ${RESTART_EPOCH:-0}" 2>&1)
   echo "$RES" >"$EVIDENCE_DIR/startup-frames-analyze.json"
   echo "$RES"
   if echo "$RES" | grep -q '"verdict": "PASS"'; then
-    ok "T4 启动气泡区域差分正常（$(echo "$RES" | grep -o '"mean_abs_diff": [0-9.]*'))"
+    ok "T4 启动气泡区域差分正常（$(echo "$RES" | grep -o '"max_mean_diff": [0-9.]*')）"
   else
-    bad "T4 启动瞬间球左侧仍有黑框/文字（$(echo "$RES" | grep -o '"mean_abs_diff": [0-9.]*')）"
+    bad "T4 启动瞬间球左侧仍有黑框/文字（$(echo "$RES" | grep -o '"max_mean_diff": [0-9.]*') / $(echo "$RES" | grep -o '"max_at_t": [0-9.]*')）"
   fi
   # 把帧拉回来留证据（体积很小：只存了右下角 400x300）
   rm -rf "$FRAMES_LOCAL"; mkdir -p "$FRAMES_LOCAL"

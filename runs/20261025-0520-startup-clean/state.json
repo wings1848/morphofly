@@ -6,7 +6,7 @@
   "tier": "light",
   "project_type": "desktop-app",
   "human_mode": "inspect",
-  "stage": "S0",
+  "stage": "S5",
   "status": "running",
   "owner": {
     "agent": "agent",
@@ -15,14 +15,62 @@
     "lease_until": "2026-10-25T05:15:28+08:00"
   },
   "attempts": {
-    "S0": 1
+    "S0": 1,
+    "S1": 1,
+    "S2": 1,
+    "S3": 1,
+    "S4": 1,
+    "S5": 1
   },
   "loops": {
     "used": 0,
     "max": 3,
     "last_fail_stage": null
   },
-  "gates": {},
+  "gates": {
+    "G0": {
+      "status": "pass",
+      "evidence": "runs/20261025-0520-startup-clean/acceptance.md",
+      "sha256": "484069587f1d0270995e7c48008d6619dcc2c5b47af6485d787ea44aac705674",
+      "at": "2026-10-25T05:34:24+08:00",
+      "note": null
+    },
+    "G1": {
+      "status": "pass",
+      "evidence": "runs/20261025-0520-startup-clean/acceptance.md",
+      "sha256": "484069587f1d0270995e7c48008d6619dcc2c5b47af6485d787ea44aac705674",
+      "at": "2026-10-25T05:34:24+08:00",
+      "note": null
+    },
+    "G2": {
+      "status": "pass",
+      "evidence": "runs/20261025-0520-startup-clean/tasks.yaml",
+      "sha256": "65ce974d46390c2a1ef78887d18508299b97bb8f192411ae96c0c7e6dcaaa8ea",
+      "at": "2026-10-25T05:34:24+08:00",
+      "note": null
+    },
+    "G3": {
+      "status": "pass",
+      "evidence": "runs/20261025-0520-startup-clean/evidence/red.log",
+      "sha256": "b2603cb8903366382167e3a186d382a73ade8508d2394c305a8d470cd339fefd",
+      "at": "2026-10-25T05:34:24+08:00",
+      "note": null
+    },
+    "G4": {
+      "status": "pass",
+      "evidence": "runs/20261025-0520-startup-clean/verify-report.md",
+      "sha256": "79abb15a1e111602231602bc88f1edf44857968f9c5cc98c42ad4ad7421c672b",
+      "at": "2026-10-25T05:34:24+08:00",
+      "note": null
+    },
+    "G5": {
+      "status": "pass",
+      "evidence": "runs/20261025-0520-startup-clean/verify-report.md",
+      "sha256": "79abb15a1e111602231602bc88f1edf44857968f9c5cc98c42ad4ad7421c672b",
+      "at": "2026-10-25T05:34:25+08:00",
+      "note": null
+    }
+  },
   "human": {},
   "budget": {
     "minutes_cap": 120,
@@ -33,7 +81,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S0：跑 G0 并落证据（devflow gate G0 pass --evidence <文件>）",
+  "next_action": "S5 闸门已过：devflow set-stage S6",
   "artifacts": {
     "progress": "progress.md"
   }
