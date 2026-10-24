@@ -322,6 +322,29 @@ fn demo_states_placeholder() -> bool {
         .unwrap_or(false)
 }
 
+/// 小球「归位坐标」——贴边后左上角应该在的地方。
+///
+/// 为什么要有它：`set_size` 和 `set_position` 都是异步的，
+/// 用「当前尺寸/当前位置」反算新坐标会和窗口管理器抢，
+/// 实测收起后窗口停在 (2712,1516)，比应有的 (2908,1516) 差 196px。
+/// 记住一个确定的归位点，展开/收起都从它算，就不会漂。
+static ORB_HOME: std::sync::OnceLock<std::sync::Mutex<Option<(i32, i32)>>> =
+    std::sync::OnceLock::new();
+
+fn orb_home() -> &'static std::sync::Mutex<Option<(i32, i32)>> {
+    ORB_HOME.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn set_orb_home(x: i32, y: i32) {
+    if let Ok(mut g) = orb_home().lock() {
+        *g = Some((x, y));
+    }
+}
+
+fn get_orb_home() -> Option<(i32, i32)> {
+    orb_home().lock().ok().and_then(|g| *g)
+}
+
 /// 让小球贴到屏幕右下角（避开中心，不挡视线）。
 ///
 /// 用户要求：「小圆球默认显示在桌面合适位置，可自动贴边」
@@ -349,33 +372,39 @@ fn place_orb_bottom_right(win: &WebviewWindow) {
 /// 而内存本来就是本项目的老大难（PSS 371MB）。
 #[tauri::command]
 async fn orb_tip(window: WebviewWindow, show: bool) -> Result<(), String> {
-    let Ok(size) = window.outer_size() else {
-        return Err("拿不到窗口尺寸".into());
-    };
-    let Ok(pos) = window.outer_position() else {
-        return Err("拿不到窗口位置".into());
-    };
     let scale = window.scale_factor().unwrap_or(1.0);
     let small = (f64::from(ORB_SIZE) * scale).round() as u32;
     let wide = (f64::from(TIP_WIDTH) * scale).round() as u32;
     if small == 0 {
         return Err("窗口尺寸异常".into());
     }
-    // 已经是目标状态就别动（避免每帧抖动）
-    let target_w = if show { wide } else { small };
-    if size.width == target_w {
-        return Ok(());
+    // 归位点：优先用贴边时记下的，没记下就用当前位置兜底
+    let home = match get_orb_home() {
+        Some(h) => h,
+        None => {
+            let p = window.outer_position().map_err(|e| e.to_string())?;
+            (p.x, p.y)
+        }
+    };
+    let grow = i32::try_from(wide).unwrap_or(0) - i32::try_from(small).unwrap_or(0);
+    let (target_w, target_x) = if show {
+        (wide, home.0 - grow)
+    } else {
+        (small, home.0)
+    };
+    if let Ok(size) = window.outer_size() {
+        if size.width == target_w {
+            return Ok(());
+        }
     }
-    let target_h = small.max(size.height);
-    let dx = i32::try_from(size.width).unwrap_or(0) - i32::try_from(target_w).unwrap_or(0);
-    let new_x = pos.x + dx; // 右边缘钉住不动
+    // 先挪位置再改尺寸：反过来窗口会先变宽伸到屏幕外，再被 KWM 拉回来
     window
-        .set_size(tauri::PhysicalSize::new(target_w, target_h))
-        .map_err(|e| format!("改窗口宽失败: {e}"))?;
-    window
-        .set_position(tauri::PhysicalPosition::new(new_x, pos.y))
+        .set_position(tauri::PhysicalPosition::new(target_x, home.1))
         .map_err(|e| format!("移动窗口失败: {e}"))?;
-    tracing::debug!(show, target_w, new_x, "气泡窗口调整");
+    window
+        .set_size(tauri::PhysicalSize::new(target_w, small))
+        .map_err(|e| format!("改窗口宽失败: {e}"))?;
+    tracing::debug!(show, target_w, target_x, "气泡窗口调整");
     Ok(())
 }
 
@@ -430,6 +459,7 @@ fn snap_to_edge(win: &WebviewWindow, mode: SnapMode) {
     if let Err(e) = win.set_position(target) {
         tracing::warn!(error = %e, "贴边失败（Wayland 下正常，需 XWayland）");
     } else {
+        set_orb_home(x, y);
         tracing::info!(x, y, right = go_right, "小球已贴边");
     }
 }
