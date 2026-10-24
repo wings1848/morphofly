@@ -31,3 +31,5 @@ Thumbs.db
 *.tmp
 __pycache__/
 .venv/
+ci-dist/
+...
