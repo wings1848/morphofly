@@ -99,17 +99,28 @@ async fn spawn_program(program: &str, args: &[String]) -> std::io::Result<tokio:
         if let Ok(c) = build(program, args).spawn() {
             return Ok(c);
         }
-        // 按 PATHEXT 逐个试
+        // 按 PATHEXT 逐个试。CreateProcess 自己就能执行 .cmd/.bat
+        // （Windows 会把它们交给 cmd.exe），所以这里**不需要**再套一层 `cmd /C`。
+        //
+        // ⚠️ 2026-10-25 踩坑：之前加了「全都找不到就 `cmd /C <命令>`」的兜底，
+        // 结果 `cmd /C 不存在的命令` 也**能 spawn 成功**（只是子进程随后报错），
+        // 于是「拉不起 DSH 要立刻报错」这条路径在 Windows 上消失了，
+        // 上层一直等不到预期的错误，Windows CI 的单测直接挂住 40 分钟。
+        // 找不到就是找不到，老老实实把错误抛出去。
+        let mut last_err = None;
         for ext in [".exe", ".cmd", ".bat", ".com"] {
             let cand = format!("{program}{ext}");
-            if let Ok(c) = build(&cand, args).spawn() {
-                return Ok(c);
+            match build(&cand, args).spawn() {
+                Ok(c) => return Ok(c),
+                Err(e) => last_err = Some(e),
             }
         }
-        // 兜底：交给 cmd.exe 解释（npm 的 .cmd 往往需要 shell 上下文）
-        let mut full = vec![program.to_string()];
-        full.extend(args.iter().cloned());
-        build("cmd", &[vec!["/C".to_string()], full].concat()).spawn()
+        Err(last_err.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("找不到命令：{program}"),
+            )
+        }))
     }
 }
 

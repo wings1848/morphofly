@@ -121,12 +121,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: core（默认 features，纯逻辑）
+        timeout-minutes: 15
         run: cargo check -p morphofly-core
 
       - name: core 单元测试（跨平台逻辑，不碰音频设备）
+        # 加超时：2026-10-25 有过一次挂 40 分钟的黑历史
+        # （cmd /C 兜底让不存在的命令也能 spawn，测试等不到错误就干等）
+        timeout-minutes: 15
         run: cargo test -p morphofly-core --lib
 
       - name: app 外壳（先关掉唤醒词，保证基础能编）
+        timeout-minutes: 25
         run: cargo check -p morphofly-app --no-default-features
 
       # 唤醒词（sherpa-onnx）在 Windows 上要下预编译静态库，单独试；
