@@ -176,6 +176,7 @@ impl DshClient {
         let session_id = self.session_id.clone();
         let config_options = self.config_options.clone();
         let closed = self.closed.clone();
+        let initialized = self.initialized.clone();
 
         tokio::spawn(async move {
             let mut lines: Lines<BufReader<ChildStdout>> = BufReader::new(stdout).lines();
@@ -193,7 +194,14 @@ impl DshClient {
                                 continue;
                             }
                         };
-                        handle_message(msg, &pending, &events_tx, &session_id, &config_options)
+                        handle_message(
+                            msg,
+                            &pending,
+                            &events_tx,
+                            &session_id,
+                            &config_options,
+                            &initialized,
+                        )
                             .await;
                     }
                     Ok(None) => break,
@@ -472,6 +480,7 @@ async fn handle_message(
     events_tx: &broadcast::Sender<DshEvent>,
     session_id: &Arc<Mutex<Option<String>>>,
     config_options: &Arc<Mutex<Vec<serde_json::Value>>>,
+    initialized: &Arc<AtomicBool>,
 ) {
     // 1) 响应（有 id 且无 method）
     if msg.get("method").is_none() {
@@ -479,6 +488,14 @@ async fn handle_message(
             let method = pending.lock().await.remove(&id);
             if let Some(result) = msg.get("result") {
                 match method.as_deref() {
+                    // ★ 握手成功必须把标志置位 —— 2026-10-25 发现**这里原来根本没写**。
+                    //
+                    // 后果：`initialize()` 里的等待循环永远等不到标志。以前它「最多等 2 秒
+                    // 就往下走」，所以这个 bug 被掩盖了（只是偶尔 session/new 抢跑失败）；
+                    // 我改成「真等握手」之后，就变成每次都 30 秒超时 —— 把老 bug 暴露成新故障。
+                    Some("initialize") => {
+                        initialized.store(true, Ordering::SeqCst);
+                    }
                     Some("session/new") => {
                         if let Some(sid) = result.get("sessionId").and_then(|v| v.as_str()) {
                             *session_id.lock().await = Some(sid.to_string());
@@ -631,7 +648,15 @@ mod tests {
         let t = tx();
         pending.lock().await.insert(7, "session/new".to_string());
         let msg = json!({"jsonrpc":"2.0","id":7,"result":{"sessionId":"abc-123"}});
-        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
+        handle_message(
+            msg,
+            &pending,
+            &t,
+            &sid,
+            &Arc::new(Mutex::new(Vec::new())),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await;
         assert_eq!(sid.lock().await.clone().as_deref(), Some("abc-123"));
     }
 
@@ -646,7 +671,15 @@ mod tests {
             "params":{"update":{"sessionUpdate":"agent_message_chunk",
                                  "content":{"type":"text","text":"目录里有四项"}}}
         });
-        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
+        handle_message(
+            msg,
+            &pending,
+            &t,
+            &sid,
+            &Arc::new(Mutex::new(Vec::new())),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await;
         match rx.recv().await.unwrap() {
             DshEvent::TextDelta(s) => assert_eq!(s, "目录里有四项"),
             other => panic!("期望 TextDelta，实际 {other:?}"),
@@ -661,7 +694,15 @@ mod tests {
         let mut rx = t.subscribe();
         pending.lock().await.insert(9, "session/prompt".to_string());
         let msg = json!({"jsonrpc":"2.0","id":9,"result":{"stopReason":"end_turn"}});
-        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
+        handle_message(
+            msg,
+            &pending,
+            &t,
+            &sid,
+            &Arc::new(Mutex::new(Vec::new())),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await;
         match rx.recv().await.unwrap() {
             DshEvent::TurnDone { stop_reason } => assert_eq!(stop_reason, "end_turn"),
             other => panic!("期望 TurnDone，实际 {other:?}"),
@@ -676,7 +717,15 @@ mod tests {
         let mut rx = t.subscribe();
         pending.lock().await.insert(3, "session/prompt".to_string());
         let msg = json!({"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"bad request"}});
-        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
+        handle_message(
+            msg,
+            &pending,
+            &t,
+            &sid,
+            &Arc::new(Mutex::new(Vec::new())),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await;
         match rx.recv().await.unwrap() {
             DshEvent::Error(e) => assert!(e.contains("bad request")),
             other => panic!("期望 Error，实际 {other:?}"),
@@ -689,7 +738,15 @@ mod tests {
         let sid = Arc::new(Mutex::new(None));
         let t = tx();
         let msg = json!({"jsonrpc":"2.0","method":"something/weird","params":{}});
-        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
+        handle_message(
+            msg,
+            &pending,
+            &t,
+            &sid,
+            &Arc::new(Mutex::new(Vec::new())),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -702,7 +759,15 @@ mod tests {
             "jsonrpc":"2.0","id":11,"method":"session/request_permission",
             "params":{"toolCall":{"title":"跑 cargo test"}}
         });
-        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
+        handle_message(
+            msg,
+            &pending,
+            &t,
+            &sid,
+            &Arc::new(Mutex::new(Vec::new())),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await;
         match rx.recv().await.unwrap() {
             DshEvent::PermissionRequest {
                 title,
