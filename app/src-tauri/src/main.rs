@@ -341,6 +341,14 @@ fn set_orb_home(x: i32, y: i32) {
     }
 }
 
+/// 贴边完成了吗？没完成之前不许动气泡尺寸。
+///
+/// 2026-10-24 真机踩坑：前端一启动就会因为「推状态 S0」显示一次字幕，
+/// 于是 `orb_tip(true)` 抢在贴边之前跑 —— 那时归位点还没记，它拿窗口
+/// 当前所在的屏幕正中当基准，把窗口挪到 1249；随后贴边又按「已经被撑到
+/// 360 宽」的尺寸算，最终停在 2696 而不是 2908，右下角就差 212px。
+static ORB_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn get_orb_home() -> Option<(i32, i32)> {
     orb_home().lock().ok().and_then(|g| *g)
 }
@@ -372,6 +380,12 @@ fn place_orb_bottom_right(win: &WebviewWindow) {
 /// 而内存本来就是本项目的老大难（PSS 371MB）。
 #[tauri::command]
 async fn orb_tip(window: WebviewWindow, show: bool) -> Result<(), String> {
+    // 还没贴好边就先别动窗口：此时归位点不可信，动了会把启动位置搞歪。
+    // 前端每个字幕都会再调一次，所以跳过这一两次不影响功能。
+    if !ORB_READY.load(std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!("气泡请求被忽略：小球还没贴好边");
+        return Ok(());
+    }
     let scale = window.scale_factor().unwrap_or(1.0);
     let small = (f64::from(ORB_SIZE) * scale).round() as u32;
     let wide = (f64::from(TIP_WIDTH) * scale).round() as u32;
@@ -459,8 +473,35 @@ enum SnapMode {
 /// 所以启动时要 `GDK_BACKEND=x11` 走 XWayland 才能贴边。
 /// 这是平台限制，不是代码问题。
 fn snap_to_edge(win: &WebviewWindow, mode: SnapMode) {
-    let (Ok(Some(monitor)), Ok(size)) = (win.current_monitor(), win.outer_size()) else {
-        tracing::warn!("拿不到显示器或窗口尺寸，跳过贴边");
+    // ★ 先强制回到「收起」尺寸：归位点是按 148×148 定义的。
+    // 如果此刻窗口因为显示字幕被撑到 360 宽，直接用当前尺寸算会把
+    // 归位点算成「360 宽的右下角」，收起后就偏了 212px（真机实测）。
+    let scale_now = win.scale_factor().unwrap_or(1.0);
+    let small = (f64::from(ORB_SIZE) * scale_now).round() as u32;
+    // 尺寸直接按「收起态」算，不去读 outer_size()：set_size 是异步的，
+    // 刚设完就读回来可能还是旧值（360），那归位点就全错。
+    let size = if small > 0 {
+        let _ = win.set_size(tauri::PhysicalSize::new(small, small));
+        // 等它真的缩下来：否则下面设位置时窗口还宽 360，
+        // KWin 会以「右边缘越界」为由把 x 拉回去（真机实测差 212px）。
+        for _ in 0..12 {
+            match win.outer_size() {
+                Ok(s) if s.width <= small => break,
+                _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+        tauri::PhysicalSize::new(small, small)
+    } else {
+        match win.outer_size() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "拿不到窗口尺寸，跳过贴边");
+                return;
+            }
+        }
+    };
+    let Ok(Some(monitor)) = win.current_monitor() else {
+        tracing::warn!("拿不到显示器信息，跳过贴边");
         return;
     };
     let screen = monitor.size();
@@ -492,7 +533,15 @@ fn snap_to_edge(win: &WebviewWindow, mode: SnapMode) {
     if let Err(e) = win.set_position(target) {
         tracing::warn!(error = %e, "贴边失败（Wayland 下正常，需 XWayland）");
     } else {
+        // 读回校验一次：位置设置是异步的，可能还没生效
+        if let Ok(p) = win.outer_position() {
+            if p.x != target.x || p.y != target.y {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                let _ = win.set_position(target);
+            }
+        }
         set_orb_home(x, y);
+        ORB_READY.store(true, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(x, y, right = go_right, "小球已贴边");
     }
 }

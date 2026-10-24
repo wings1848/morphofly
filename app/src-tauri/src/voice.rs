@@ -114,6 +114,17 @@ impl VoiceSession {
         // 打断时要通知云端停止生成（修缺陷 #5）
         #[cfg(feature = "kws")]
         let client_in_push = client_for_push.clone();
+        // ★ 本地 VAD 判定「用户开口」的共享标志。
+        //
+        // 为什么需要：纠正机制（说了话没干活 → 逼它真派活）原来只认云端
+        // `input_audio_buffer.speech_started` 事件。但我们是本地 commit 的
+        // （快了 1.95 秒），云端那条事件不一定来 —— 真机实测就出现过
+        // 「用户明明说了话，user_spoke 却是 false，于是模型只回一句『好，查着呢』
+        // 也没人纠正」。本机 VAD 也看到的开口，得算数。
+        let user_spoke_local = Arc::new(AtomicBool::new(false));
+        let user_spoke_in_push = user_spoke_local.clone();
+        let user_spoke_in_ev = user_spoke_local.clone();
+
         let push_task = tokio::spawn(async move {
             let mut rx = mic2.subscribe();
             let mut spectrum = Spectrum::with_default_window();
@@ -197,11 +208,13 @@ impl VoiceSession {
                             match talk {
                                 Talk::Idle if voiced_run >= NEED_VOICE => {
                                     talk = Talk::Speaking;
+                                    user_spoke_in_push.store(true, Ordering::Relaxed);
                                     tracing::debug!("本地判定开口");
                                 }
                                 Talk::Cooldown if voiced_run >= NEED_VOICE => {
                                     // 上一轮处理完了，用户又说了一句
                                     talk = Talk::Speaking;
+                                    user_spoke_in_push.store(true, Ordering::Relaxed);
                                     tracing::debug!("本地判定新一句开口");
                                 }
                                 _ => {}
@@ -313,6 +326,7 @@ impl VoiceSession {
                         // ★ 新的一次用户说话 → 重置「这一轮」的统计。
                         // 只有这里能重置，`ResponseDone` 不能（一个请求跨多个 response）。
                         user_spoke = true;
+                        user_spoke_local.store(false, Ordering::Relaxed);
                         tool_calls_this_turn = 0;
                         pending_tool_results = 0;
                         assistant_reply.clear();
@@ -330,6 +344,15 @@ impl VoiceSession {
                         }
                     }
                     RealtimeEvent::ResponseDone { .. } => {
+                        // 本地 VAD 看到用户开口、但云端没发 SpeechStarted 的情况，
+                        // 在这里补上（否则纠正机制对本地 commit 的轮次完全失效）。
+                        if user_spoke_in_ev.swap(false, Ordering::Relaxed) && !user_spoke {
+                            tracing::debug!("云端没发 SpeechStarted，按本地 VAD 判定算用户开口");
+                            user_spoke = true;
+                            tool_calls_this_turn = 0;
+                            assistant_reply.clear();
+                            correction_sent = false;
+                        }
                         // 还有工具结果没回灌 → 这个 response 只是「调工具那一步」，
                         // 不是最终答复，不计入「没干活」的判断。
                         if pending_tool_results > 0 {
