@@ -41,3 +41,28 @@ INFO 本地代派成功 speech=没找到「帮我看看mosofly」，你是说蝶
 - 阈值故意保守：宁可回去追问，也不把任务派到错的项目。
 - **ASR 把 README 听成 limit 这类内容词错误本地修不了**，只能靠上下文/追问。
   项目名这类「有限集合 + 可查表」的词才是本地能救的。
+
+## 探针结论：StepFun 不支持转写热词 prompt（2026-10-25 实测）
+
+`core/examples/asr_hint_probe.rs` 同一段音频跑两次：
+
+| 配置 | `session.updated` 回显 | 转写结果 |
+|---|---|---|
+| `{"model":"whisper-1"}` | `input_audio_transcription = null` | 帮我看看**mosofly**项目的**vimi**第一行是什么？ |
+| 同上 + `"prompt":"蝶梦 morphofly DSH README 阶跃星辰…"` | 仍是 `null` | 一模一样 |
+
+→ prompt 被**静默忽略**（连回显都没有），这条路别再试。
+（顺带确认：App 现在根本没发 `input_audio_transcription`，转写是服务端默认开的。）
+
+## 于是改成「本地纠正表」
+
+`core/src/asr_fix.rs`：一张「正确写法 ← 见过的错法」表，
+在 `voice.rs` 收到整句转写后做一次纠正再往下用。
+真机实测的错法全部收录：
+
+- `morphofly ← mosofly / morfofly / mobile fly / 摩托fly / move_forward`
+- `README ← vimi / read me / 微米 / 里德米`
+- `蝶梦 ← 碟梦 / 叠梦 / 跌梦`
+
+边界：只认表里的错法，不做通用猜测（乱猜会改坏用户正常的话）；
+ASCII 按边界替换（`dshx` 不会被改成 `DSHx`），中文只做整词替换。
