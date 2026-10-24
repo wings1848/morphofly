@@ -239,8 +239,8 @@ mod tests {
     #[test]
     fn length_threshold_boundary() {
         let base = "看一下这个项目";
-        let at_50: String = std::iter::repeat('测').take(50).collect();
-        let at_51: String = std::iter::repeat('测').take(51).collect();
+        let at_50: String = std::iter::repeat_n('测', 50).collect();
+        let at_51: String = std::iter::repeat_n('测', 51).collect();
         let _ = base;
         assert_eq!(
             classify(&at_50).complexity,

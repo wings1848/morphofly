@@ -24,9 +24,7 @@ use tokio::sync::Mutex;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_env_filter(),
-        )
+        .with_env_filter(tracing_env_filter())
         .with_writer(std::io::stderr) // 日志走 stderr，stdout 只留 JSON
         .init();
     ensure_crypto_provider();
@@ -155,7 +153,11 @@ async fn main() -> anyhow::Result<()> {
             RealtimeEvent::TranscriptDelta { text } => {
                 reply.push_str(&text);
             }
-            RealtimeEvent::ToolCall { call_id, name, arguments } => {
+            RealtimeEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } => {
                 eprintln!("[e2e] 工具调用 {name} 参数: {arguments}");
                 tool_calls.push(name.clone());
                 pending_tools += 1;

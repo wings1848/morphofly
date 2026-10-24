@@ -681,8 +681,8 @@ impl AudioCapture {
                 )));
             }
             let mut pcm: Vec<i16> = Vec::with_capacity(bytes.len() / 2);
-            for chunk in bytes.chunks_exact(2) {
-                pcm.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+            for chunk in bytes.as_chunks::<2>().0 {
+                pcm.push(i16::from_le_bytes(*chunk));
             }
             if pcm.is_empty() {
                 return Err(AudioError::Device(format!("PCM 是空的: {path}")));

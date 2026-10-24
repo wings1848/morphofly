@@ -9,8 +9,8 @@ use crate::intent;
 use crate::tasks::{spoken_summary, TaskStatus, TaskStore};
 use crate::tools;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// 工具执行结果：`speech` 会被语音模型念出来
@@ -327,14 +327,14 @@ impl Dispatcher {
         let mut out = Vec::new();
         // 按空白和常见分隔符切词，找以 / 或 ~ 开头的
         for raw in task.split(|c: char| {
-            c.is_whitespace() || matches!(c, '，' | '。' | '、' | '；' | '"' | '\'' | '`' | ')' | '(')
+            c.is_whitespace()
+                || matches!(c, '，' | '。' | '、' | '；' | '"' | '\'' | '`' | ')' | '(')
         }) {
             // ⚠️ 只剥「明确是 shell 操作符」的字符，不要剥 `.` 和 `/`。
             // 2026-10-24 踩坑：`./run_tests` 被 trim_matches 剥成 `/run_tests`，
             // 然后被当成绝对路径去检查，误报「路径不存在」。
-            let token = raw.trim_matches(|c: char| {
-                matches!(c, ',' | ':' | ';' | '&' | '|' | '>' | '<')
-            });
+            let token =
+                raw.trim_matches(|c: char| matches!(c, ',' | ':' | ';' | '&' | '|' | '>' | '<'));
             // 单独处理句末的英文句号（"写在 /tmp/x." 这种）
             let token = token.strip_suffix('.').unwrap_or(token);
             if token.is_empty() {
@@ -364,10 +364,8 @@ impl Dispatcher {
             if candidate.is_empty() || candidate == "/" {
                 continue;
             }
-            if !std::path::Path::new(&candidate).exists() {
-                if !out.contains(&candidate) {
-                    out.push(candidate);
-                }
+            if !std::path::Path::new(&candidate).exists() && !out.contains(&candidate) {
+                out.push(candidate);
             }
         }
         out
@@ -388,9 +386,7 @@ impl Dispatcher {
                 let name: String = before
                     .chars()
                     .rev()
-                    .take_while(|c| {
-                        c.is_alphanumeric() || is_cjk(*c)
-                    })
+                    .take_while(|c| c.is_alphanumeric() || is_cjk(*c))
                     .collect::<Vec<char>>()
                     .into_iter()
                     .rev()
@@ -776,8 +772,6 @@ pub fn clean_for_speech(text: &str) -> String {
 mod tests {
     use super::*;
 
-
-
     // ── find_missing_paths（三层防御第 1 层）──
 
     #[test]
@@ -823,7 +817,10 @@ mod tests {
         // 路径后面跟着 && 或 ; 不该影响判定
         let missing = d.find_missing_paths("cd /nonexistent/x && ls;");
         assert_eq!(missing.len(), 1);
-        assert!(!missing[0].ends_with('&'), "不该把 && 算进路径: {missing:?}");
+        assert!(
+            !missing[0].ends_with('&'),
+            "不该把 && 算进路径: {missing:?}"
+        );
     }
 
     // ── extract_unknown_project（修 Bug 1：假项目名必须追问）──
@@ -831,10 +828,8 @@ mod tests {
     fn dispatcher_for_test() -> Dispatcher {
         // 用内置别名表（含 蝶梦/diemeng/morphofly）
         // 用临时文件建 store（TaskStore::open 需要路径，没有内存版）
-        let path = std::env::temp_dir().join(format!(
-            "mf-dispatch-test-{}.json",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("mf-dispatch-test-{}.json", std::process::id()));
         let store = Arc::new(tokio::sync::Mutex::new(
             crate::tasks::TaskStore::open(&path).expect("建临时任务表"),
         ));
