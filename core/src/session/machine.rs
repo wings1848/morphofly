@@ -152,6 +152,19 @@ impl SessionMachine {
         self.state
     }
 
+    /// 强制回到待机（会话结束时用）。
+    ///
+    /// 为什么需要：会话结束（云端超时断开、服务端主动关）时，
+    /// 状态机可能停在 S2/S3/S4 —— 原来的 `IdleTimeout` 只在**推音频的循环里**发，
+    /// 会话一断那个循环就退出了，于是状态永远回不到 S0。
+    /// 后果很实在：会话守卫只在 S0 才检查「有没有结果要念」，
+    /// 于是「干完主动汇报」整个机制静默失效（真机实测：DSH 干完了，
+    /// 任务表里 reported 一直是 false，日志里连一句相关记录都没有）。
+    pub fn force_idle(&mut self) {
+        self.connected = false;
+        self.goto(OrbState::S0);
+    }
+
     pub fn is_connected(&self) -> bool {
         self.connected
     }
@@ -261,6 +274,18 @@ mod tests {
     }
 
     /// 任务干完了但会话关着 → 系统主动开一轮（S0 → S1）。
+    /// 会话结束时必须能强制回到待机（否则主动汇报的守卫永远看不到 S0）。
+    #[test]
+    fn force_idle_returns_from_any_state() {
+        let mut m = m();
+        m.handle(Stimulus::WakeWord).unwrap();
+        m.handle(Stimulus::Connected).unwrap();
+        assert_eq!(m.state(), OrbState::S2);
+        m.force_idle();
+        assert_eq!(m.state(), OrbState::S0);
+        assert!(!m.is_connected());
+    }
+
     #[test]
     fn proactive_report_wakes_from_idle() {
         let mut m = m();

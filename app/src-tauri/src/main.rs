@@ -288,6 +288,15 @@ fn spawn_session_guard(
                             let stats = sess_for_run.stats();
                             tracing::info!(?stats, "会话结束");
                             sess_for_run.shutdown();
+                            // ★ 会话结束了就把状态机拉回待机。
+                            // 否则会停在 S2/S3/S4，而「主动汇报」的守卫只在 S0 才检查 ——
+                            // 结果就是 DSH 干完了、任务表里 reported 一直 false、
+                            // 日志里连痕迹都没有（真机踩过，查了很久）。
+                            {
+                                let mut m = machine3.lock().await;
+                                m.force_idle();
+                            }
+                            tracing::debug!("会话结束，状态机已复位到待机");
                         });
                         let _ = handle;
                         // 注意：会话对象已经 move 进 run 任务，current 不再持有
