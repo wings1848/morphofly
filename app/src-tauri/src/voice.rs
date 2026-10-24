@@ -39,6 +39,29 @@ pub struct VoiceSession {
     pub first_audio_ms: Arc<AtomicU64>,
 }
 
+/// 打断去重窗口：本地 VAD 和云端 SpeechStarted 会**同时**报同一次打断，
+/// 同一个「用户开口」只该在统计里算一次。
+const INTERRUPT_DEDUPE_MS: u64 = 2000;
+
+/// 记一次打断（去重）。
+///
+/// 为什么需要去重：一次真打断会被两条路径各看见一遍 ——
+/// 本地 VAD（我们自己的检测）和云端 `input_audio_buffer.speech_started`。
+/// 以前只有本地路径计数，所以「数字看着正常」；现在两条路径都计，
+/// 不去重就会一次用户开口记两次（统计就变假了）。
+fn count_interruption(counter: &AtomicU64, last_ms: &AtomicU64) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let prev = last_ms.swap(now, Ordering::Relaxed);
+    if now.saturating_sub(prev) < INTERRUPT_DEDUPE_MS {
+        return false;
+    }
+    counter.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
 impl VoiceSession {
     /// 建立会话：连云端 + 开麦克风 + 开播放器
     ///
@@ -112,6 +135,9 @@ impl VoiceSession {
         let player_in_push = player.clone();
         #[cfg(feature = "kws")]
         let interruptions_in_push = interruptions.clone();
+        // 打断去重用：本地 VAD 和云端 SpeechStarted 共用同一个「上次计数时间」
+        let last_interrupt_ms = Arc::new(AtomicU64::new(0));
+        let last_interrupt_in_push = last_interrupt_ms.clone();
         #[cfg(feature = "kws")]
         let machine_in_push = machine.clone();
         // 打断时要通知云端停止生成（修缺陷 #5）
@@ -210,13 +236,24 @@ impl VoiceSession {
                                         if let Err(e) = client_in_push.cancel_response() {
                                             tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
                                         }
-                                        interruptions_in_push.fetch_add(1, Ordering::Relaxed);
-                                        vad_cooldown = 40; // 40 帧 * 20ms = 800ms
-                                        tracing::info!(
-                                            queued,
-                                            responding,
-                                            "⚡ 打断：停播 + 取消当前回复（记一次打断）"
+                                        let counted = count_interruption(
+                                            &interruptions_in_push,
+                                            &last_interrupt_in_push,
                                         );
+                                        vad_cooldown = 40; // 40 帧 * 20ms = 800ms
+                                        if counted {
+                                            tracing::info!(
+                                                queued,
+                                                responding,
+                                                "⚡ 打断：停播 + 取消当前回复（记一次打断）"
+                                            );
+                                        } else {
+                                            tracing::info!(
+                                                queued,
+                                                responding,
+                                                "打断：同一次开口的重复信号（不重复计数）"
+                                            );
+                                        }
                                         // ⚠️ 这里**不能** block_on。
                                         //
                                         // 2026-10-25 真机首次验证打断时就炸了：
@@ -399,12 +436,20 @@ impl VoiceSession {
                             tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
                         }
                         if queued > 0 || responding {
-                            interruptions.fetch_add(1, Ordering::Relaxed);
-                            tracing::info!(
-                                queued,
-                                responding,
-                                "⚡ 云端 SpeechStarted 打断（barge-in，记一次打断）"
-                            );
+                            let counted = count_interruption(&interruptions, &last_interrupt_ms);
+                            if counted {
+                                tracing::info!(
+                                    queued,
+                                    responding,
+                                    "⚡ 云端 SpeechStarted 打断（barge-in，记一次打断）"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    queued,
+                                    responding,
+                                    "云端 SpeechStarted：同一次开口的重复信号（不重复计数）"
+                                );
+                            }
                         }
                         speech_started = Some(std::time::Instant::now());
                         // ★ 新的一次用户说话 → 重置「这一轮」的统计。
