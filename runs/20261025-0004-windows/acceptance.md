@@ -8,8 +8,8 @@
 | W2 | core 能在 Windows 上编译 | CI `cargo check -p morphofly-core` | success | ✅ success |
 | W3 | core 单测能在 Windows 上跑过 | CI `cargo test -p morphofly-core --lib` | 全过 | ✅ **248 全过**（在 Windows runner 上真跑，11 秒） |
 | W4 | app 外壳能在 Windows 上编译 | CI `cargo check -p morphofly-app --no-default-features` | success | ✅ **success**（tauri 壳整套依赖在 Windows 上编过） |
-| W5 | 能在 Windows 上编出可执行文件 | release `tauri build --no-bundle` | 产出 .exe | ⏳ 构建中 |
-| W5b | 能打出 NSIS 安装包 | release `tauri build --bundles nsis` | 产出安装包 | ⏳ 可选，失败不阻塞 |
+| W5 | 能在 Windows 上编出可执行文件 | release Windows job | 产出 .exe | ✅ **morphofly-app.exe（PE32+ x86-64，35MB，带唤醒词）** |
+| W5b | 能打出 NSIS 安装包 | release Windows job | 产出安装包 | ✅ **蝶梦_0.1.0_x64-setup.exe（NSIS，13MB）** |
 | W6 | 数据目录不再依赖 HOME | 本机单测 `config::data_dir_*` | 3 个测试过 | ✅ 11:xx 已过 |
 | W7 | 拉起 dsh 兼容 .cmd | 代码审查 + 注释（Windows 上无法单测） | 有 PATHEXT 分支 | ✅ |
 | W8 | 平台代码隔离 | `grep -c cfg\(target_os = "linux"\)` | force_x11_backend 被隔离 | ✅ |
@@ -46,3 +46,26 @@ NSIS 那一步要**整个 Rust release 冷编译 + 打包**，实测在 windows-
 2. `tauri build --bundles nsis`（30 分钟超时，失败不阻塞）→ 上传安装包
 
 安装包只是分发形式；「编得出来」才是兼容性的实质。
+
+## W5/W5b 实测（2026-10-25 01:00，run 40113059133）
+
+```
+$ file morphofly-app.exe
+PE32+ executable for MS Windows 6.00 (GUI), x86-64, 7 sections         35MB
+
+$ file 蝶梦_0.1.0_x64-setup.exe
+PE32 executable for MS Windows 4.00 (GUI), Intel i386,
+Nullsoft Installer self-extracting archive                              13MB
+```
+
+**带默认 feature（含唤醒词 sherpa-onnx），不是阉割版。**
+
+### 我在这上面判断错了两次（记下来）
+
+1. 以为「卡死」→ 其实 Windows 完整 release 构建就是 ~50 分钟
+2. 为此改成 `tauri build --no-default-features` → npm 版 CLI **不认这个参数**，
+   job 直接挂（`unexpected argument '--no-default-features'`）。
+   要传特性得用 `tauri build -- --no-default-features`，但我们不需要关特性。
+
+教训：**「跑很久」和「跑挂了」要分清**，别一看超时就改方案 ——
+先去看有没有产物、有没有 error。
