@@ -1226,9 +1226,17 @@ mod tests {
     }
 
     /// 念提示时不能把绝对路径念出来（用户听不懂，带斜杠读着也怪）。
+    ///
+    /// ⚠️ 2026-10-25 Windows CI 抓到：这里原来写死 `/tmp` 当候选目录，
+    /// 但 Windows 上没有 `/tmp` → read_dir 失败 → 候选为空 → 走「没找到」分支，
+    /// 于是断言「要说清是哪个名字」失败。测试本身必须跨平台。
     #[test]
     fn suggest_dir_does_not_read_absolute_path() {
-        let s = suggest_dir("/home/wings/Code_Project/move_forward", "/tmp");
+        let existing = std::env::temp_dir();
+        let s = suggest_dir(
+            "/home/wings/Code_Project/move_forward",
+            existing.to_str().expect("临时目录路径不是 UTF-8"),
+        );
         assert!(!s.contains("/home/wings"), "不该念出绝对路径: {s}");
         assert!(s.contains("move_forward"), "但要说清是哪个名字没找到: {s}");
     }
