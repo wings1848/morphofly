@@ -6,7 +6,7 @@
   "tier": "standard",
   "project_type": "generic",
   "human_mode": "inspect",
-  "stage": "S4",
+  "stage": "S7",
   "status": "running",
   "owner": {
     "agent": "agent",
@@ -19,7 +19,9 @@
     "S1": 1,
     "S2": 1,
     "S4": 2,
-    "S3": 1
+    "S3": 1,
+    "S5": 1,
+    "S7": 1
   },
   "loops": {
     "used": 1,
@@ -54,6 +56,20 @@
       "sha256": "8be27fc21c91e439a93d28b254b57aeca4c477f1427b9fc26bb82d44a9cc87f7",
       "at": "2026-10-24T22:27:02+08:00",
       "note": "A1/A3/A4 的红都留了实测证据"
+    },
+    "G4": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/progress.md",
+      "sha256": "57502c04b055ecc2a21666f3e6a58de67bce8d2e4683a93307e07ed44464e5fe",
+      "at": "2026-10-24T23:19:16+08:00",
+      "note": "三条流全部合并：前端 963d836、验收脚本 790f111、窗口层修 3 轮"
+    },
+    "G5": {
+      "status": "pass",
+      "evidence": "runs/20261024-2208-ui-ux-360/verify-report.md",
+      "sha256": "b061e6970664f18a559b71601c5388ebb24d310706e36f98a7fcb8a20c7486b3",
+      "at": "2026-10-24T23:19:16+08:00",
+      "note": "5 项机器判定全绿 + 语音链路回归 + 不变量核对"
     }
   },
   "human": {},
@@ -66,7 +82,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S4：跑 G4 并落证据（devflow gate G4 pass --evidence <文件>）",
+  "next_action": "S7：跑 G7 并落证据（devflow gate G7 pass --evidence <文件>）",
   "artifacts": {
     "progress": "progress.md"
   }
