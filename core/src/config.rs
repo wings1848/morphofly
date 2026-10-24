@@ -95,7 +95,7 @@ pub const DEFAULT_INSTRUCTIONS: &str = "你是「小蝶」，蝶梦语音智能�
 2. 交给 delegate_task 的 task 必须自包含：对方看不到我们的对话，不能出现「这个」「刚才说的」，要写清楚做什么、在哪做。\
 3. 说话简短口语化，不要念代码块、路径、URL 或 markdown 符号。\
 4. 用户只是闲聊时正常聊天就行，不必每次都派活。\
-5. 「已知项目」表：说「蝶梦」或「diemeng」= /home/wings/Code_Project/diemeng；其余项目名一律追问用户要路径。\
+5. 「已知项目」表：说「蝶梦」或「diemeng」= /home/wings/Code_Project/morphofly；其余项目名一律追问用户要路径。\
 6. 禁止在任务里写「去搜索/查找/猜项目在哪」这类要求。你只负责要么追问、要么用已知路径。";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ pub fn default_data_dir() -> PathBuf {
 /// 应用自带资源目录（AppImage / deb 安装后放模型的地方）。
 ///
 /// 查找顺序（先到先得）：
-/// 1. `$DIEMENG_BUNDLE_DIR`（显式覆盖，测试用）
+/// 1. `$MORPHOFLY_BUNDLE_DIR`（显式覆盖，测试用）
 /// 2. 可执行文件同级的 `resources/`（Tauri 的 resource_dir 布局）
 /// 3. 可执行文件同级的 `../resources/`（AppImage 的 AppRun 会设成 usr/bin，资源在 usr/lib）
 /// 4. 可执行文件同级的 `data/`（手动解压/开发场景）
@@ -161,7 +161,7 @@ pub fn default_data_dir() -> PathBuf {
 /// **为什么需要这个**：AppImage 是自包含的，用户拿到就想要能用，
 /// 不该先让他去 GitHub 下 8MB 模型再手动放进去。
 pub fn bundle_data_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("DIEMENG_BUNDLE_DIR") {
+    if let Ok(p) = std::env::var("MORPHOFLY_BUNDLE_DIR") {
         let pb = PathBuf::from(p);
         if pb.is_dir() {
             return Some(pb);
@@ -213,9 +213,9 @@ impl Config {
         Ok(cfg)
     }
 
-    /// 环境变量覆盖：DIEMENG_PROVIDER / DIEMENG_ENDPOINT / DIEMENG_MODEL / DIEMENG_VOICE
+    /// 环境变量覆盖：MORPHOFLY_PROVIDER / MORPHOFLY_ENDPOINT / MORPHOFLY_MODEL / MORPHOFLY_VOICE
     pub fn apply_env(&mut self) {
-        if let Ok(v) = std::env::var("DIEMENG_PROVIDER") {
+        if let Ok(v) = std::env::var("MORPHOFLY_PROVIDER") {
             match v.to_ascii_lowercase().as_str() {
                 "stepfun" | "step" => self.realtime.provider = Provider::Stepfun,
                 "qwen" | "dashscope" | "bailian" => self.realtime.provider = Provider::Qwen,
@@ -223,16 +223,16 @@ impl Config {
                 _ => {}
             }
         }
-        if let Ok(v) = std::env::var("DIEMENG_ENDPOINT") {
+        if let Ok(v) = std::env::var("MORPHOFLY_ENDPOINT") {
             self.realtime.endpoint = v;
         }
-        if let Ok(v) = std::env::var("DIEMENG_MODEL") {
+        if let Ok(v) = std::env::var("MORPHOFLY_MODEL") {
             self.realtime.model = v;
         }
-        if let Ok(v) = std::env::var("DIEMENG_VOICE") {
+        if let Ok(v) = std::env::var("MORPHOFLY_VOICE") {
             self.realtime.voice = v;
         }
-        if let Ok(v) = std::env::var("DIEMENG_API_KEY_ENV") {
+        if let Ok(v) = std::env::var("MORPHOFLY_API_KEY_ENV") {
             self.realtime.api_key_env = v;
         }
     }
@@ -323,11 +323,11 @@ mod tests {
 
     #[test]
     fn env_overrides_provider() {
-        std::env::set_var("DIEMENG_PROVIDER", "qwen");
+        std::env::set_var("MORPHOFLY_PROVIDER", "qwen");
         let mut c = Config::default();
         c.apply_env();
         assert_eq!(c.realtime.provider, Provider::Qwen);
-        std::env::remove_var("DIEMENG_PROVIDER");
+        std::env::remove_var("MORPHOFLY_PROVIDER");
     }
 
     #[test]
@@ -341,20 +341,20 @@ mod tests {
 
     #[test]
     fn key_is_masked_in_log() {
-        std::env::set_var("DIEMENG_TEST_KEY", "abcdefghijklmnop");
+        std::env::set_var("MORPHOFLY_TEST_KEY", "abcdefghijklmnop");
         let mut c = Config::default();
-        c.realtime.api_key_env = "DIEMENG_TEST_KEY".into();
+        c.realtime.api_key_env = "MORPHOFLY_TEST_KEY".into();
         assert_eq!(c.masked_key(), "abcd****mnop");
-        std::env::remove_var("DIEMENG_TEST_KEY");
+        std::env::remove_var("MORPHOFLY_TEST_KEY");
     }
 
     #[test]
     fn key_never_in_toml_serialization() {
-        std::env::set_var("DIEMENG_TEST_KEY2", "supersecretvalue");
+        std::env::set_var("MORPHOFLY_TEST_KEY2", "supersecretvalue");
         let mut c = Config::default();
-        c.realtime.api_key_env = "DIEMENG_TEST_KEY2".into();
+        c.realtime.api_key_env = "MORPHOFLY_TEST_KEY2".into();
         let s = toml::to_string_pretty(&c).unwrap();
         assert!(!s.contains("supersecretvalue"), "密钥不能出现在配置序列化里");
-        std::env::remove_var("DIEMENG_TEST_KEY2");
+        std::env::remove_var("MORPHOFLY_TEST_KEY2");
     }
 }

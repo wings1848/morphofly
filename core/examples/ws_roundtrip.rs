@@ -2,7 +2,7 @@
 //!
 //! 验收命令（wings-pc，有网）：
 //!   set -a; . ~/.diemeng/credentials; set +a
-//!   cargo run -q -p diemeng-core --example ws_roundtrip -- testdata/audio/04_ack_zai.mp3
+//!   cargo run -q -p morphofly-core --example ws_roundtrip -- testdata/audio/04_ack_zai.mp3
 //!
 //! 干的事：
 //!  1. 解码 mp3 → 重采样到 16k mono i16（用 rodio 解码，避免额外依赖）

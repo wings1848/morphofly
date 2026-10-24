@@ -796,46 +796,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diemeng-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "diemeng-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-shell",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "diemeng-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "bytes",
- "cpal",
- "futures-util",
- "hound",
- "realfft",
- "rodio",
- "rustls",
- "serde",
- "serde_json",
- "sherpa-onnx",
- "thiserror 2.0.21",
- "tokio",
- "tokio-tungstenite",
- "toml 1.1.8+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2262,6 +2222,46 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "morphofly-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "morphofly-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-shell",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "morphofly-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "bytes",
+ "cpal",
+ "futures-util",
+ "hound",
+ "realfft",
+ "rodio",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 1.1.8+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

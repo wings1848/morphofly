@@ -2,7 +2,7 @@
 //!
 //! 这是验收 P1 的正确口径（用户感知的是「我说完到它开口」）。
 //!
-//! 用法：cargo run -q -p diemeng-core --example vad_latency -- --rounds 6 --file testdata/audio/04_ack_zai.mp3
+//! 用法：cargo run -q -p morphofly-core --example vad_latency -- --rounds 6 --file testdata/audio/04_ack_zai.mp3
 //!
 //! 实现要点：推流用独立任务，主循环只收事件 —— 避免 select! 里文件流结束后
 //! 忙循环把事件饿死（2026-10-24 踩过这个坑）。

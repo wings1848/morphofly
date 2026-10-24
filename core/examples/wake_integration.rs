@@ -5,7 +5,7 @@
 //! 这段接缝单独拿出来，用真实音频文件驱动，结果可复现。
 //!
 //! 用法（wings-pc，需要 --features kws）：
-//!   cargo run -q -p diemeng-core --features kws --example wake_integration -- \
+//!   cargo run -q -p morphofly-core --features kws --example wake_integration -- \
 //!     --file testdata/audio/01_wake_short.mp3
 
 use diemeng_core::kws::{detect_in_file, wake_stimulus_for, KwsConfig};

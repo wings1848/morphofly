@@ -2,7 +2,7 @@
 //!
 //! 用法（wings-pc）：
 //!   set -a; . ~/.diemeng/credentials; set +a
-//!   cargo run -q -p diemeng-core --example latency_bench -- --rounds 10 --file testdata/audio/01_wake_short.mp3
+//!   cargo run -q -p morphofly-core --example latency_bench -- --rounds 10 --file testdata/audio/01_wake_short.mp3
 //!
 //! 每轮：新连接 → 推流 → 等 speech_started/stopped → 记首音频 → 断开
 //! 为什么每轮新连接：避免上下文累积影响延迟测量（也顺便验证连接稳定性）

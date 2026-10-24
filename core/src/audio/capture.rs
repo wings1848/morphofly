@@ -657,7 +657,7 @@ impl AudioCapture {
             //
             // 注意：测量延迟时请用「文件推完 + pad」作为基准，不要用「最后有声帧」，
             // 否则 pad 会被算进延迟里。
-            let pad_ms: u32 = std::env::var("DIEMENG_FILE_PAD_MS")
+            let pad_ms: u32 = std::env::var("MORPHOFLY_FILE_PAD_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(800);

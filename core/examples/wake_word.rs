@@ -9,7 +9,7 @@
 //!
 //! 用法（wings-pc）：
 //!   set -a; . ~/.diemeng/credentials; set +a
-//!   cargo run -q -p diemeng-core --example wake_word -- --seconds 20
+//!   cargo run -q -p morphofly-core --example wake_word -- --seconds 20
 
 use diemeng_core::audio::capture::AudioCapture;
 use diemeng_core::session::{OrbState, SessionMachine, Stimulus};

@@ -3,7 +3,7 @@
 //! 这是 `tools/kws/kws_check.py` 的 Rust 等价物，验证 sherpa-onnx Rust 绑定能识别「小蝶」。
 //!
 //! 用法（wings-pc，需 --features kws）：
-//!   cargo run -q -p diemeng-core --features kws --example kws_check -- \
+//!   cargo run -q -p morphofly-core --features kws --example kws_check -- \
 //!     --model /tmp/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20 \
 //!     --keywords /tmp/kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/keywords.txt \
 //!     testdata/audio/

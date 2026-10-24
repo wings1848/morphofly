@@ -1,7 +1,7 @@
 //! 接缝 0.5：频谱推给 WebView。
 //!
 //! 无音频设备也能验：用合成信号算出 64 bin，按 30fps 打印 JSON 行。
-//! 验收命令：cargo run -p diemeng-core --example spectrum_json -- --seconds 2
+//! 验收命令：cargo run -p morphofly-core --example spectrum_json -- --seconds 2
 
 use diemeng_core::spectrum::{rms_i16, rms_to_visual, Spectrum};
 use std::io::Write;

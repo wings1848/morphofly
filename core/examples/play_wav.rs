@@ -1,6 +1,6 @@
 //! 接缝 0.3：rodio 播放跑通（补上审计指出「缺失的 example」）。
 //!
-//! 用法：cargo run -p diemeng-core --example play_wav -- testdata/audio/01_wake_short.mp3
+//! 用法：cargo run -p morphofly-core --example play_wav -- testdata/audio/01_wake_short.mp3
 //!
 //! 输出：解码信息、播放耗时、退出码 0（失败非 0）。
 //! **注意**：默认 sink 是虚拟设备时（snd_aloop）也会「成功」——那是数据流动成功，不是出声。

@@ -8,7 +8,7 @@
 //! 我们不等它 —— 本地 silero-vad 判定说完（200ms）就立刻 commit。
 //!
 //! 用法（wings-pc，需 --features kws）：
-//!   cargo run -q -p diemeng-core --features kws --example duplex_fast -- \
+//!   cargo run -q -p morphofly-core --features kws --example duplex_fast -- \
 //!     --file testdata/audio/04_ack_zai.mp3
 
 use diemeng_core::audio::playback::AudioPlayer;

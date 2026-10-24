@@ -4,7 +4,7 @@
 # wings-gpd 经常离线（掌机不进桌面就不联网），所以这个脚本只负责「当前能不能连」，
 # 不负责等待。等待逻辑见 tools/gpd_wait_and_send.sh。
 set -uo pipefail
-if [ -n "${DIEMENG_GPD_SSH:-}" ]; then echo "$DIEMENG_GPD_SSH"; exit 0; fi
+if [ -n "${MORPHOFLY_GPD_SSH:-}" ]; then echo "$MORPHOFLY_GPD_SSH"; exit 0; fi
 if getent hosts wings-gpd >/dev/null 2>&1; then echo "wings-gpd"; exit 0; fi
 for ip in 100.107.9.102 192.168.31.10; do
   if timeout 4 bash -c "cat < /dev/null > /dev/tcp/$ip/22" 2>/dev/null; then echo "wings@$ip"; exit 0; fi

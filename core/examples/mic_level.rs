@@ -1,6 +1,6 @@
 //! 接缝 0.2：cpal 原生采集跑通（**不经 WebView**）。
 //!
-//! 验收命令：cargo run -p diemeng-core --example mic_level -- --seconds 3
+//! 验收命令：cargo run -p morphofly-core --example mic_level -- --seconds 3
 //! 有音频设备时打印实时 RMS 与帧数；无设备时明确报错退出（不 panic）。
 
 use diemeng_core::audio::capture::AudioCapture;

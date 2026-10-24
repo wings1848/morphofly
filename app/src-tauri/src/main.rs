@@ -77,8 +77,8 @@ async fn poke(state: State<'_, AppState>, stimulus: String) -> Result<String, St
 /// 后台循环：频谱 + 状态推给前端。
 /// 视觉巡检模式：每 3 秒自动走一个状态，用于截图核对六态差异（验收 U2）。
 ///
-/// 只在 `DIEMENG_DEMO_STATES=1` 时启用，产品运行时绝不会打开。
-/// 用法：`DIEMENG_DEMO_STATES=1 ./target/debug/diemeng-app`，然后每 3s 截一张图。
+/// 只在 `MORPHOFLY_DEMO_STATES=1` 时启用，产品运行时绝不会打开。
+/// 用法：`MORPHOFLY_DEMO_STATES=1 ./target/debug/morphofly-app`，然后每 3s 截一张图。
 fn spawn_state_walker(machine: Arc<Mutex<SessionMachine>>) {
     tauri::async_runtime::spawn(async move {
         // 合法迁移序列：S0 --click--> S1 --connected--> S2 --thinking--> S3 --speaking--> S4
@@ -297,9 +297,9 @@ fn spawn_wake_listener(_machine: Arc<Mutex<SessionMachine>>) {
     tracing::info!("唤醒词未编译进来（用 --features kws 打开）");
 }
 
-/// 演示模式（DIEMENG_DEMO_STATES）下不启动 KWS，避免抢麦克风
+/// 演示模式（MORPHOFLY_DEMO_STATES）下不启动 KWS，避免抢麦克风
 fn demo_states_placeholder() -> bool {
-    std::env::var("DIEMENG_DEMO_STATES").map(|v| v != "0").unwrap_or(false)
+    std::env::var("MORPHOFLY_DEMO_STATES").map(|v| v != "0").unwrap_or(false)
 }
 
 fn main() {
@@ -323,16 +323,16 @@ fn main() {
         cfg.idle_timeout_ms,
     ))));
 
-    let demo_audio = std::env::var("DIEMENG_DEMO_AUDIO")
+    let demo_audio = std::env::var("MORPHOFLY_DEMO_AUDIO")
         .map(|v| v != "0")
         .unwrap_or(true);
-    // 唤醒词常驻监听的启动挪到 .setup() 里 —— 必须在 DIEMENG_BUNDLE_DIR 设好之后，
+    // 唤醒词常驻监听的启动挪到 .setup() 里 —— 必须在 MORPHOFLY_BUNDLE_DIR 设好之后，
     // 否则 AppImage 场景下会去 ~/.diemeng 找模型（找不到就静默降级）。
-    let enable_kws = std::env::var("DIEMENG_KWS").map(|v| v != "0").unwrap_or(true);
+    let enable_kws = std::env::var("MORPHOFLY_KWS").map(|v| v != "0").unwrap_or(true);
     let skip_kws = demo_states_placeholder();
 
     // 自动点击（仅 QA：绕开 X11 点击不达 WebView 的问题，直接驱动状态机）
-    if std::env::var("DIEMENG_AUTOCLICK").map(|v| v != "0").unwrap_or(false) {
+    if std::env::var("MORPHOFLY_AUTOCLICK").map(|v| v != "0").unwrap_or(false) {
         let m = machine.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -345,7 +345,7 @@ fn main() {
     }
 
     // 视觉巡检（仅 QA 用，见 spawn_state_walker 文档）
-    let demo_states = std::env::var("DIEMENG_DEMO_STATES").map(|v| v != "0").unwrap_or(false);
+    let demo_states = std::env::var("MORPHOFLY_DEMO_STATES").map(|v| v != "0").unwrap_or(false);
     if demo_states {
         spawn_state_walker(machine.clone());
     }
@@ -368,11 +368,11 @@ fn main() {
             if let Ok(rd) = app.path().resource_dir() {
                 let bundle = rd.join("resources");
                 let dir = if bundle.is_dir() { bundle } else { rd.clone() };
-                std::env::set_var("DIEMENG_BUNDLE_DIR", &dir);
+                std::env::set_var("MORPHOFLY_BUNDLE_DIR", &dir);
                 tracing::info!(dir = %dir.display(), "随包资源目录");
             }
 
-            // ★ 必须在 DIEMENG_BUNDLE_DIR 设好之后再启动唤醒词
+            // ★ 必须在 MORPHOFLY_BUNDLE_DIR 设好之后再启动唤醒词
             if enable_kws && !skip_kws {
                 spawn_wake_listener(machine.clone());
             }

@@ -3,7 +3,7 @@
 //! 这是真实使用场景：用户先说「帮我看看项目」，再说「有几个目录」，再说「谢谢」。
 //!
 //! 用法（wings-pc）：
-//!   cargo run -q -p diemeng-core --example multiturn_test
+//!   cargo run -q -p morphofly-core --example multiturn_test
 
 use diemeng_core::audio::capture::AudioCapture;
 use diemeng_core::audio::playback::AudioPlayer;

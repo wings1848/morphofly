@@ -2,7 +2,7 @@
 //!
 //! 验收命令（wings-pc）：
 //!   set -a; . ~/.diemeng/credentials; set +a
-//!   cargo run -q -p diemeng-core --example duplex -- --seconds 15
+//!   cargo run -q -p morphofly-core --example duplex -- --seconds 15
 //!
 //! 三件事同时跑：
 //!  1. 采集任务：cpal 20ms 帧 → WS append（带能量统计）

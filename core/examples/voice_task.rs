@@ -4,8 +4,8 @@
 //!
 //! 用法（wings-pc）：
 //!   set -a; . ~/.diemeng/credentials; set +a
-//!   cargo run -q -p diemeng-core --example voice_task -- --file testdata/audio/07_cmd_fix_bug.mp3
-//!   cargo run -q -p diemeng-core --example voice_task -- --text "列一下 /tmp 里有什么"
+//!   cargo run -q -p morphofly-core --example voice_task -- --file testdata/audio/07_cmd_fix_bug.mp3
+//!   cargo run -q -p morphofly-core --example voice_task -- --text "列一下 /tmp 里有什么"
 
 use diemeng_core::audio::capture::AudioCapture;
 use diemeng_core::dispatch::Dispatcher;

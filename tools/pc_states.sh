@@ -10,11 +10,11 @@ ssh -o BatchMode=yes "$SSH_T" "
   set -e
   export XDG_RUNTIME_DIR=/run/user/1000 XAUTHORITY=/run/user/1000/xauth_bqxIvn DISPLAY=:0
   export GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1
-  cd /home/wings/Code_Project/diemeng
-  pkill -x diemeng-app 2>/dev/null || true
+  cd /home/wings/Code_Project/morphofly
+  pkill -x morphofly-app 2>/dev/null || true
   sleep 1
   rm -rf $OUTDIR && mkdir -p $OUTDIR
-  DIEMENG_DEMO_STATES=1 setsid ./target/debug/diemeng-app > $OUTDIR/app.log 2>&1 < /dev/null &
+  MORPHOFLY_DEMO_STATES=1 setsid ./target/debug/morphofly-app > $OUTDIR/app.log 2>&1 < /dev/null &
   sleep 7
   WID=\$(for id in \$(xdotool search --onlyvisible --name '.*' 2>/dev/null); do
           n=\$(xdotool getwindowname \$id 2>/dev/null)

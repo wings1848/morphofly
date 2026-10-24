@@ -5,3 +5,19 @@
 # 加了会导致所有构建失败。wings-pc 有 lld，但共用同一份配置，所以统一不加。
 [build]
 incremental = false
+
+# ── 目标 CPU 基线（2026-10-24 加）───────────────────────────
+#
+# 默认 target-cpu=native 会把二进制优化到「编译机」的指令集。
+# 在 wings-pc（支持 AVX2/AVX512）上编出来的包，拿到 wings-gpd
+# （Intel Pentium Silver N6000，只有 SSE4.2 + POPCNT）上跑会 **SIGILL 崩溃**。
+#
+# 实测：
+#   gpd CPU flags = fpu vme de ... sse4_1 sse4_2 popcnt  ← 无 avx
+#   wings-pc 默认编译 → gpd 上 coredumpctl 显示 SIGILL / ILL_ILLOPN
+#
+# x86-64-v2 = SSE4.2 + POPCNT + CMPXCHG16B，2010 年后的 CPU 都支持。
+# 牺牲一点峰值性能（本项目不是计算密集型，实测延迟无变化），
+# 换来在所有 x86_64 Linux 机器上都能跑。
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v2"]

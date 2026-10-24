@@ -121,7 +121,7 @@ pactl info 2>/dev/null | head -5
 导致 AppImage 场景下去 `~/.diemeng` 找模型，找不到就静默降级 ——
 **等于你装了个不能唤醒的版本**。
 
-现在挪到 `.setup()` 里、设完 `DIEMENG_BUNDLE_DIR` 之后再启动。
+现在挪到 `.setup()` 里、设完 `MORPHOFLY_BUNDLE_DIR` 之后再启动。
 
 ### 2. 一次发言触发多次 commit
 

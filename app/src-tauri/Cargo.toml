@@ -1,5 +1,5 @@
 [package]
-name = "diemeng-app"
+name = "morphofly-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,11 +12,11 @@ tauri-build = { version = "2", features = [] }
 # 唤醒词是核心功能（喊「小蝶」唤醒），默认开启。
 # 关闭方式：cargo build --no-default-features（纯逻辑测试用，本机缺 libstdc++ 时需要）
 default = ["kws"]
-kws = ["diemeng-core/kws"]
+kws = ["morphofly-core/kws"]
 
 [dependencies]
 # 唤醒词需要 --features kws（sherpa-onnx 静态库，本机缺 libstdc++ 时不要开）
-diemeng-core = { workspace = true, features = [] }
+morphofly-core = { workspace = true, features = [] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

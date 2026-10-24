@@ -27,4 +27,4 @@ rodio = "0.23"
 realfft = "3.5"
 hound = "3.5"
 bytes = "1"
-diemeng-core = { path = "core" }
+morphofly-core = { path = "core" }

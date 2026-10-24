@@ -341,13 +341,13 @@ impl AudioPlayer {
         if nominal_rate == 0 {
             return Err(AudioError::InvalidConfig("nominal 采样率为 0".into()));
         }
-        // 设备选择：优先环境变量 DIEMENG_OUTPUT_DEVICE（PulseAudio/PipeWire sink 名），
+        // 设备选择：优先环境变量 MORPHOFLY_OUTPUT_DEVICE（PulseAudio/PipeWire sink 名），
         // 否则用系统默认 sink。
         //
         // ⚠️ 2026-10-24 审计发现：wings-pc 的默认 sink 曾是 `platform-snd_aloop`
         // （虚拟回环设备，声音不会真正从扬声器出来）。所有「真正出声」的说法
         // 只有在确认 sink 是物理设备时才成立。见 docs/音频路由.md。
-        let mut sink = match std::env::var("DIEMENG_OUTPUT_DEVICE") {
+        let mut sink = match std::env::var("MORPHOFLY_OUTPUT_DEVICE") {
             Ok(name) if !name.trim().is_empty() => {
                 match DeviceSinkBuilder::from_default_device() {
                     Ok(_) => DeviceSinkBuilder::open_default_sink(),
@@ -357,7 +357,7 @@ impl AudioPlayer {
                     // rodio 0.23 没有「按名字打开」的公开 API，
                     // 这里通过设置在进程启动前切换 PulseAudio 默认 sink 实现，
                     // 见 tools/pc_audio_route.sh。
-                    tracing::info!(device = %name, "使用 DIEMENG_OUTPUT_DEVICE 指定的输出");
+                    tracing::info!(device = %name, "使用 MORPHOFLY_OUTPUT_DEVICE 指定的输出");
                     DeviceSinkBuilder::open_default_sink()
                 })
             }

@@ -5,7 +5,7 @@
 //! 关键设计（docs/开发方案.md §4.1）：**本地先停，服务端后确认**。
 //!
 //! 用法：
-//!   cargo run -q -p diemeng-core --example bargein -- \
+//!   cargo run -q -p morphofly-core --example bargein -- \
 //!     --prompt testdata/audio/06_cmd_progress.mp3 \
 //!     --interrupt testdata/audio/08_cmd_stop.mp3
 //!

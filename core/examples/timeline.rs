@@ -2,7 +2,7 @@
 //!
 //! 用法（wings-pc）：
 //!   set -a; . ~/.diemeng/credentials; set +a
-//!   cargo run -q -p diemeng-core --example timeline -- testdata/audio/04_ack_zai.mp3
+//!   cargo run -q -p morphofly-core --example timeline -- testdata/audio/04_ack_zai.mp3
 
 use diemeng_core::audio::capture::AudioCapture;
 use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};

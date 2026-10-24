@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── 纯逻辑测试（不需要音频设备/桌面）──
+  test:
+    name: 测试（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装系统依赖（Tauri 2 + 音频）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf \
+            libasound2-dev libpulse-dev pkg-config \
+            ffmpeg
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # 唤醒词 feature 会下载 30MB 静态库，缓存它
+          workspaces: ". -> target"
+
+      - name: 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（拒绝警告）
+        run: cargo clippy -p morphofly-core --all-targets -- -D warnings
+
+      - name: 核心测试（默认 feature）
+        run: cargo test -p morphofly-core --lib --verbose
+
+      - name: 前端测试
+        run: |
+          node --version
+          node --test app/frontend/test/
+
+  # ── 唤醒词测试（单独 job，因为要拉 sherpa-onnx 静态库）──
+  test-kws:
+    name: 测试（含唤醒词）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libpulse-dev pkg-config ffmpeg
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 唤醒词测试
+        run: cargo test -p morphofly-core --features kws --lib
+
+  # ── 密钥扫描（防止误提交）──
+  secret-scan:
+    name: 密钥扫描
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 全历史，扫历史里的泄漏
+
+      - name: 扫 StepFun key 模式
+        run: |
+          # StepFun key 形如 1HeA...gBHe（65 字符）
+          if git log --all -p | grep -qE '1HeA[A-Za-z0-9]{50,}'; then
+            echo "::error::发现疑似 StepFun API key 泄漏"
+            exit 1
+          fi
+          echo "✅ 未发现密钥"
+
+      - name: 扫通用密钥模式
+        run: |
+          PATTERNS='(sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16})'
+          if git log --all -p | grep -qE "$PATTERNS"; then
+            echo "::error::发现疑似 API key / token"
+            exit 1
+          fi
+          echo "✅ 未发现通用密钥模式"
+
+  # ── 构建检查（确保 Tauri 壳能编译）──
+  build:
+    name: 构建检查
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf \
+            libasound2-dev libpulse-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 编译 core（默认 feature）
+        run: cargo build -p morphofly-core --release
+
+      - name: 编译 core（含唤醒词）
+        run: cargo build -p morphofly-core --features kws --release

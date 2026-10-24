@@ -1,7 +1,7 @@
 //! 接缝 0.7：把任务派给 DSH 并拿回结果。
 //!
 //! 验收命令：
-//!   cargo run -p diemeng-core --example delegate -- '列一下 /tmp 里有什么'
+//!   cargo run -p morphofly-core --example delegate -- '列一下 /tmp 里有什么'
 //!   DELEGATE_TIMEOUT=120 cargo run ... （默认 180s）
 
 use diemeng_core::dsh::acp::{DshClient, DshEvent};
@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     let task = if task.trim().is_empty() {
-        "运行 `ls /home/wings/Code_Project/diemeng`，用一句话告诉我里面有哪些文件。不要修改任何文件。".to_string()
+        "运行 `ls /home/wings/Code_Project/morphofly`，用一句话告诉我里面有哪些文件。不要修改任何文件。".to_string()
     } else {
         task
     };
@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(180);
 
     let cfg = Config::load().unwrap_or_default();
-    let cwd = std::env::var("DIEMENG_CWD").unwrap_or_else(|_| cfg.dsh.default_cwd.clone());
+    let cwd = std::env::var("MORPHOFLY_CWD").unwrap_or_else(|_| cfg.dsh.default_cwd.clone());
     let t0 = std::time::Instant::now();
 
     println!("[delegate] 启动 DSH: {:?}", cfg.dsh.command);

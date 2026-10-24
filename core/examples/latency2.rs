@@ -3,7 +3,7 @@
 //! 为什么不用「最后有声帧」当基准：文件末尾的静音 pad 会被算进延迟，
 //! 而 pad 是我自己造的（为了触发 VAD），不该算进用户体验。
 //!
-//! 用法：cargo run -q -p diemeng-core --example latency2 -- --rounds 8 --file testdata/audio/04_ack_zai.mp3
+//! 用法：cargo run -q -p morphofly-core --example latency2 -- --rounds 8 --file testdata/audio/04_ack_zai.mp3
 
 use diemeng_core::audio::capture::AudioCapture;
 use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};

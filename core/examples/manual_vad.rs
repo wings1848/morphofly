@@ -9,7 +9,7 @@
 //!
 //! 这是把 P1 延迟从 3.2s 压到 500ms 以内的关键。
 //!
-//! 用法：cargo run -q -p diemeng-core --example manual_vad -- --rounds 5 --file testdata/audio/04_ack_zai.mp3
+//! 用法：cargo run -q -p morphofly-core --example manual_vad -- --rounds 5 --file testdata/audio/04_ack_zai.mp3
 
 use diemeng_core::audio::capture::AudioCapture;
 use diemeng_core::realtime::{ensure_crypto_provider, RealtimeClient, RealtimeEvent};

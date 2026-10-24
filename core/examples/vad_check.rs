@@ -1,7 +1,7 @@
 //! 本地 VAD 验证：silero-vad 能否在该开口时开口、该闭嘴时闭嘴。
 //!
 //! 用法（wings-pc，需 --features kws）：
-//!   cargo run -q -p diemeng-core --features kws --example vad_check -- testdata/audio/
+//!   cargo run -q -p morphofly-core --features kws --example vad_check -- testdata/audio/
 
 use diemeng_core::vad::{frame_to_f32, LocalVad, VadConfig};
 use std::path::PathBuf;

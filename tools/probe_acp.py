@@ -20,7 +20,7 @@ import time
 import queue
 
 DEFAULT_PROMPT = (
-    "请执行一个很小的任务：运行 `ls /home/wings/Code_Project/diemeng`，"
+    "请执行一个很小的任务：运行 `ls /home/wings/Code_Project/morphofly`，"
     "然后用一句话告诉我目录里有哪些文件。不要修改任何文件。"
 )
 
@@ -167,7 +167,7 @@ def main():
     if "--prompt" in argv:
         prompt = argv[argv.index("--prompt") + 1]
 
-    cwd = "/home/wings/Code_Project/diemeng"
+    cwd = "/home/wings/Code_Project/morphofly"
     t0 = time.time()
     conn = Conn(["dsh", "--profile", "acp"])
     client = Client(conn)

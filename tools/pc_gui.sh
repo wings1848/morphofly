@@ -13,6 +13,6 @@ ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SSH_T" "
   export WEBKIT_DISABLE_COMPOSITING_MODE=1
   export WEBKIT_DISABLE_DMABUF_RENDERER=1
   export LIBGL_ALWAYS_SOFTWARE=1
-  cd /home/wings/Code_Project/diemeng
+  cd /home/wings/Code_Project/morphofly
   $cmd
 "

@@ -1,7 +1,7 @@
 //! 验收 P2/F6：**本地 VAD 打断**（正确做法，不依赖云端 speech_started）。
 //!
 //! 用法（wings-pc，需 --features kws）：
-//!   cargo run -q -p diemeng-core --features kws --example bargein_local
+//!   cargo run -q -p morphofly-core --features kws --example bargein_local
 //!
 //! 流程：
 //!  1. 推一段语音 + commit → 让模型开口
