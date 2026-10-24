@@ -58,6 +58,30 @@ async fn snap_orb(window: WebviewWindow) -> Result<(), String> {
 /// 手动拖动是否进行中（true 时后台循环跟着指针搬窗口）
 static DRAG_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// 本次拖动的校准参数：(抓取偏移 x, 抓取偏移 y, 指针单位→物理像素比例)
+/// `orb_drag_end` 要用它把最后一帧补上（合成的快速拖动可能一帧都不给机会采样）
+static DRAG_CAL: std::sync::OnceLock<std::sync::Mutex<Option<(f64, f64, f64)>>> =
+    std::sync::OnceLock::new();
+
+fn drag_cal() -> &'static std::sync::Mutex<Option<(f64, f64, f64)>> {
+    DRAG_CAL.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 把「指针读数」换成窗口应该去的位置（物理像素）
+fn drag_target(
+    win: &WebviewWindow,
+    cursor: tauri::PhysicalPosition<f64>,
+    k: f64,
+    ox: f64,
+    oy: f64,
+) -> tauri::PhysicalPosition<i32> {
+    clamp_to_monitor(
+        win,
+        (cursor.x * k - ox).round() as i32,
+        (cursor.y * k - oy).round() as i32,
+    )
+}
+
 /// 把窗口位置夹到当前显示器范围内，别把球拖丢（拖出屏幕就再也点不到了）
 fn clamp_to_monitor(win: &WebviewWindow, x: i32, y: i32) -> tauri::PhysicalPosition<i32> {
     let mut tx = x;
@@ -172,6 +196,9 @@ async fn orb_drag_begin(
         "拖动开始：后台跟指针搬窗口"
     );
 
+    if let Ok(mut g) = drag_cal().lock() {
+        *g = Some((offset_phys.0, offset_phys.1, k));
+    }
     DRAG_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let win = window.clone();
     tauri::async_runtime::spawn(async move {
@@ -180,11 +207,7 @@ async fn orb_drag_begin(
         while DRAG_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
             match win.cursor_position() {
                 Ok(c) => {
-                    let target = clamp_to_monitor(
-                        &win,
-                        (c.x * k - offset_phys.0).round() as i32,
-                        (c.y * k - offset_phys.1).round() as i32,
-                    );
+                    let target = drag_target(&win, c, k, offset_phys.0, offset_phys.1);
                     if last != Some((target.x, target.y)) {
                         last = Some((target.x, target.y));
                         idle = 0;
@@ -217,10 +240,20 @@ async fn orb_drag_begin(
     Ok(serde_json::json!({ "native": false, "x": pos.x, "y": pos.y }))
 }
 
-/// 拖动结束：前端 pointerup / pointercancel / 失焦时调用
+/// 拖动结束：前端 pointerup / pointercancel / 失焦时调用。
+///
+/// 除了停掉后台循环，这里还会**按当前指针再摆一次窗口**：合成/脚本产生的快速
+/// 拖动可能比 16ms 采样还快，松手那一帧没被采到就会停在半路（真机实测过一次，
+/// 拖到底只走到一半）。补这一帧之后，自动验收的位置判定才是确定的。
 #[tauri::command]
-fn orb_drag_end() -> serde_json::Value {
+async fn orb_drag_end(window: WebviewWindow) -> serde_json::Value {
     DRAG_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    let cal = drag_cal().lock().ok().and_then(|g| *g);
+    if let (Some((ox, oy, k)), Ok(c)) = (cal, window.cursor_position()) {
+        let target = drag_target(&window, c, k, ox, oy);
+        let _ = window.set_position(target);
+        tracing::info!(x = target.x, y = target.y, "拖动结束：按最后一帧指针补位");
+    }
     serde_json::json!({ "ok": true })
 }
 
