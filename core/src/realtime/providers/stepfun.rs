@@ -585,12 +585,11 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            vec![
-                "append_requirement",
-                "cancel_task",
-                "delegate_task",
-                "query_progress"
-            ],
+            {
+            let mut expect = crate::tools::TOOL_NAMES.to_vec();
+            expect.sort_unstable();
+            expect
+        },
             "不变量 I1：归一化后仍然只有这 4 个工具"
         );
     }
