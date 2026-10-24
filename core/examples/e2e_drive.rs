@@ -202,13 +202,9 @@ async fn main() -> anyhow::Result<()> {
                 // 修法：不清 reply，只把纠正轮的内容记到别处（不参与判定）。
                 if tool_calls.is_empty() && correction_count < 1 && !reply.trim().is_empty() {
                     // 只对「看起来像要做事」的回复纠正，不管闲聊
-                    // （「你叫什么名字」这类不该被纠正）
-                    let looks_like_action = reply.contains("好，")
-                        || reply.contains("查着")
-                        || reply.contains("这就")
-                        || reply.contains("马上")
-                        || reply.contains("切换")
-                        || reply.contains("换成");
+                    // （「你叫什么名字」这类不该被纠正）。
+                    // 判据和 App 里共用同一份，避免两边漂移。
+                    let looks_like_action = morphofly_core::dispatch::looks_like_action(&reply);
                     if looks_like_action {
                         correction_count += 1;
                         eprintln!("[e2e] 模型只说话没调工具，注入纠正");

@@ -813,6 +813,35 @@ fn is_common_word(s: &str) -> bool {
     COMMON.iter().any(|c| s.contains(c)) || s.chars().count() < 2
 }
 
+/// 模型的回复看起来像「我正在办事 / 我办完了」吗？
+///
+/// 用途：兜底纠正的判据。模型有时会说「好，查着呢」却不调 `delegate_task`，
+/// 那就是**假装干活**。但闲聊（「你叫什么名字」）不该被纠正成派活，
+/// 所以只对「听起来在办事」的回复纠正。
+///
+/// 判据故意保守：宁可漏纠正，不可把正常对话打断。
+pub fn looks_like_action(reply: &str) -> bool {
+    const MARKERS: [&str; 12] = [
+        "好，",
+        "好的，",
+        "查着",
+        "查一下",
+        "这就",
+        "马上",
+        "稍等",
+        "等等",
+        "我来",
+        "我去",
+        "切换",
+        "换成",
+    ];
+    let t = reply.trim();
+    if t.is_empty() {
+        return false;
+    }
+    MARKERS.iter().any(|m| t.contains(m))
+}
+
 /// 语音回复的硬长度上限（字符数）。
 ///
 /// 用户要求「语音消息回复极其简洁」。
@@ -1064,6 +1093,33 @@ mod tests {
         let a = SessionContext::new("dsh", "/tmp");
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn looks_like_action_flags_busy_talk() {
+        for s in [
+            "好，查着呢",
+            "好的，这就去办",
+            "稍等，马上就好",
+            "我来看一下",
+            "已经切换成 codex 了",
+        ] {
+            assert!(looks_like_action(s), "应判为「在办事」: {s}");
+        }
+    }
+
+    #[test]
+    fn looks_like_action_ignores_chitchat() {
+        for s in [
+            "我叫小蝶",
+            "今天是 10 月 24 号",
+            "你说的我没听清",
+            "需要我帮你查吗",
+            "",
+            "   ",
+        ] {
+            assert!(!looks_like_action(s), "不该判为「在办事」: {s:?}");
+        }
     }
 
     #[test]
