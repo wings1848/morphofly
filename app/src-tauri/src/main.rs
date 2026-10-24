@@ -126,16 +126,6 @@ fn orb_log(msg: String) {
     tracing::info!(target: "morphofly_app::js", js = %msg, "前端日志");
 }
 
-/// 前端首帧画完后调用：告诉 Rust「可以把小球窗口显形了」。
-///
-/// 为什么需要它：Linux 下窗口先设成全透明再 show（见 setup 里的启动顺序），
-/// WebKit 画完第一帧之前后端无从得知；由前端在渲染循环跑过一帧后发信号最可靠。
-#[tauri::command]
-fn orb_ready() {
-    FRONTEND_READY.store(true, std::sync::atomic::Ordering::Relaxed);
-    tracing::info!("前端首帧已画（通知 Rust 显示窗口）");
-}
-
 /// 拖动开始：Linux 用手动伺服（后台每 16ms 读一次全局指针，把窗口摆在「指针 − 抓取偏移」）。
 ///
 /// 为什么不用系统原生拖动（`start_dragging()`）：2026-10-25 真机实测，
@@ -360,7 +350,10 @@ fn spawn_pump(app: AppHandle, machine: Arc<Mutex<SessionMachine>>, demo_audio: b
         // 50ms（20fps）足够顺，之前 33ms 在 N6000 上纯属浪费
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
         let started = Instant::now();
-        let mut last_state = String::new();
+        // ★ 初始状态就当作「已经推过」：否则 demo/QA 模式下第一帧就会推一次
+        //   state=S0 + caption=待机，前端又弹一次启动字幕气泡（2026-10-25 修完真机
+        //   黑气泡后，review 指出 demo 模式会复现；顺手从源头抑制）。
+        let mut last_state = machine.lock().await.state().as_str().to_string();
         let mut phase = 0.0f32;
 
         loop {
@@ -609,12 +602,6 @@ fn set_orb_home(x: i32, y: i32) {
 /// 当前所在的屏幕正中当基准，把窗口挪到 1249；随后贴边又按「已经被撑到
 /// 360 宽」的尺寸算，最终停在 2696 而不是 2908，右下角就差 212px。
 static ORB_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// 前端首帧画完了吗？窗口启动时先全透明，等这个标记置位才恢复可见。
-///
-/// 为什么由前端发信号：窗口映射后 WebKit 才提交第一帧，后端无法直接知道画没画完。
-/// 前端在启动渲染循环跑过一帧之后再调 `orb_ready`。
-static FRONTEND_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn get_orb_home() -> Option<(i32, i32)> {
     orb_home().lock().ok().and_then(|g| *g)
@@ -940,12 +927,6 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 进程启动时刻：日志里算「首帧就绪」耗时用（验收 T3 直接 grep elapsed_ms）。
-static PROCESS_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-
-/// 启动时等前端首帧的上限。超时也会显示窗口，避免前端坏了导致永远不可见。
-const STARTUP_READY_TIMEOUT_MS: u64 = 3000;
-
 /// 小球窗口的基准尺寸（一个边长，正方形）。见 `docs/v2/float-window.md`。
 ///
 /// 为什么要小：窗口的**透明区域照样吃鼠标事件**。
@@ -985,38 +966,7 @@ fn force_x11_backend() {
 #[cfg(not(target_os = "linux"))]
 fn force_x11_backend() {}
 
-/// 设置整个窗口的不透明度（0.0–1.0）。Linux 走 GTK，其它平台没有对应 API、返回 false。
-///
-/// 为什么需要：`transparent: true` 只保证「页面背景透明」，页面还没画出来时
-/// 窗口在 KDE 下仍会先显示成空的黑框。启动时先设 0，等前端首帧画完再设 1，
-/// 用户就完全看不到那个中间态。
-///
-/// 注意：`gtk_window()` 只能在主线程调（Tauri 的 Linux 限制），调用点都在主线程。
-#[cfg(target_os = "linux")]
-fn linux_set_window_opacity(win: &WebviewWindow, opacity: f64) -> bool {
-    use gtk::prelude::WidgetExt;
-    match win.gtk_window() {
-        Ok(gwin) => {
-            gwin.set_opacity(opacity);
-            true
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, opacity, "设置 GTK 窗口不透明度失败");
-            false
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)] // 只有 Linux 启动流程会调它，其它平台留这个空实现是为了 cfg 代码统一
-fn linux_set_window_opacity(_win: &WebviewWindow, _opacity: f64) -> bool {
-    false
-}
-
 fn main() {
-    // 启动时刻（验收会 grep 「启动首帧就绪 ... elapsed_ms」判断有没有变慢）
-    PROCESS_START.get_or_init(Instant::now);
-
     // ★ 必须最先执行：GTK 在第一次连显示服务器时就定后端，晚了没用。
     force_x11_backend();
 
@@ -1129,7 +1079,6 @@ fn main() {
             poke,
             snap_orb,
             orb_log,
-            orb_ready,
             orb_metrics,
             orb_drag_begin,
             orb_drag_end
@@ -1178,18 +1127,7 @@ fn main() {
                 //
                 // 所以：先 show() → 等尺寸变非 0 → 显式设一次尺寸 → 再贴边。
                 //
-                // ★ 2026-10-25 加第三件事：show() 之前先把窗口设成全透明（Linux/GTK），
-                //   等前端首帧画完再恢复不透明度。这样用户看到的第一帧就是画好的球，
-                //   不会先看到一个空的黑框/黑底窗口（KDE 下的启动闪黑框就是这么来的）。
-                #[cfg(target_os = "linux")]
-                if linux_set_window_opacity(&win, 0.0) {
-                    tracing::info!("启动：小球窗口先全透明（等前端首帧画完再显示）");
-                } else {
-                    tracing::warn!("启动：设置窗口透明失败，启动瞬间可能闪一下");
-                }
-
                 let w2 = win.clone();
-                let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(120)).await;
                     if let Err(e) = w2.show() {
@@ -1213,48 +1151,6 @@ fn main() {
                     }
                     tokio::time::sleep(Duration::from_millis(80)).await;
                     place_orb_bottom_right(&w2);
-
-                    // ── 等前端首帧画完再显形 ──
-                    // 前端在渲染循环跑过一帧后调 orb_ready。这里最多等 3 秒：
-                    // 超时也要显示（前端挂了不能让用户看不到球），并在日志里留痕（验收 T3 会查）。
-                    let wait_start = Instant::now();
-                    let mut frontend_ready = false;
-                    while wait_start.elapsed() < Duration::from_millis(STARTUP_READY_TIMEOUT_MS) {
-                        if FRONTEND_READY.load(std::sync::atomic::Ordering::Relaxed) {
-                            frontend_ready = true;
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    if !frontend_ready {
-                        tracing::warn!(
-                            timeout_ms = STARTUP_READY_TIMEOUT_MS,
-                            "启动：等前端首帧超时，先显示窗口（可能闪一下）"
-                        );
-                    }
-                    // GTK 调用只能在主线程，挪回去再恢复不透明度
-                    let w3 = w2.clone();
-                    if let Err(e) = app_handle.run_on_main_thread(move || {
-                        #[cfg(target_os = "linux")]
-                        {
-                            if !linux_set_window_opacity(&w3, 1.0) {
-                                tracing::warn!("启动：恢复窗口不透明度失败");
-                            }
-                        }
-                        #[cfg(not(target_os = "linux"))]
-                        let _ = &w3; // 非 Linux 不设不透明度，避免 unused 警告
-                        let elapsed_ms = PROCESS_START
-                            .get()
-                            .map(|t| t.elapsed().as_millis())
-                            .unwrap_or(0);
-                        tracing::info!(
-                            elapsed_ms = elapsed_ms,
-                            frontend_ready,
-                            "启动首帧就绪：小球可见"
-                        );
-                    }) {
-                        tracing::warn!(error = %e, "切回主线程显示小球失败");
-                    }
                 });
             }
             Ok(())

@@ -7,14 +7,14 @@ wave_1:
     gate: T1/T2/T3 在旧二进制 FAIL（见 evidence/red.log）
     status: done
   - id: root-cause
-    desc: 定位真因（orb_state 把状态名当字幕 + 先 show 后画内容）
-    gate: 真机 journal 时间线 + 录屏帧（见 evidence/red-journal-*.log、evidence/red-visible-bubble/）
+    desc: 定位真因（orb_state 把状态名当字幕；8fps 连拍证明「黑框」就是字幕气泡，不是空窗口）
+    gate: 真机 journal 时间线 + 录屏帧（见 evidence/red-journal-visible-bubble.log、evidence/red-visible-bubble/）
     status: done
 wave_2:
   - id: rust-fix
-    desc: 窗口先全透明、前端首帧就绪后再显形；orb_state 不再回退状态名；新增 orb_ready 命令
-    scope: [app/src-tauri/src/main.rs, app/src-tauri/Cargo.toml, Cargo.lock]
-    gate: cargo fmt --check + CI 编译（run 40134296273 全绿）
+    desc: orb_state 不再回退状态名；demo 模式不推初始 state 字幕（不做窗口透明度 hack，见 verify-report）
+    scope: [app/src-tauri/src/main.rs]
+    gate: cargo fmt --check + CI 编译
     status: done
   - id: frontend-fix
     desc: 启动不显示初始字幕、空字幕不渲染、首帧后通知 Rust

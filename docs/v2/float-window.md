@@ -71,17 +71,21 @@ ssh wings@100.107.9.102 'chromium --headless=new --disable-gpu --no-sandbox \
 `?state=S2` 强制状态、`?demo=1` 喂假频谱数据，都是给截图用的。
 **必须走 http**：`file://` 下 ES module 会被 CORS 拦掉。
 
-## 启动时序 v2（2026-10-25）：先透明再显形
+## 启动瞬间的黑框是什么（2026-10-25 修正）
 
-用户反馈启动时会闪一个黑框 +「待机」黑气泡，根因与修法见
-[startup-clean.md](startup-clean.md)。这里只记对窗口层的两个新约束：
+用户反馈启动时闪一个黑框 +「待机」黑气泡。8fps 连拍结论：
+**黑框就是字幕气泡本身**（窗口撑到 360 宽时左边那块深色圆角气泡），
+不是「未画内容的空窗口」——`transparent: true` 的窗口在 KDE 下首帧前就是透明的。
 
-1. **Linux 启动时窗口先设成全透明**（`linux_set_window_opacity(0.0)`，
-   GTK `gtk_window_set_opacity`），`show()`/贴边/跳位都在透明状态做完，
-   等前端首帧画完（`orb_ready`）再恢复不透明度 → 用户看到的第一帧就已经是
-   「右下角画好的球」。
-2. **贴边完成 + 首帧就绪的先后顺序有日志契约**：`小球已贴边` 必须先于
-   `启动首帧就绪`；`tools/verify_startup_clean.sh` 会查这个顺序（T2）。
+修法不在窗口层，而是 `orb_state` 不再把状态名当字幕、前端启动不再显示字幕。
+详见 [startup-clean.md](startup-clean.md)。
+
+之前考虑过「启动时把窗口设成全透明、等首帧再显形」，评估后放弃：
+
+1. 没有复现到需要它的空黑框；
+2. `gtk_widget_set_opacity` 对 RGBA 透明窗口走的是 Cairo alpha，不等于合成器不透明度
+   （`_NET_WM_WINDOW_OPACITY`），WebKit 的 native 子窗口也遮不住；
+3. 恢复不透明度失败会让球永远不可见，风险大于收益。
 
 ## 启动时序：两个必踩的坑（真机实测）
 

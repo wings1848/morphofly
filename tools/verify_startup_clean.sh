@@ -8,17 +8,17 @@
 #
 # 拆开是三件事，本脚本逐条判：
 #   T1 启动时不该弹字幕气泡（老版本启动会显示「待机」黑色气泡 4.2 秒）
-#   T2 小球窗口必须在「前端首帧画完」之后才可见（老版本先 show 再等页面，黑框/空窗口）
-#   T3 首帧就绪不能太慢（< 3s，否则等于启动变慢，用户会觉得卡）
-#   T4 启动中（t≈3s）与稳定后（t≈12s）球左侧的「气泡区域」不应有差异
-#      （直接对真机截图做差分；没有气泡时这块区域只有静态壁纸）
-#   T5 贴边位置仍然在右下角（不能因为改启动时序把定位弄丢）
+#   T2 真机连拍：启动中球左侧的「气泡区域」不应出现黑框/文字
+#      （直接对真机截图做差分；没有气泡时这块区域只有静态壁纸/桌面）
+#   T3 位置 / 尺寸 / 置顶不回归（复用 tools/verify_float_ui.sh 的 pos/top/size）
+#   T4 前端单测全绿（字幕清洗 + 旧测试不回归）
 #
 # ## 怎么判
 #
-# T1/T2/T3/T5 从 systemd journal 里读时间线 —— 重启服务是可控的，日志时间戳可靠。
-# T4 用 KWin ScreenShot2 D-Bus 连拍（见 tools/gpd_startup_frames.py），
+# T1 从 systemd journal 读「启动状态 caption=无」（重启服务可控，日志时间戳可靠）。
+# T2 用 KWin ScreenShot2 D-Bus 连拍（见 tools/gpd_startup_frames.py），
 #    比 spectacle/portal 快两个数量级：一次 40–90ms，8fps 能拍到 4.2 秒的气泡。
+# T3/T4 复用现成的真机几何检查和本地 node 单测。
 #
 # ## 用法
 #
@@ -26,7 +26,7 @@
 #   tools/verify_startup_clean.sh --no-frames     # 只跑日志判据（调试用，快）
 #   tools/verify_startup_clean.sh --no-restart    # 不重启服务（服务必须已经在跑；只做静态判据）
 #
-# 环境变量：GPD / GPD_SERVICE / RUN_DIR / EVIDENCE_DIR / STARTUP_TIMEOUT_MS
+# 环境变量：GPD / GPD_SERVICE / RUN_DIR / EVIDENCE_DIR
 #
 # 退出码：0 全通过 / 1 有失败 / 2 跳过（设备不在线或服务没跑）
 set -uo pipefail
@@ -38,10 +38,8 @@ GPD=${GPD:-}
 GPD_SERVICE=${GPD_SERVICE:-morphofly-test}
 RUN_DIR=${RUN_DIR:-$REPO_ROOT/runs/20261025-0520-startup-clean}
 EVIDENCE_DIR=${EVIDENCE_DIR:-$RUN_DIR/evidence}
-STARTUP_TIMEOUT_MS=${STARTUP_TIMEOUT_MS:-3000}
 REC_DURATION=${REC_DURATION:-13}
 REC_FPS=${REC_FPS:-8}
-EARLY_T=${EARLY_T:-3.0}
 LATE_T=${LATE_T:-12.0}
 
 NO_FRAMES=0
@@ -159,11 +157,11 @@ awk '/Started MorphoFly voice agent/{buf=""} {buf=buf $0 "\n"} END{printf "%s", 
 echo "[verify_startup_clean] journal（本次实例）→ $JOURNAL（$(wc -l <"$JOURNAL") 行，原始 $(wc -l <"$JOURNAL_RAW") 行）"
 
 # ── T1 启动时不该显示任何初始字幕 ─────────────────────────────────────────
+# 用户看到的就是这个：启动时 orb_state 把状态名「待机」当字幕返回，前端直接
+# showCaption + orb_tip 把窗口撑到 360 宽 → 球旁边一个黑色气泡停 4.2 秒。
 # 两个证据缺一不可：
-#   a) 前端启动日志里 caption 必须是「无」（老版本 orb_state 把状态名「待机」当字幕，
-#      前端启动就 showCaption —— 有时窗口已展开成黑气泡，有时来不及展开只闪一下；
-#      日志判据不受这个时序影响）
-#   b) 老版本展开气泡的日志「气泡窗口已调整 show=true」也不能出现
+#   a) 前端启动日志 caption=无（不受「窗口来不来得及撑开」的竞态影响）
+#   b) 重启后没有「气泡窗口已调整 show=true」
 START_LOG=$(grep -o '启动状态 state=[^ ]* caption=[^ ]*' "$JOURNAL" | tail -1)
 if [ -z "${START_LOG:-}" ]; then
   bad "T1 没有「启动状态 caption=无」日志（旧二进制没有这条判据；不能证明启动干净）"
@@ -177,41 +175,8 @@ else
   bad "T1 启动时显示了初始字幕（${START_LOG}）"
 fi
 
-# ── T2/T3 首帧就绪必须在贴边之后，且不超时 ────────────────────────────────
-EDGE_LINE=$(grep -n '小球已贴边' "$JOURNAL" | head -1 | cut -d: -f1)
-READY_LINE=$(grep -n '启动首帧就绪' "$JOURNAL" | head -1 | cut -d: -f1)
-if [ -z "${READY_LINE:-}" ]; then
-  bad "T2 缺少「启动首帧就绪」日志（旧二进制不会打这条：说明窗口仍是先可见后出内容）"
-  bad "T3 首帧就绪耗时不可测（无日志）"
-else
-  if [ -n "${EDGE_LINE:-}" ] && [ "$READY_LINE" -lt "$EDGE_LINE" ]; then
-    bad "T2 首帧就绪日志出现在贴边之前（顺序不对：ready line=$READY_LINE edge line=$EDGE_LINE）"
-  else
-    ok "T2 首帧就绪在贴边之后（窗口内容先画好，再让用户看见）"
-  fi
-  ELAPSED=$(grep -o '启动首帧就绪.*elapsed_ms=[0-9]*' "$JOURNAL" | head -1 | grep -o '[0-9]*$')
-  if [ -n "${ELAPSED:-}" ] && [ "$ELAPSED" -lt "$STARTUP_TIMEOUT_MS" ]; then
-    ok "T3 首帧就绪耗时 ${ELAPSED}ms < ${STARTUP_TIMEOUT_MS}ms"
-  else
-    bad "T3 首帧就绪耗时 ${ELAPSED:-未知}ms ≥ ${STARTUP_TIMEOUT_MS}ms（启动变慢）"
-  fi
-fi
-
-# ── T5 贴边位置仍在右下角（复用 float-ui 的 pos 检查：python-xlib 读窗口 + xrandr 读显示器）──
-POS_OUT=$(GPD="$GPD" GPD_XAUTHORITY="$GPD_XAUTHORITY" RUN_DIR="$RUN_DIR" \
-  EVIDENCE_DIR="$EVIDENCE_DIR" timeout 90 bash "$REPO_ROOT/tools/verify_float_ui.sh" pos 2>&1)
-POS_RC=$?
-echo "$POS_OUT" >"$EVIDENCE_DIR/startup-pos-check.log"
-if [ "$POS_RC" -eq 0 ]; then
-  ok "T5 贴边位置在右下角（$(echo "$POS_OUT" | grep -m1 '右距' | sed 's/^[[:space:]]*//'))"
-elif [ "$POS_RC" -eq 2 ]; then
-  skip "T5 位置探测跳过（$(echo "$POS_OUT" | tail -1)）"
-else
-  bad "T5 贴边位置不对（$(echo "$POS_OUT" | tail -1)）"
-fi
-
-# ── T4 真机截图差分 ───────────────────────────────────────────────────────
-FRAMES_LOCAL="$EVIDENCE_DIR/startup-frames"
+# ── T2 真机连拍：球左侧「气泡区」不应出现黑框/文字 ────────────────────────
+# 连拍帧只保留 restart 之后的（重启前旧实例的正常字幕不算账，见 README/踩坑）。
 if [ "$NO_FRAMES" = 0 ]; then
   POS_LINE=$(grep -o '小球已贴边 x=[0-9-]* y=[0-9-]*' "$JOURNAL" | tail -1)
   X=$(echo "$POS_LINE" | sed 's/.*x=\([-0-9]*\).*/\1/')
@@ -221,10 +186,12 @@ if [ "$NO_FRAMES" = 0 ]; then
   RES=$(run "$(export_env); python3 $FRAMES_PY analyze $REC_DIR $LATE_T ${X:-0} ${Y:-0} $DPR ${RESTART_EPOCH:-0}" 2>&1)
   echo "$RES" >"$EVIDENCE_DIR/startup-frames-analyze.json"
   echo "$RES"
+  # 注意：没设置不透明度/没有「首帧就绪」日志 —— 这条判据只看像素：
+  # 用户视觉上到底还有没有那个黑色气泡。
   if echo "$RES" | grep -q '"verdict": "PASS"'; then
-    ok "T4 启动气泡区域差分正常（$(echo "$RES" | grep -o '"max_mean_diff": [0-9.]*')）"
+    ok "T2 真机连拍：球左侧气泡区无黑框/文字（$(echo "$RES" | grep -o '"max_mean_diff": [0-9.]*')）"
   else
-    bad "T4 启动瞬间球左侧仍有黑框/文字（$(echo "$RES" | grep -o '"max_mean_diff": [0-9.]*') / $(echo "$RES" | grep -o '"max_at_t": [0-9.]*')）"
+    bad "T2 真机连拍：球左侧仍有黑框/文字（$(echo "$RES" | grep -o '"max_mean_diff": [0-9.]*') / $(echo "$RES" | grep -o '"max_at_t": [0-9.]*')）"
   fi
   # 把帧拉回来留证据（体积很小：只存了右下角 400x300）
   rm -rf "$FRAMES_LOCAL"; mkdir -p "$FRAMES_LOCAL"
@@ -232,9 +199,47 @@ if [ "$NO_FRAMES" = 0 ]; then
   timeout 180 scp -q "${SSH_OPTS[@]}" "$GPD:/tmp/mf-frames.tgz" "$FRAMES_LOCAL/frames.tgz" 2>/dev/null \
     && tar xzf "$FRAMES_LOCAL/frames.tgz" -C "$FRAMES_LOCAL" 2>/dev/null \
     && echo "[verify_startup_clean] 启动帧 → $FRAMES_LOCAL" \
-    || skip "帧回传失败（T4 已在设备端判定，不影响结论）"
+    || skip "帧回传失败（T2 已在设备端判定，不影响结论）"
 else
-  skip "T4 本次 --no-frames 没录"
+  skip "T2 本次 --no-frames 没录"
+fi
+
+# ── T3 位置 / 尺寸 / 置顶不回归（复用 tools/verify_float_ui.sh）────────────
+T3_FAIL=""
+T3_SKIP=""
+T3_DETAIL=""
+for check in pos top size; do
+  OUT=$(GPD="$GPD" GPD_XAUTHORITY="$GPD_XAUTHORITY" RUN_DIR="$RUN_DIR" \
+    EVIDENCE_DIR="$EVIDENCE_DIR" timeout 90 bash "$REPO_ROOT/tools/verify_float_ui.sh" "$check" 2>&1)
+  RC=$?
+  echo "$OUT" >"$EVIDENCE_DIR/startup-float-$check.log"
+  DETAIL=$(echo "$OUT" | grep -m1 "${check}: \(实测\|PASS\|FAIL\)" | sed 's/^[[:space:]]*//')
+  [ -n "${DETAIL:-}" ] || DETAIL=$(echo "$OUT" | tail -1)
+  T3_DETAIL="${T3_DETAIL}${DETAIL}; "
+  if [ "$RC" -eq 1 ]; then T3_FAIL="${T3_FAIL}${check}(FAIL) "; fi
+  if [ "$RC" -eq 2 ]; then T3_SKIP="${T3_SKIP}${check}(SKIP) "; fi
+done
+if [ -n "$T3_FAIL" ]; then
+  bad "T3 悬浮窗几何/置顶回归：${T3_FAIL}（${T3_DETAIL}）"
+elif [ -n "$T3_SKIP" ]; then
+  skip "T3 部分检查跳过：${T3_SKIP}"
+else
+  ok "T3 位置/尺寸/置顶均未回归（${T3_DETAIL}）"
+fi
+
+# ── T4 前端单测（修正字幕清洗回归）────────────────────────────────────────
+if command -v node >/dev/null 2>&1; then
+  NODE_OUT=$(cd "$REPO_ROOT/app/frontend" && node --test 'test/*.test.mjs' 2>&1)
+  NODE_RC=$?
+  echo "$NODE_OUT" >"$EVIDENCE_DIR/startup-frontend-tests.log"
+  PASSED=$(echo "$NODE_OUT" | sed -n 's/^ℹ pass \([0-9]*\)$/\1/p' | head -1)
+  if [ "$NODE_RC" -eq 0 ]; then
+    ok "T4 前端单测全绿（${PASSED:-?} passed）"
+  else
+    bad "T4 前端单测失败（见 evidence/startup-frontend-tests.log）"
+  fi
+else
+  skip "T4 本机没有 node，跳过前端单测"
 fi
 
 # ── 汇总 ──────────────────────────────────────────────────────────────────
@@ -246,7 +251,7 @@ echo "总计：通过 $PASS / 失败 $FAIL / 跳过 $SKIP"
   echo "# 启动干净度验收（$(date '+%Y-%m-%d %H:%M:%S')）"
   echo
   echo "设备：$GPD  服务：$GPD_SERVICE"
-  echo "判据：T1 无启动气泡 / T2 首帧就绪在贴边后 / T3 首帧 < ${STARTUP_TIMEOUT_MS}ms / T4 截图差分 / T5 贴边位置"
+  echo "判据：T1 启动无字幕气泡 / T2 启动连拍无黑框 / T3 位置尺寸置顶不回归 / T4 前端单测全绿"
   echo
   printf '%s\n' "${RESULTS[@]}"
   echo
