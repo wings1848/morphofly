@@ -28,5 +28,5 @@ wave_3:
     status: done
   - id: independent-review
     desc: subagent 独立核验（读 diff + 复跑判据），Lead 抽查其结论
-    gate: 复核意见落盘（review 提的 B1/B2 已通过「收窄范围」解决；合并后再做一次运行时独立复跑）
-    status: in_progress
+    gate: 独立复跑 4/4 PASS + 红证据按意见归档（见 verify-report「独立验收」）
+    status: done

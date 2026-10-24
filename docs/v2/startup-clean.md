@@ -76,11 +76,16 @@ tools/verify_startup_clean.sh --no-frames
 | # | 判据 | 修前 | 修后 |
 |---|---|---|---|
 | T1 | 启动日志 `caption=无`，且重启后无 `气泡窗口已调整 show=true` | FAIL | PASS |
-| T2 | 真机连拍：球左侧气泡区差分 < 1.5 | FAIL（黑气泡停 4.2s，实测 5.95） | PASS（0.00） |
+| T2 | 真机连拍：球左侧气泡区差分 < 1.5 | FAIL（修复前留存帧复算 3.73；journal 显示气泡停 4.202s） | PASS（0.00） |
 | T3 | 位置 / 尺寸 / 置顶不回归 | PASS | PASS |
 | T4 | 前端单测全绿 | 13 passed（无回归测试） | 16 passed |
 
-证据：`runs/20261025-0520-startup-clean/evidence/`（red.log / startup-clean-summary.md / 连拍帧）。
+证据：`runs/20261025-0520-startup-clean/evidence/`：
+
+- 修前：`red.log`（T1 FAIL）、`red-journal-visible-bubble.log`（`show=true` 21:09:53.499 →
+  `show=false` 21:09:57.701，**4.202 秒**）、`red-visible-bubble/`（截图 + 留存帧 + `recompute.py`）、
+  `red-pixel-analyze.json`（复算：气泡区最大差异 **3.73** > 阈值 1.5）
+- 修后：`startup-clean-summary.md`、`startup-journal.log`、`startup-frames/`（连拍帧）
 
 ## 踩坑记录
 

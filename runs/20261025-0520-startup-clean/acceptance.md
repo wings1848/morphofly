@@ -5,7 +5,7 @@
 | # | 验收标准 | 判定命令 | 期望输出 | 实测 |
 |---|---|---|---|---|
 | A1 | 启动不再显示「待机」字幕黑气泡 | `tools/verify_startup_clean.sh` → T1 | PASS T1 | 修前 FAIL / 修后 PASS |
-| A2 | 真机连拍：启动过程中球左侧无黑框/文字（差分 < 1.5） | 同上 → T2 | PASS T2 | 修前 FAIL（气泡停 4.2s, 5.95）/ 修后 0.00 |
+| A2 | 真机连拍：启动过程中球左侧无黑框/文字（差分 < 1.5） | 同上 → T2 | PASS T2 | 修前 FAIL（复算 3.73；气泡停 4.202s）/ 修后 0.00 |
 | A3 | 位置 / 尺寸 / 置顶不回归 | 同上 → T3（复用 verify_float_ui pos/top/size） | PASS T3 | 修后 PASS |
 | A4 | 前端单测全绿 | 同上 → T4（node --test） | PASS T4（16 passed） | 修后 PASS |
 | A5 | Rust core 测试 + 全部 CI 绿 | GitHub Actions `ci.yml` | success | 修后 |

@@ -151,11 +151,37 @@ fi
 [ -s "$JOURNAL" ] || { echo "FAIL  拿不到 journal"; exit 1; }
 JOURNAL_RAW="$EVIDENCE_DIR/startup-journal-full.log"
 mv "$JOURNAL" "$JOURNAL_RAW"
-# 同一个 unit 重启前后的日志在 --since 里会混在一起；只从最后一次
-# 「Started ...」标记之后算本次启动的日志（重启前旧实例的字幕是正常运行行为）。
-awk '/Started MorphoFly voice agent/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' \
-  "$JOURNAL_RAW" >"$JOURNAL"
-echo "[verify_startup_clean] journal（本次实例）→ $JOURNAL（$(wc -l <"$JOURNAL") 行，原始 $(wc -l <"$JOURNAL_RAW") 行）"
+# 同一个 unit 重启前后的日志在 --since 里会混在一起；只从**本次重启**的
+# 「Started ...」标记之后算日志，并且只截启动后 60 行（约 3–5 秒）：
+#   1. 重启前旧实例的字幕是正常运行行为，不能算账；
+#   2. 启动 20 秒后又可能被真实语音会话触发运行期 S2 字幕（环境声误唤醒），
+#      不截窗口的话 T1 会假失败（2026-10-25 独立验收时实测到过一次）。
+# 取第一个（而不是最后一个）Started：验收期间若别的进程又重启服务，
+# 也不能把别人的启动当成本次验收对象。
+awk 'BEGIN{keep=0;n=0}
+     /Started MorphoFly voice agent/{ if(!keep){keep=1}; next }
+     keep && n<60 { print; n++ }' "$JOURNAL_RAW" >"$JOURNAL"
+
+RESTART_COUNT=$(grep -c 'Started MorphoFly voice agent' "$JOURNAL_RAW" 2>/dev/null || true)
+RESTART_COUNT=${RESTART_COUNT:-1}
+echo "[verify_startup_clean] journal（本次实例启动窗口）→ $JOURNAL（$(wc -l <"$JOURNAL") 行，原始 $(wc -l <"$JOURNAL_RAW") 行）"
+if [ "$RESTART_COUNT" -gt 1 ] 2>/dev/null; then
+  echo "⚠ 验收期间服务被重启了 $RESTART_COUNT 次（可能有别的 agent/部署在操作 gpd）。"
+  echo "  判据只取本次（第一次）启动窗口；连拍帧可能混入后续启动，重跑可消除噪声。"
+fi
+
+# 第一次「运行期状态变化」的时间（唤醒/会话/推状态）。
+# 这之后出现的字幕气泡是正常产品行为（真有人/音频在说话），不是启动 bug；
+# T2 只分析这之前的帧，避免把别人的语音测试当成启动气泡。
+RUNTIME_EPOCH=0
+RUNTIME_TS=$(grep -m1 -E '检测到唤醒词|推状态给前端|会话已建立' "$JOURNAL_RAW" 2>/dev/null |
+  sed -n 's/^\([0-9T:.-]*Z\).*/\1/p')
+if [ -n "${RUNTIME_TS:-}" ]; then
+  RUNTIME_EPOCH=$(date -u -d "$RUNTIME_TS" +%s 2>/dev/null || echo 0)
+fi
+if [ "${RUNTIME_EPOCH:-0}" -gt 0 ] 2>/dev/null; then
+  echo "ℹ 本次启动后出现运行期语音状态（$RUNTIME_TS）；T2 只分析此前的帧。"
+fi
 
 # ── T1 启动时不该显示任何初始字幕 ─────────────────────────────────────────
 # 用户看到的就是这个：启动时 orb_state 把状态名「待机」当字幕返回，前端直接
@@ -164,16 +190,19 @@ echo "[verify_startup_clean] journal（本次实例）→ $JOURNAL（$(wc -l <"$
 #   a) 前端启动日志 caption=无（不受「窗口来不来得及撑开」的竞态影响）
 #   b) 重启后没有「气泡窗口已调整 show=true」
 START_LOG=$(grep -o '启动状态 state=[^ ]* caption=[^ ]*' "$JOURNAL" | tail -1)
+SHOW_LINE=$(grep -n '气泡窗口已调整 show=true' "$JOURNAL" | head -1 | cut -d: -f1)
+STATE_LINE=$(grep -n '推状态给前端' "$JOURNAL" | head -1 | cut -d: -f1)
 if [ -z "${START_LOG:-}" ]; then
   bad "T1 没有「启动状态 caption=无」日志（旧二进制没有这条判据；不能证明启动干净）"
-elif echo "$START_LOG" | grep -q 'caption=无'; then
-  if grep -q '气泡窗口已调整 show=true' "$JOURNAL"; then
-    bad "T1 启动时弹了字幕气泡（journal 出现 气泡窗口已调整 show=true）"
-  else
-    ok "T1 启动时没有显示初始字幕（${START_LOG}）"
-  fi
-else
+elif ! echo "$START_LOG" | grep -q 'caption=无'; then
   bad "T1 启动时显示了初始字幕（${START_LOG}）"
+elif [ -n "${SHOW_LINE:-}" ] && { [ -z "${STATE_LINE:-}" ] || [ "$SHOW_LINE" -lt "$STATE_LINE" ]; }; then
+  bad "T1 启动时弹了字幕气泡（show=true 出现在第一次状态推送之前，line=$SHOW_LINE）"
+else
+  if [ -n "${SHOW_LINE:-}" ]; then
+    note "T1 启动窗口内出现过运行期字幕（show=true 在状态推送之后，line=$SHOW_LINE），不算启动 bug"
+  fi
+  ok "T1 启动时没有显示初始字幕（${START_LOG}）"
 fi
 
 # ── T2 真机连拍：球左侧「气泡区」不应出现黑框/文字 ────────────────────────
@@ -184,7 +213,7 @@ if [ "$NO_FRAMES" = 0 ]; then
   Y=$(echo "$POS_LINE" | sed 's/.*y=\([-0-9]*\).*/\1/')
   DPR=$(grep -o 'dpr=[0-9.]*' "$JOURNAL" | head -1 | cut -d= -f2)
   DPR=${DPR:-1.5}
-  RES=$(run "$(export_env); python3 $FRAMES_PY analyze $REC_DIR $LATE_T ${X:-0} ${Y:-0} $DPR ${RESTART_EPOCH:-0}" 2>&1)
+  RES=$(run "$(export_env); python3 $FRAMES_PY analyze $REC_DIR $LATE_T ${X:-0} ${Y:-0} $DPR ${RESTART_EPOCH:-0} ${RUNTIME_EPOCH:-0}" 2>&1)
   echo "$RES" >"$EVIDENCE_DIR/startup-frames-analyze.json"
   echo "$RES"
   # 注意：没设置不透明度/没有「首帧就绪」日志 —— 这条判据只看像素：
@@ -253,6 +282,7 @@ echo "总计：通过 $PASS / 失败 $FAIL / 跳过 $SKIP"
   echo
   echo "设备：$GPD  服务：$GPD_SERVICE"
   echo "判据：T1 启动无字幕气泡 / T2 启动连拍无黑框 / T3 位置尺寸置顶不回归 / T4 前端单测全绿"
+  echo "启动窗口：本次启动后 60 行（约 3–5 秒）；验收期间重启次数：${RESTART_COUNT:-1}"
   echo
   printf '%s\n' "${RESULTS[@]}"
   echo

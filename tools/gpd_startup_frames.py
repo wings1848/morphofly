@@ -146,7 +146,7 @@ def _bubble_region(win_x, win_y, scale, cw, ch, box):
             min(cw, int(x1)), min(ch, int(y1)))
 
 
-def cmd_analyze(outdir, t_late, win_x, win_y, scale, restart_epoch=0.0):
+def cmd_analyze(outdir, t_late, win_x, win_y, scale, restart_epoch=0.0, until_epoch=0.0):
     """扫描整段录屏，找「球左侧气泡区」与稳定后相比最大的差异。
 
     为什么扫全部帧而不是固定 t_early：启动快的时候气泡 1.5s 就出现，
@@ -158,6 +158,11 @@ def cmd_analyze(outdir, t_late, win_x, win_y, scale, restart_epoch=0.0):
         # 只保留「这次重启之后」的帧：重启前旧实例的字幕气泡是正常产品行为，
         # 不能算到启动又干净度的账上。
         metas = [m for m in metas if m.get("epoch", 0) >= restart_epoch]
+    if until_epoch and until_epoch > 0:
+        # 运行期字幕（真实语音/外部注入音频触发 S2）不是启动 bug：
+        # 只分析「第一次运行期状态变化之前」的帧。实测验收时会碰到别的 agent
+        # 在同一台 gpd 上灌音频，不切的话 T2 会把它当成启动气泡。
+        metas = [m for m in metas if m.get("epoch", 0) < until_epoch]
     if len(metas) < 5:
         sys.exit("帧太少，录失败（重启后不足 5 帧）")
 
@@ -200,7 +205,8 @@ def cmd_analyze(outdir, t_late, win_x, win_y, scale, restart_epoch=0.0):
            "max_mean_diff": round(worst[0], 2),
            "max_changed_ratio": round(worst[1], 4),
            "max_at_t": worst[2],
-           "threshold": round(thr, 2)}
+           "threshold": round(thr, 2),
+           "until_epoch": until_epoch or None}
     ok = worst[0] < thr
     out["verdict"] = "PASS" if ok else "FAIL"
     if not ok:
@@ -221,8 +227,9 @@ def main():
         if len(sys.argv) < 7:
             sys.exit("用法：analyze <dir> <t_late> <win_x> <win_y> <scale> [restart_epoch]")
         epoch = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
+        until = float(sys.argv[8]) if len(sys.argv) > 8 else 0.0
         sys.exit(cmd_analyze(sys.argv[2], float(sys.argv[3]),
-                             int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6]), epoch))
+                             int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6]), epoch, until))
     else:
         sys.exit(f"未知子命令：{cmd}")
 

@@ -1,0 +1,5 @@
+{"source": "051009-pre-fix-recording", "frames": 86,
+ "crop_box": [1820, 930], "scale": 1.5, "window": [2908, 1516],
+ "region": [0, 80, 116, 179], "max_mean_diff": 3.73, "max_at_t": 2.616,
+ "max_changed_ratio": 0.125, "baseline_t": 9.911, "verdict": "FAIL",
+ "note": "修复前连拍（05:09，KWin ScreenShot2 br 区 228x222），与稳定后基线帧比较：球左侧气泡区最大差异 3.73（阈值 1.5）。复算脚本见 verify-report「红像素证据怎么复算」。"}

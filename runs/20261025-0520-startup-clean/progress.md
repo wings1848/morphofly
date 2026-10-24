@@ -46,3 +46,11 @@
 - CI run 40135239790 全绿；产物部署 gpd（sha=2724ae4）。
 - `tools/verify_startup_clean.sh`：T1–T4 全 PASS（连拍差分 0.00、位置尺寸置顶不回归、前端单测 16）。
 - 证据：`evidence/startup-clean-summary.md`、`evidence/startup-journal.log`、`evidence/startup-frames/`。
+
+## 2026-10-25 06:25 交付（S7）
+
+- PR #2 已合并进 main（merge commit `071bd45`）。
+- 用 main CI 产物（run 40136977533）重新部署 gpd，全量验收 T1–T4 全 PASS。
+- 独立 subagent 复跑 4/4 PASS；按其意见补了「修前像素红证据归档 + 复算脚本」，
+  并把 T1/T2 判定窗口收紧到「本次启动窗口 / 第一次运行期状态变化之前」。
+- 完成。
