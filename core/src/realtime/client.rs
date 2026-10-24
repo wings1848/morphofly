@@ -273,7 +273,7 @@ impl RealtimeClient {
         )
     }
 
-    /// 同 [`Self::with_transport`]，但指定会话模板（`connect` 用它带上 4 个工具）。
+    /// 同 [`Self::with_transport`]，但指定会话模板（`connect` 用它带上默认工具）。
     pub fn with_transport_and_session<T>(
         transport: Arc<T>,
         session_template: SessionConfig,
@@ -394,12 +394,12 @@ impl RealtimeClient {
         self.send_command(ClientCommand::CancelResponse)
     }
 
-    /// 下发 4 个工具声明。
+    /// 下发工具声明（数量见 [`crate::tools::TOOL_COUNT`]）。
     ///
     /// 只发 `tools`（+ 现有 instructions），**不带 voice**：StepFun 的 voice 不可在
     /// `session.update` 里改，带上旧值属于自找 error 事件。
     pub fn send_tools(&self, tools: &[Value]) -> Result<()> {
-        // 不变量 I1：语音模型手上只有 4 个工具，发之前先在本地拦一道
+        // 不变量 I1：语音模型只有白名单里的工具，发之前先在本地拦一道
         if let Err(msg) = crate::tools::assert_tool_invariant(tools) {
             tracing::error!(error = %msg, "工具声明不满足不变量 I1，拒绝下发");
             return Err(RealtimeError::BadEndpoint(msg));
@@ -834,7 +834,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_tools_sends_four_tools_without_voice() {
+    async fn send_tools_sends_all_tools_without_voice() {
         let (fake, _inbound, client) = fake_client();
         let tools = crate::tools::tool_defs();
         client.send_tools(&tools).unwrap();
@@ -843,7 +843,11 @@ mod tests {
         let msg = &sent[0];
         assert_eq!(msg["type"], "session.update");
         let got = msg["session"]["tools"].as_array().unwrap();
-        assert_eq!(got.len(), 4, "不变量 I1：恰好 4 个工具");
+        assert_eq!(
+            got.len(),
+            crate::tools::TOOL_COUNT,
+            "不变量 I1：工具数必须等于 TOOL_COUNT"
+        );
         // StepFun 要 OpenAI 嵌套格式：名称必须在 function.name 下（真机实测）
         for t in got {
             assert_eq!(t["type"], "function");
@@ -859,12 +863,11 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            vec![
-                "append_requirement",
-                "cancel_task",
-                "delegate_task",
-                "query_progress"
-            ]
+            {
+            let mut expect = crate::tools::TOOL_NAMES.to_vec();
+            expect.sort_unstable();
+            expect
+        }
         );
         assert!(
             msg["session"].get("voice").is_none(),

@@ -7,7 +7,7 @@
 use crate::dsh::DshBridge;
 use crate::intent;
 use crate::tasks::{spoken_summary, TaskStatus, TaskStore};
-use crate::tools::{self, APPEND_REQUIREMENT, CANCEL_TASK, DELEGATE_TASK, QUERY_PROGRESS};
+use crate::tools;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::sync::Arc;
@@ -21,11 +21,40 @@ pub struct ToolResult {
     pub data: Value,
 }
 
+/// 当前会话上下文（用户说「切换到 X」改的就是这些）。
+///
+/// 为什么是「状态」而不是「工具参数」：
+/// 用户说「换到蝶梦项目」意思是「**接下来都**在这」，不是「用这个目录干一次」。
+/// 做成状态后，delegate_task 不传 dir 就用当前的，符合用户的直觉。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionContext {
+    /// 当前 agent（dsh / codex）
+    pub agent: String,
+    /// 当前工作目录（绝对路径）
+    pub dir: String,
+    /// 当前模型（空表示用 agent 默认）
+    pub model: String,
+}
+
+impl SessionContext {
+    pub fn new(agent: impl Into<String>, dir: impl Into<String>) -> Self {
+        Self {
+            agent: agent.into(),
+            dir: dir.into(),
+            model: String::new(),
+        }
+    }
+}
+
 /// 工具分发器
 pub struct Dispatcher {
     store: Arc<tokio::sync::Mutex<TaskStore>>,
     bridge: Arc<DshBridge>,
     default_dir: String,
+    /// 当前会话上下文（可被 set_context 修改）
+    context: Arc<tokio::sync::Mutex<SessionContext>>,
+    /// 项目别名表
+    projects: crate::projects::ProjectTable,
 }
 
 impl Dispatcher {
@@ -37,8 +66,17 @@ impl Dispatcher {
         Self {
             store,
             bridge,
+            context: Arc::new(tokio::sync::Mutex::new(SessionContext::new(
+                "dsh", default_dir.clone(),
+            ))),
+            projects: crate::projects::load(),
             default_dir,
         }
+    }
+
+    /// 读当前上下文（给 UI 显示「现在连着哪个 agent」用）
+    pub async fn context(&self) -> SessionContext {
+        self.context.lock().await.clone()
     }
 
     /// 分发一次工具调用。name 不在 4 个里 → Err（不变量 I1）。
@@ -53,11 +91,19 @@ impl Dispatcher {
                 .with_context(|| format!("工具 {name} 参数不是合法 JSON: {args}"))?
         };
 
+        // ⚠️ 这里必须用 `tools::X` 的全路径，不能直接写 `X`。
+        //
+        // 2026-10-24 踩坑：`match name { SET_CONTEXT => ... }` 里裸写的
+        // 常量会被 Rust 当成**变量绑定**（匹配任何值），
+        // 于是 SET_CONTEXT 分支变成不可达的死代码，编译器只给个
+        // "unreachable pattern" 警告——功能静默失效。
+        // 用路径形式 `tools::SET_CONTEXT` 才是常量模式。
         match name {
-            DELEGATE_TASK => self.delegate(&v).await,
-            QUERY_PROGRESS => self.query_progress(&v).await,
-            CANCEL_TASK => self.cancel(&v).await,
-            APPEND_REQUIREMENT => self.append(&v).await,
+            tools::DELEGATE_TASK => self.delegate(&v).await,
+            tools::QUERY_PROGRESS => self.query_progress(&v).await,
+            tools::CANCEL_TASK => self.cancel(&v).await,
+            tools::APPEND_REQUIREMENT => self.append(&v).await,
+            tools::SET_CONTEXT => self.set_context(&v).await,
             _ => anyhow::bail!("未实现 {name}"),
         }
     }
@@ -71,12 +117,21 @@ impl Dispatcher {
             .trim()
             .to_string();
         anyhow::ensure!(!task.is_empty(), "task 不能为空");
-        // 验收 A6：任务描述必须自包含，不能有指代
-        let dir = v
-            .get("dir")
-            .and_then(|x| x.as_str())
-            .unwrap_or(&self.default_dir)
-            .to_string();
+        // 目录优先级：工具参数 > 当前上下文（set_context 设的）> 默认目录
+        //
+        // 这样用户说「换到蝶梦项目」之后再派活，就不用每次带 dir，
+        // 符合「接下来都在这」的直觉。
+        let dir = match v.get("dir").and_then(|x| x.as_str()) {
+            Some(d) if !d.trim().is_empty() => d.to_string(),
+            _ => {
+                let ctx = self.context.lock().await;
+                if ctx.dir.is_empty() {
+                    self.default_dir.clone()
+                } else {
+                    ctx.dir.clone()
+                }
+            }
+        };
         let urgent = v.get("urgent").and_then(|x| x.as_bool()).unwrap_or(false);
 
         // 目录必须真实存在。语音识别经常把项目名听错（实测「diemeng」→「/daimian」），
@@ -188,6 +243,110 @@ impl Dispatcher {
                 })
             }
         }
+    }
+
+    /// 5. 切换上下文（V2 新增，多 agent 支持）
+    ///
+    /// 三个参数都可选，只改传了的那个。
+    async fn set_context(&self, v: &Value) -> Result<ToolResult> {
+        let agent = v.get("agent").and_then(|x| x.as_str()).map(|s| s.trim().to_string());
+        let project = v.get("project").and_then(|x| x.as_str()).map(|s| s.trim().to_string());
+        let model = v.get("model").and_then(|x| x.as_str()).map(|s| s.trim().to_string());
+
+        if agent.is_none() && project.is_none() && model.is_none() {
+            return Ok(ToolResult {
+                speech: "要切到哪".to_string(),
+                data: serde_json::json!({"error": "no_param"}),
+            });
+        }
+
+        let mut ctx = self.context.lock().await;
+        let mut changes: Vec<String> = Vec::new();
+
+        // 切 agent
+        if let Some(a) = agent {
+            let allowed = ["dsh", "codex"];
+            let a_lower = a.to_lowercase();
+            if !allowed.contains(&a_lower.as_str()) {
+                return Ok(ToolResult {
+                    speech: format!("没有叫{a}的，只有 d s h 和 codex"),
+                    data: serde_json::json!({
+                        "error": "unknown_agent",
+                        "got": a,
+                        "allowed": allowed,
+                    }),
+                });
+            }
+            if ctx.agent != a_lower {
+                ctx.agent = a_lower.clone();
+                changes.push(a_lower);
+            }
+        }
+
+        // 切项目（只接受别名，不接受绝对路径 —— 模型不该猜路径）
+        if let Some(p) = project {
+            if p.starts_with('/') {
+                // 模型违规传了路径：不信任它猜的，照样走别名查表
+                tracing::warn!(path = %p, "模型传了绝对路径，但只信别名表");
+            }
+            match self.projects.lookup(&p) {
+                Some(proj) => {
+                    if ctx.dir != proj.path {
+                        ctx.dir = proj.path.clone();
+                        changes.push(p.clone());
+                    }
+                }
+                None => {
+                    // 查不到就如实告诉用户，并给候选
+                    return Ok(ToolResult {
+                        speech: self.projects.suggest(&p),
+                        data: serde_json::json!({
+                            "error": "unknown_project",
+                            "got": p,
+                            "known": self.projects.all_aliases(),
+                        }),
+                    });
+                }
+            }
+        }
+
+        // 切模型
+        if let Some(m) = model {
+            if ctx.model != m {
+                ctx.model = m.clone();
+                changes.push(m);
+            }
+        }
+
+        let agent_name = ctx.agent.clone();
+        let dir = ctx.dir.clone();
+        drop(ctx);
+
+        if changes.is_empty() {
+            // 用户说的就是当前状态，不用啰嗦
+            return Ok(ToolResult {
+                speech: "已经是在这个了".to_string(),
+                data: serde_json::json!({"status": "unchanged"}),
+            });
+        }
+
+        // 回一句极简确认：只说变了什么
+        let what = changes.first().cloned().unwrap_or_default();
+        tracing::info!(
+            agent = %agent_name,
+            dir = %dir,
+            changed = ?changes,
+            "上下文已切换"
+        );
+        Ok(ToolResult {
+            speech: format!("好，换成{what}了"),
+            data: serde_json::json!({
+                "status": "changed",
+                "agent": agent_name,
+                "dir": dir,
+                "changed": changes,
+            }),
+        })
     }
 
     /// 3. 取消
@@ -421,6 +580,24 @@ pub fn clean_for_speech(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── SessionContext（set_context 的状态载体）──
+
+    #[test]
+    fn session_context_defaults_to_given_values() {
+        let c = SessionContext::new("dsh", "/tmp");
+        assert_eq!(c.agent, "dsh");
+        assert_eq!(c.dir, "/tmp");
+        assert_eq!(c.model, "", "model 默认空表示用 agent 自带的");
+    }
+
+    #[test]
+    fn session_context_is_cloneable_and_comparable() {
+        // context() 返回 clone，dispatch 内部要比较「有没有变」
+        let a = SessionContext::new("dsh", "/tmp");
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
 
     #[test]
     fn clean_for_speech_strips_markdown() {
