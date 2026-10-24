@@ -14,7 +14,6 @@ use std::time::Duration;
 use morphofly_core::audio::capture::AudioCapture;
 use morphofly_core::audio::playback::AudioPlayer;
 use morphofly_core::dispatch::Dispatcher;
-use morphofly_core::dsh::DshBridge;
 use morphofly_core::realtime::{RealtimeClient, RealtimeEvent};
 use morphofly_core::session::{OrbState, SessionMachine, Stimulus};
 use morphofly_core::spectrum::Spectrum;
@@ -42,20 +41,24 @@ pub struct VoiceSession {
 
 impl VoiceSession {
     /// 建立会话：连云端 + 开麦克风 + 开播放器
-    pub async fn open(cfg: &Config) -> anyhow::Result<Self> {
+    ///
+    /// ⚠️ `store` / `dispatcher` 必须由外部传进来（**不能在这里 new 一个**）。
+    ///
+    /// 2026-10-25 真机踩到的坑：这里原来自己 `TaskStore::open(同一个路径)` 建了一个
+    /// **独立实例**，于是会话里派出去的任务只写进了这个实例（和磁盘），
+    /// 主线程 that 个「主动汇报守卫」手里的实例永远看不到新任务 ——
+    /// DSH 干完了、任务表里 `reported=false`，却一条汇报都不发，
+    /// 只有重启 App（重新读盘）才会补报。查了很久。
+    pub async fn open(
+        cfg: &Config,
+        store: Arc<Mutex<TaskStore>>,
+        dispatcher: Arc<Dispatcher>,
+    ) -> anyhow::Result<Self> {
         let client = Arc::new(RealtimeClient::connect(cfg).await?);
         client.send_tools(&tool_defs())?;
         let player = Arc::new(AudioPlayer::open()?);
         let mic = Arc::new(AudioCapture::start_default()?);
-        // 工具分发器：语音模型调 delegate_task → 这里转交给 DSH
         morphofly_core::config::ensure_data_dir(cfg)?;
-        let store = Arc::new(Mutex::new(TaskStore::open(cfg.task_store_path())?));
-        let bridge = Arc::new(DshBridge::from_config(cfg));
-        let dispatcher = Arc::new(Dispatcher::new(
-            store.clone(),
-            bridge,
-            cfg.dsh.default_cwd.clone(),
-        ));
         Ok(Self {
             dispatcher,
             store,
