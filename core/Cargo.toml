@@ -75,9 +75,3 @@ name = "pool_bench"
 
 [[example]]
 name = "agent_switch_check"
-
-[[example]]
-name = "kws_file_probe"
-
-[[example]]
-name = "kws_tune"
