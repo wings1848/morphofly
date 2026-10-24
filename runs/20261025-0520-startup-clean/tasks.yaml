@@ -24,9 +24,9 @@ wave_2:
 wave_3:
   - id: deploy-verify
     desc: CI 产物部署到 wings-gpd，跑 tools/verify_startup_clean.sh 修后全绿
-    gate: 验收 T1–T5 全 PASS（evidence/startup-clean-summary.md）
+    gate: 验收 T1–T4 全 PASS（evidence/startup-clean-summary.md）
     status: done
   - id: independent-review
     desc: subagent 独立核验（读 diff + 复跑判据），Lead 抽查其结论
-    gate: 复核意见落盘
-    status: pending
+    gate: 复核意见落盘（review 提的 B1/B2 已通过「收窄范围」解决；合并后再做一次运行时独立复跑）
+    status: in_progress
