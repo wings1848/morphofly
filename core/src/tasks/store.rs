@@ -451,7 +451,11 @@ mod tests {
         let t = s.get(&running.id).unwrap();
         assert_eq!(t.status, TaskStatus::Failed);
         assert!(!t.reported, "被中断的任务要能被主动汇报");
-        assert!(t.summary.contains("中断"), "summary 要能直接念：{}", t.summary);
+        assert!(
+            t.summary.contains("中断"),
+            "summary 要能直接念：{}",
+            t.summary
+        );
         assert_eq!(s.get(&done.id).unwrap().status, TaskStatus::Done);
 
         // 自愈要落盘：重开一次不能再看到 running

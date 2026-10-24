@@ -187,13 +187,17 @@ function jsLog(msg) {
   ipc('orb_log', { msg: String(msg) }).catch(() => {});
 }
 
-// 窗口物理尺寸（日志用；顺带确认 CSS→物理的倍数）
+// CSS 像素 → 物理像素。不能用 devicePixelRatio 想当然：
+// 真机实测 JS 报 dpr=1.5、内宽 98 而窗口物理 148px，ratio 得实算。
+let pxRatio = window.devicePixelRatio || 1;
 ipc('orb_metrics').then((m) => {
+  if (m?.inner_width > 0 && window.innerWidth > 0) pxRatio = m.inner_width / window.innerWidth;
   jsLog(`度量 innerW=${window.innerWidth} dpr=${window.devicePixelRatio} `
-    + `物理=${m?.inner_width}x${m?.inner_height} scale=${m?.scale}`);
+    + `物理=${m?.inner_width}x${m?.inner_height} scale=${m?.scale} ratio=${pxRatio}`);
 }).catch(() => {});
 
 document.addEventListener('pointerdown', (e) => {
+  // 记下按下的位置（CSS px）：Rust 用它算「抓住球的哪一点」
   drag = { anchorX: e.clientX, anchorY: e.clientY, moved: false };
 });
 
@@ -207,7 +211,9 @@ document.addEventListener('pointermove', (e) => {
   if (!drag.moved && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
     // 移动超过 5px 才算拖动（否则是点击）
     drag.moved = true;
-    ipc('orb_drag_begin').then((r) => {
+    ipc('orb_drag_begin', {
+      client_x: drag.anchorX, client_y: drag.anchorY, ratio: pxRatio,
+    }).then((r) => {
       jsLog(`拖动开始 native=${!!r?.native}`);
     }).catch((e) => jsLog(`拖动开始失败 ${e}`));
   }

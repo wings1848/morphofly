@@ -111,8 +111,14 @@ fn orb_log(msg: String) {
 /// 为什么改成「Rust 后台循环读指针」而不是「前端 pointermove 算位移」：
 /// 球只有 148×148，指针一动就出画面，前端收不到后续 pointermove，拖动立刻断；
 /// 全局指针位置不受窗口大小限制，拖多快都跟得上。
-#[tauri::command]
-async fn orb_drag_begin(window: WebviewWindow) -> Result<serde_json::Value, String> {
+#[tauri::command(rename_all = "snake_case")]
+#[allow(clippy::too_many_arguments)]
+async fn orb_drag_begin(
+    window: WebviewWindow,
+    client_x: Option<f64>,
+    client_y: Option<f64>,
+    ratio: Option<f64>,
+) -> Result<serde_json::Value, String> {
     let pos = window.outer_position().map_err(|e| e.to_string())?;
 
     // Windows/macOS 上原生拖动是好的，继续用
@@ -126,30 +132,43 @@ async fn orb_drag_begin(window: WebviewWindow) -> Result<serde_json::Value, Stri
         }
     }
 
+    // 抓取偏移 = 按下时指针在窗口内的物理像素位置。
+    // 直接由前端给的 CSS 坐标 × 像素比算出（精确），不依赖全局指针坐标系。
+    let ratio = ratio.filter(|r| *r > 0.1).unwrap_or(1.0);
+    let half = f64::from(ORB_SIZE) / 2.0;
+    let offset_phys = match (client_x, client_y) {
+        (Some(cx), Some(cy)) if cx.is_finite() && cy.is_finite() => (cx * ratio, cy * ratio),
+        _ => (half, half),
+    };
+
+    // 全局指针坐标的「单位」不一定等于物理像素（tao 在 X11 上按 GDK scale 换算），
+    // 真机实测窗口 scale_factor()=1.0 而 JS dpr=1.5，两者未必一致。
+    // 反推比例 k：此刻指针一定在球上 → 指针物理位置 = 窗口位置 + 抓取偏移；
+    //   k = 指针物理位置 / cursor_position() 的读数
+    // k≈1 表示读数就是物理像素，k≈1.5 表示读数是逻辑像素。
     let cursor = window.cursor_position().ok();
-    // 抓取偏移 = 指针 − 窗口左上角（物理像素）。按下时指针应该在球上，
-    // 所以偏移应落在 [0, 148] 内；越界说明坐标系不是物理像素，用球心兜底。
-    let (ox, oy) = match cursor {
-        Some(c) => {
-            let dx = c.x - f64::from(pos.x);
-            let dy = c.y - f64::from(pos.y);
-            let size = f64::from(ORB_SIZE);
-            if (-size..=size * 2.0).contains(&dx) && (-size..=size * 2.0).contains(&dy) {
-                (dx, dy)
-            } else {
-                tracing::warn!(dx, dy, "指针坐标看起来不是物理像素，按球心算抓取偏移");
-                (size / 2.0, size / 2.0)
+    let mut k = 1.0;
+    if let Some(c) = cursor {
+        let px = f64::from(pos.x) + offset_phys.0;
+        let py = f64::from(pos.y) + offset_phys.1;
+        if c.x.abs() > 1.0 && c.y.abs() > 1.0 {
+            let kx = px / c.x;
+            let ky = py / c.y;
+            let guess = (kx + ky) / 2.0;
+            tracing::info!(kx, ky, guess, "拖动：全局指针坐标单位比例");
+            if (0.5..=2.0).contains(&guess) {
+                k = guess;
             }
         }
-        None => (f64::from(ORB_SIZE) / 2.0, f64::from(ORB_SIZE) / 2.0),
-    };
+    }
     tracing::info!(
         win_x = pos.x,
         win_y = pos.y,
         cursor_x = ?cursor.map(|c| c.x),
         cursor_y = ?cursor.map(|c| c.y),
-        offset_x = ox,
-        offset_y = oy,
+        offset_x = offset_phys.0,
+        offset_y = offset_phys.1,
+        k,
         "拖动开始：后台跟指针搬窗口"
     );
 
@@ -163,8 +182,8 @@ async fn orb_drag_begin(window: WebviewWindow) -> Result<serde_json::Value, Stri
                 Ok(c) => {
                     let target = clamp_to_monitor(
                         &win,
-                        (c.x - ox).round() as i32,
-                        (c.y - oy).round() as i32,
+                        (c.x * k - offset_phys.0).round() as i32,
+                        (c.y * k - offset_phys.1).round() as i32,
                     );
                     if last != Some((target.x, target.y)) {
                         last = Some((target.x, target.y));
@@ -736,7 +755,8 @@ fn snap_to_edge(win: &WebviewWindow, mode: SnapMode) {
     //  - 用户拖动松手（NearestHorizontal）只吸水平边，垂直保持用户放的位置。
     //    以前这里无脑贴底，用户把球拖到屏幕上方松手，球又弹回底部，
     //    看起来就像「拖不动」——2026-10-25 真机反馈。
-    let bottom_y = pos.y + screen.height as i32 - size.height as i32 - margin - (48.0 * scale) as i32;
+    let bottom_y =
+        pos.y + screen.height as i32 - size.height as i32 - margin - (48.0 * scale) as i32;
     let max_y = (pos.y + screen.height as i32 - size.height as i32).max(pos.y);
     let y = match mode {
         SnapMode::BottomRight => bottom_y,
