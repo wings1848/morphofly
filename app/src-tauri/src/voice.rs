@@ -298,6 +298,21 @@ impl VoiceSession {
                     Err(_) => continue,
                 };
                 let mut m = m2.lock().await;
+
+                // ★ 本地 VAD 判定「用户开口」时，云端不一定发 input_audio_buffer.speech_started
+                // （我们是本地提前 commit 的）。原来只有云端那条事件才置 user_spoke，
+                // 结果「用户真说了话、模型只回一句『好，查着呢』」时纠正机制完全不触发。
+                //
+                // 放在 match 之前合并（不是放在 ResponseDone 里）：这样这一轮模型说的话
+                // 会累积到干净的缓冲区，ResponseDone 时才有依据判断「像不像在装忙」。
+                if user_spoke_in_ev.swap(false, Ordering::Relaxed) && !user_spoke {
+                    tracing::debug!("云端没发 SpeechStarted，按本地 VAD 判定算用户开口");
+                    user_spoke = true;
+                    tool_calls_this_turn = 0;
+                    assistant_reply.clear();
+                    correction_sent = false;
+                }
+
                 match ev {
                     RealtimeEvent::AudioDelta { pcm, sample_rate } => {
                         if first_audio.load(Ordering::Relaxed) == u64::MAX {
@@ -344,15 +359,6 @@ impl VoiceSession {
                         }
                     }
                     RealtimeEvent::ResponseDone { .. } => {
-                        // 本地 VAD 看到用户开口、但云端没发 SpeechStarted 的情况，
-                        // 在这里补上（否则纠正机制对本地 commit 的轮次完全失效）。
-                        if user_spoke_in_ev.swap(false, Ordering::Relaxed) && !user_spoke {
-                            tracing::debug!("云端没发 SpeechStarted，按本地 VAD 判定算用户开口");
-                            user_spoke = true;
-                            tool_calls_this_turn = 0;
-                            assistant_reply.clear();
-                            correction_sent = false;
-                        }
                         // 还有工具结果没回灌 → 这个 response 只是「调工具那一步」，
                         // 不是最终答复，不计入「没干活」的判断。
                         if pending_tool_results > 0 {
