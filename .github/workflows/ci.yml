@@ -101,6 +101,40 @@ jobs:
           echo "--- 静态库 ---"
           find target/sherpa-onnx-prebuilt -name '*.a' 2>/dev/null | head -20
 
+  # ── Windows 编译闸门（2026-10-24 加）──
+  #
+  # 为什么单独一个 job：这个项目是在 Linux 上开发、在 Linux 上测的，
+  # Windows 兼容没法靠「看代码觉得没问题」证明 —— 必须真编一次。
+  # 最容易坏的三处（都已踩过）：
+  #   1. 数据目录只读 HOME（Windows 只有 USERPROFILE）
+  #   2. 拉起 dsh 时 Command::new("dsh") 找不到 npm 生成的 dsh.cmd
+  #   3. 平台专用代码（cpal 的 pulseaudio 后端、GDK_BACKEND 那套）
+  #      没有 cfg 隔离，在 Windows 上直接编译失败
+  build-windows:
+    name: 构建检查（Windows）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: core（默认 features，纯逻辑）
+        run: cargo check -p morphofly-core
+
+      - name: core 单元测试（跨平台逻辑，不碰音频设备）
+        run: cargo test -p morphofly-core --lib
+
+      - name: app 外壳（先关掉唤醒词，保证基础能编）
+        run: cargo check -p morphofly-app --no-default-features
+
+      # 唤醒词（sherpa-onnx）在 Windows 上要下预编译静态库，单独试；
+      # 失败了不让整个 CI 红，但能看出是不是这条路坏了。
+      - name: app 外壳（含唤醒词，允许失败）
+        continue-on-error: true
+        run: cargo check -p morphofly-app
+
   # ── 密钥扫描（防止误提交）──
   secret-scan:
     name: 密钥扫描

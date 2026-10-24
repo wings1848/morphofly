@@ -40,7 +40,8 @@
       "appimage"
     ],
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ],
     "linux": {
       "deb": {
@@ -52,6 +53,16 @@
     },
     "resources": [
       "resources/"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installMode": "currentUser"
+      }
+    }
   }
 }

@@ -62,19 +62,65 @@ pub struct DshClient {
     initialized: Arc<AtomicBool>,
 }
 
+/// 拉起一个外部程序，处理 Windows 的「命令其实是 .cmd」问题。
+///
+/// ## 为什么需要这个（Windows 兼容）
+///
+/// `dsh` 是用 npm 装的，Windows 上 `npm -g` 生成的是 `dsh.cmd` / `dsh.ps1`
+/// 中间层，**不是** `dsh.exe`。而 `CreateProcess` 只照着 PATHEXT 找
+/// `.exe/.com`，直接 `Command::new("dsh")` 在 Windows 上会报
+/// 「系统找不到指定的文件」—— Linux 上同样的代码却好好的。
+///
+/// 做法：非 Windows 原样拉起；Windows 上先按 PATHEXT 逐个试，
+/// 全都找不到就退化成 `cmd /C <命令>`（`.cmd` 必须经 cmd.exe 解释器执行）。
+async fn spawn_program(program: &str, args: &[String]) -> std::io::Result<tokio::process::Child> {
+    let build = |p: &str, a: &[String]| {
+        let mut c = tokio::process::Command::new(p);
+        c.args(a)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        c
+    };
+
+    #[cfg(not(windows))]
+    {
+        build(program, args).spawn()
+    }
+
+    #[cfg(windows)]
+    {
+        // 已经带扩展名（dsh.exe / dsh.cmd）就按原样试
+        if std::path::Path::new(program).extension().is_some() {
+            return build(program, args).spawn();
+        }
+        // 直接试一次（Config 里可能写了完整路径）
+        if let Ok(c) = build(program, args).spawn() {
+            return Ok(c);
+        }
+        // 按 PATHEXT 逐个试
+        for ext in [".exe", ".cmd", ".bat", ".com"] {
+            let cand = format!("{program}{ext}");
+            if let Ok(c) = build(&cand, args).spawn() {
+                return Ok(c);
+            }
+        }
+        // 兜底：交给 cmd.exe 解释（npm 的 .cmd 往往需要 shell 上下文）
+        let mut full = vec![program.to_string()];
+        full.extend(args.iter().cloned());
+        build("cmd", &[vec!["/C".to_string()], full].concat()).spawn()
+    }
+}
+
 impl DshClient {
     /// 拉起 `dsh --profile acp`（或配置里给的命令）
     pub async fn spawn(command: &[String]) -> Result<Self> {
         if command.is_empty() {
             bail!("DSH 启动命令为空");
         }
-        let mut child = tokio::process::Command::new(&command[0])
-            .args(&command[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
+        let mut child = spawn_program(&command[0], &command[1..])
+            .await
             .with_context(|| format!("拉不起 DSH：{:?}（确认 dsh 在 PATH 里）", command))?;
 
         let stdin = child.stdin.take().context("拿不到 DSH stdin")?;
