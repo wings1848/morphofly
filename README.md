@@ -177,9 +177,17 @@ cd app && cargo tauri build
 `morphofly` / `diemeng` 这类英文词对中文 ASR 不友好，
 可能听成 `diamond` / `daimian`。**说中文名「蝶梦」100% 正确。**
 
-### 4. 只在 x86_64 Linux 验证
+### 4. 平台支持现状
 
-ARM 平台（部分掌机）需要重新编译。
+| 平台 | 状态 |
+|---|---|
+| Linux x86_64 | ✅ 真机验证过（wings-gpd：唤醒/派活/汇报/悬浮窗全链路） |
+| Windows x86_64 | ⚠️ **能编、能打 NSIS 安装包，运行时没在真 Windows 上验过**。已修三个必然挂的问题（数据目录只读 HOME、拉不起 npm 装的 `dsh.cmd`、平台代码未隔离），详见 [docs/v2/windows.md](docs/v2/windows.md) |
+| 其它 | ❌ 未验证（ARM 需要重新编译） |
+
+Windows 上最大的未知是**中文安装路径 + sherpa-onnx 加载唤醒词模型**：
+`productName` 是「蝶梦」，安装目录带中文，模型加载可能失败。要上 Windows 建议先把
+productName 改成纯 ASCII。
 
 ---
 
