@@ -67,6 +67,18 @@ Windows 上没有 `HOME`，只有 `USERPROFILE`。原来取不到就退化成
 
 图标补了 `icons/icon.ico`（256/128/64/48/32/16），Windows 打包必需。
 
+## ⚠️ Windows 上的唤醒词：还没解决（不许含糊）
+
+带唤醒词（crate 默认 feature `kws`）的 Windows **release 构建跑了 50 分钟没完**，
+卡在 sherpa-onnx 的 Windows 预编译库。而 `cargo check`（不带默认 feature）是过的。
+
+所以现在的 Windows 产物是 `--no-default-features` 版本：
+- ✅ 能编、能装、能启动、点一下小球能说话
+- ❌ **还不能喊「小蝶」唤醒**
+
+要支持得单独解决 sherpa-onnx 的 Windows 预编译库（大概率是下载/链接问题），
+没解决之前不声称「Windows 上唤醒词可用」。
+
 ## 已知风险（没验证，别当已经好了）
 
 1. **中文安装路径 + sherpa-onnx**：`productName` 是「蝶梦」，Windows 安装目录会
