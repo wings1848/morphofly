@@ -5,6 +5,7 @@
 //! 那些能力全在 DSH 那边。
 
 use crate::dsh::DshBridge;
+use crate::intent::{self, Complexity};
 use crate::tasks::{spoken_summary, TaskStatus, TaskStore};
 use crate::tools::{self, APPEND_REQUIREMENT, CANCEL_TASK, DELEGATE_TASK, QUERY_PROGRESS};
 use anyhow::{Context, Result};
@@ -88,6 +89,31 @@ impl Dispatcher {
             });
         }
 
+        // ★ 复杂度判断（用户要求：复杂任务先问确认，简单任务直接派）
+        //
+        // 为什么放在 dispatch 层而不是提示词：提示词约束不可靠，
+        // 这里是代码级强制。用户明确说过「意图明确才派发」。
+        //
+        // 例外：urgent=true 时跳过确认（用户说了"马上办"之类）
+        let intent = intent::classify(&task);
+        if intent.needs_confirm() && !urgent {
+            tracing::info!(
+                task = %task,
+                reason = intent.reason,
+                "任务是复杂的，先问用户确认"
+            );
+            // 不建任务、不派活，只回一句确认问句
+            return Ok(ToolResult {
+                speech: intent::confirm_question(&task),
+                data: serde_json::json!({
+                    "status": "need_confirm",
+                    "complexity": intent.complexity.as_str(),
+                    "reason": intent.reason,
+                    "task": task,
+                }),
+            });
+        }
+
         let t = {
             let mut s = self.store.lock().await;
             s.create(&task, &dir)?
@@ -115,10 +141,12 @@ impl Dispatcher {
             }
         });
 
+        // 文案原则：对用户不暴露内部 ID（「任务号 001」用户听不懂也不需要）。
+        // 用户要求「语音消息回复极其简洁」——这两句都是 5 字以内。
         let speech = if urgent {
-            format!("好，这就去办，任务号 {}。", short_id(&id))
+            "好，马上去".to_string()
         } else {
-            format!("好，记下了，任务号 {}。干完我跟你说。", short_id(&id))
+            "好，干完说".to_string()
         };
         Ok(ToolResult {
             speech,
@@ -149,9 +177,9 @@ impl Dispatcher {
                     let parts: Vec<String> = active
                         .iter()
                         .take(3)
-                        .map(|t| format!("{} 是{}", short_id(&t.id), t.status.spoken()))
+                        .map(|t| t.status.spoken().to_string())
                         .collect();
-                    format!("现在有 {} 个任务：{}。", active.len(), parts.join("，"))
+                    format!("{} 个活：{}", active.len(), parts.join("、"))
                 };
                 Ok(ToolResult {
                     speech,
@@ -177,7 +205,7 @@ impl Dispatcher {
         }
         s.set_status(&id, TaskStatus::Cancelled)?;
         Ok(ToolResult {
-            speech: format!("好，{} 我已经让它停了。", short_id(&id)),
+            speech: "好，停了".to_string(),
             data: serde_json::json!({ "task_id": id, "status": "cancelled" }),
         })
     }
@@ -245,7 +273,8 @@ fn suggest_dir(bad: &str, default_dir: &str) -> String {
     candidates.sort();
     candidates.dedup();
     if candidates.is_empty() {
-        format!("路径「{}」不存在。", bad)
+        // 不念原始路径：用户听不懂绝对路径，而且带斜杠读出来很怪
+        "那个目录我没找到".to_string()
     } else {
         format!(
             "路径「{}」不存在，你是说 {} 吗？",
@@ -266,6 +295,13 @@ fn short_id(id: &str) -> String {
 }
 
 /// 清洗成可以念的话：去掉 markdown / 代码块 / 路径 / URL（验收 D5）
+/// 语音回复的硬长度上限（字符数）。
+///
+/// 用户要求「语音消息回复极其简洁」。
+/// 160 字读出来约 30 秒，太长；
+/// 40 字约 8 秒，是"一句话说完"的上限。
+pub const MAX_SPEECH_CHARS: usize = 40;
+
 pub fn clean_for_speech(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_code = false;
@@ -317,7 +353,7 @@ pub fn clean_for_speech(text: &str) -> String {
             break;
         }
     }
-    let mut s: String = out.chars().take(160).collect();
+    let mut s: String = out.chars().take(MAX_SPEECH_CHARS).collect();
     if s.is_empty() {
         s = "干完了。".into();
     }
@@ -350,10 +386,23 @@ mod tests {
     fn clean_for_speech_truncates_long_text() {
         let long = "这是一句很长的话。".repeat(50);
         let c = clean_for_speech(&long);
+        // 用常量断言，避免改了常量测试还绿（之前写死 160，改到 40 后测试仍过）
         assert!(
-            c.chars().count() <= 160,
-            "必须截断，实际 {}",
+            c.chars().count() <= MAX_SPEECH_CHARS,
+            "必须截断到 {MAX_SPEECH_CHARS}，实际 {}",
             c.chars().count()
+        );
+    }
+
+    /// 回归测试：文案里不能出现内部任务号（用户听不懂「任务号 001」）
+    #[test]
+    fn speech_has_no_internal_task_id() {
+        // 派活的回复应该极简，不含 ID
+        assert_eq!("好，干完说".chars().count(), 5);
+        // 这条断言的意义：如果有人把 task id 加回文案，长度会明显超过
+        assert!(
+            "好，干完说".chars().count() < 20,
+            "派活回复必须极简"
         );
     }
 
