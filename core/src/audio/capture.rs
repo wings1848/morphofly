@@ -585,12 +585,104 @@ impl Default for AudioCapture {
 const CAPTURE_CHANNEL_FRAMES: usize = 128;
 
 impl AudioCapture {
+
+    /// 把一段 16k mono i16 采样做成「文件源」（末尾自动补静音）。
+    ///
+    /// 从 `file_source` 抽出来的公共部分：裸 PCM 和压缩音频都要走这里推流。
+    /// e2e 测试用 TTS 合成裸 PCM 直接注入，不经过容器解码。
+    fn spawn_pcm_source(pcm: Vec<i16>, path: &str) -> Result<Self, AudioError> {
+        let cfg = CaptureConfig::default();
+        let (tx, _) = tokio::sync::broadcast::channel::<Vec<i16>>(256);
+        let tx2 = tx.clone();
+        let frame_samples = cfg.frame_samples;
+        let total = pcm.len();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished2 = finished.clone();
+        let label = path.to_string();
+        std::thread::spawn(move || {
+            let mut buf = pcm;
+            let pad_ms: u32 = std::env::var("MORPHOFLY_FILE_PAD_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(800);
+            buf.extend(std::iter::repeat_n(
+                0i16,
+                UPLINK_SAMPLE_RATE as usize * pad_ms as usize / 1000,
+            ));
+            let mut acc: Vec<i16> = Vec::with_capacity(frame_samples);
+            let started = std::time::Instant::now();
+            let mut sent = 0usize;
+            for s in buf {
+                acc.push(s);
+                if acc.len() >= frame_samples {
+                    let _ = tx2.send(std::mem::take(&mut acc));
+                    sent += frame_samples;
+                    let target = std::time::Duration::from_millis(
+                        (sent as u64) * 20 / frame_samples.max(1) as u64,
+                    );
+                    let elapsed = started.elapsed();
+                    if target > elapsed {
+                        std::thread::sleep(target - elapsed);
+                    }
+                }
+            }
+            if !acc.is_empty() {
+                let _ = tx2.send(acc);
+            }
+            finished2.store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::info!(file = %label, total, "PCM 源推完");
+        });
+        Ok(Self {
+            config: cfg,
+            tx,
+            stats: Arc::new(CaptureStats::default()),
+            last_error: Arc::new(Mutex::new(None)),
+            stream: Mutex::new(None),
+            format: Mutex::new(None),
+            simple_rx: Mutex::new(None),
+            forwarder: Mutex::new(None),
+            forward_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            file_finished: finished,
+        })
+    }
+
     /// **测试/自动化专用**：用音频文件代替物理麦克风。
     ///
     /// 不打开任何设备（在无声卡机器上也能跑），把文件解码成 16k mono i16，
     /// 按 20ms 帧灌进与真采集相同的 `broadcast` 通道，下游代码完全无感。
     /// 只有 `duplex --input-file` 这类探针会用它；生产路径永远走 `start_default()`。
     pub fn file_source(path: &str) -> Result<Self, AudioError> {
+        // ★ 裸 PCM 直通（端到端测试用）
+        //
+        // `.pcm` 后缀的文件当作「16k mono s16le 裸流」直接读，
+        // 不走 rodio 解码 —— 因为裸 PCM 没有容器头，Decoder 会报
+        // "invalid mpeg audio header"，然后整个测试卡在解码失败。
+        //
+        // 这个入口是 e2e 测试的注入点（TTS 合成 → 裸 PCM → 喂进来）。
+        if std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pcm"))
+            .unwrap_or(false)
+        {
+            let bytes = std::fs::read(path)
+                .map_err(|e| AudioError::Device(format!("读 PCM 失败 {path}: {e}")))?;
+            if bytes.len() < 2 || bytes.len() % 2 != 0 {
+                return Err(AudioError::Device(format!(
+                    "PCM 文件长度不对（{} 字节，应为偶数）: {path}",
+                    bytes.len()
+                )));
+            }
+            let mut pcm: Vec<i16> = Vec::with_capacity(bytes.len() / 2);
+            for chunk in bytes.chunks_exact(2) {
+                pcm.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+            }
+            if pcm.is_empty() {
+                return Err(AudioError::Device(format!("PCM 是空的: {path}")));
+            }
+            return Self::spawn_pcm_source(pcm, path);
+        }
+
         use rodio::Source;
         let file = std::fs::File::open(path)
             .map_err(|e| AudioError::Device(format!("打开音频文件失败 {path}: {e}")))?;

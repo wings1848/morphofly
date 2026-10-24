@@ -14,6 +14,7 @@
 //! | [`playback`] | rodio 0.23 播放、追加任意采样率 PCM、`stop_now()`、队列深度 | 队列计量 / 流式 source |
 //! | [`ring`] | 有界环形缓冲（播放侧 200–500ms 抗抖动） | 全部 |
 
+pub mod aec;
 pub mod capture;
 pub mod playback;
 pub mod ring;

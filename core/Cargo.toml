@@ -63,3 +63,6 @@ required-features = ["kws"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+
+[[example]]
+name = "e2e_drive"

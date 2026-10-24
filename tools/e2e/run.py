@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -143,6 +144,11 @@ async def synth_audio(text: str, out: Path) -> bool:
 
 
 async def tts_synth(text: str, out: Path) -> None:
+    """edge-tts 合成 mp3 → miniaudio 解码成 16k mono s16le PCM。
+
+    为什么不用 ffmpeg：本机（云主机）没有 ffmpeg，也装不了（无 root）。
+    miniaudio 是纯 Python 包（uv 临时装），自带解码器，够用。
+    """
     with __import__("tempfile").NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
         mp3 = Path(tf.name)
     try:
@@ -155,13 +161,80 @@ async def tts_synth(text: str, out: Path) -> None:
         _, err = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(err.decode()[:150])
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp3),
-             "-ar", "16000", "-ac", "1", "-f", "s16le", str(out)],
-            check=True, capture_output=True,
+
+        # 用 miniaudio 解码（纯 Python，不需要系统 ffmpeg）
+        code = (
+            "import miniaudio, sys, pathlib\n"
+            "d = miniaudio.decode_file(sys.argv[1],\n"
+            "    output_format=miniaudio.SampleFormat.SIGNED16,\n"
+            "    nchannels=1, sample_rate=16000)\n"
+            "pathlib.Path(sys.argv[2]).write_bytes(bytes(d.samples))\n"
         )
+        p2 = await asyncio.create_subprocess_exec(
+            "uv", "run", "--quiet", "--with", "miniaudio",
+            "python", "-c", code, str(mp3), str(out),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, err2 = await p2.communicate()
+        if p2.returncode != 0:
+            raise RuntimeError(f"miniaudio 解码失败: {err2.decode()[:200]}")
     finally:
         mp3.unlink(missing_ok=True)
+
+
+async def run_real(case: dict, audio: Path) -> dict:
+    """real 模式：真的跑一遍（经 e2e_drive example）。
+
+    需要：网络 + StepFun key（在 ~/.diemeng/credentials）。
+    音频用 file_source 注入，**不需要麦克风**。
+    """
+    import os
+    # 本机（云主机）没有 root，ALSA 头文件解包在 ~/.local/sysroot，
+    # 需要 tools/dev-env.sh 注入环境才能编。
+    env = dict(os.environ)
+    env.setdefault("RUST_LOG", "warn")
+    env.setdefault("PATH", os.environ.get("PATH", ""))
+    cargo = os.environ.get("CARGO", "cargo")
+    if not shutil.which(cargo):
+        # 试 ~/.cargo/bin
+        cand = Path.home() / ".cargo" / "bin" / "cargo"
+        if cand.exists():
+            cargo = str(cand)
+            env["PATH"] = f"{cand.parent}:{env['PATH']}"
+
+    cmd = [
+        cargo, "run", "-q", "-p", "morphofly-core",
+        "--example", "e2e_drive", "--", "--file", str(audio),
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, cwd=str(ROOT), env=env,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"wake": False, "tool_calls": [], "reply": "",
+                "error": "超时 120s"}
+
+    out = stdout.decode(errors="replace").strip()
+    # 最后一行是 JSON
+    last = ""
+    for line in reversed(out.splitlines()):
+        if line.startswith("{"):
+            last = line
+            break
+    if not last:
+        err = stderr.decode(errors="replace")[-300:]
+        return {"wake": False, "tool_calls": [], "reply": "",
+                "error": f"没拿到 JSON: {err}"}
+
+    try:
+        return json.loads(last)
+    except json.JSONDecodeError as e:
+        return {"wake": False, "tool_calls": [], "reply": "",
+                "error": f"JSON 解析失败: {e}"}
 
 
 async def run_mock(case: dict) -> dict:
@@ -229,8 +302,7 @@ async def main() -> int:
                     print("  ⏭️ 跳过（TTS 失败）")
                     continue
             print(f"  音频: {audio} （{audio.stat().st_size // 2 / 16000:.2f}s）")
-            print("  ⚠️ real 模式需要 GUI+音频设备，当前未实现驱动，先跑 mock")
-            actual = await run_mock(case)
+            actual = await run_real(case, audio)
         else:
             actual = await run_mock(case)
 
