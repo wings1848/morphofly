@@ -244,6 +244,8 @@ impl VoiceSession {
         let stop3 = stop.clone();
         let m2 = machine.clone();
         let player2 = player.clone();
+        // 打断时要通知云端停止生成（修缺陷 #5）
+        let c_ev = client.clone();
         let ev_task = tokio::spawn(async move {
             let mut speech_started: Option<std::time::Instant> = None;
             loop {

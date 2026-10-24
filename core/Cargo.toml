@@ -22,6 +22,8 @@ rodio.workspace = true
 realfft.workspace = true
 hound.workspace = true
 bytes.workspace = true
+# 回声消除（AEC3 纯 Rust 移植）。见 core/src/audio/aec.rs 的模块文档。
+sonora.workspace = true
 
 tracing-subscriber.workspace = true
 
