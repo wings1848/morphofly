@@ -799,9 +799,38 @@ run_all() {
   return 0
 }
 
+# ---------------------------------------------------------------- 环境自愈
+# XAUTHORITY 文件名每次登录都会变（/run/user/1000/xauth_XXXXXX）。
+# 以前写死过一次，gpd 重登后整套检查都报「连不上 X11」——这里启动时现探一次：
+# 以 App 进程环境里的 XAUTHORITY 为准，退路取最新创建的 xauth_*。
+discover_xauthority() {
+  local live
+  live=$(ssh "${SSH_OPTS[@]}" "$GPD" '
+    pid=$(pgrep -f "release/morphofly-app" | head -1)
+    if [ -n "$pid" ]; then
+      tr "\0" "\n" < "/proc/$pid/environ" 2>/dev/null |
+        sed -n "s/^XAUTHORITY=//p" | head -1
+    fi' 2>/dev/null | tr -d '\r')
+  if [ -z "$live" ]; then
+    live=$(ssh "${SSH_OPTS[@]}" "$GPD" \
+      'ls -t /run/user/1000/xauth_* 2>/dev/null | head -1' 2>/dev/null | tr -d '\r')
+  fi
+  if [ -n "$live" ]; then
+    printf '%s' "$live"
+    return 0
+  fi
+  return 1
+}
+
 # ---------------------------------------------------------------- main
 main() {
   local cmd=${1:-all}
+  local live_auth
+  if live_auth=$(discover_xauthority) && [ -n "$live_auth" ] &&
+    [ "$live_auth" != "$GPD_XAUTHORITY" ]; then
+    note "XAUTHORITY 自动更新：$GPD_XAUTHORITY → $live_auth"
+    GPD_XAUTHORITY=$live_auth
+  fi
   case "$cmd" in
     pos|top|size|shots|click)
       "check_$cmd"

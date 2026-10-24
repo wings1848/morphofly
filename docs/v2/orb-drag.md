@@ -50,3 +50,34 @@ done, final=(2908, 1516, 148, 148)
 
 ## 验收（待实测，结果补在这里）
 
+## 实测验收（2026-10-25 03:24，gpd，CI 产物 e786d34）
+
+自动化脚本：`tools/verify_orb_drag.sh`（两条用例 + 位置断言）
+
+```
+[drag] 初始位置=(2908,1516) 显示器=3072x1728+0+0
+[drag] A 拖到左半屏：(2982,1590) → (768,576)
+[drag] A PASS 期望≈(16,502) 实得=(16,501) 误差=(0,1)
+[drag] B 拖回右半屏：(90,575) → (2304,864)
+[drag] B PASS 期望≈(2908,790) 实得=(2908,789) 误差=(0,1)
+[drag] 全部通过：悬浮球可拖动，且松手贴最近的水平边、垂直位置保留
+```
+
+- 拖动是**位置跟随**而不是位移累加：拖动中窗口与指针的偏差稳定在 1px（取整误差）。
+- 垂直位置保留了（拖到 y=864 松手 → 落在 789），不再弹回底部。
+- 拖动过程中 Rust 日志能对上：
+  - `拖动：全局指针坐标单位比例 kx≈… ky≈… guess≈1.0` → 这台机器上 `cursor_position()`
+    返回的就是物理像素，自校准会把它归一到 1（别的机器若返回逻辑像素会自动换成 1.5）
+  - `拖动开始：后台跟指针搬窗口 win_x=… cursor_x=… offset_x=74 offset_y=74`
+  - `拖动结束（后台循环退出）x=… y=…`
+  - 松手后 `贴边计算 mode=NearestHorizontal from=Some(...) to_x=16 to_y=…`
+
+## 顺带修掉的两个坑（都是「重登后失效」类）
+
+1. **服务启动崩在 GTK 初始化**：`Authorization required, but no authorization protocol
+   specified` → `Failed to initialize GTK`（status=101）。
+   原因：服务单元把 `XAUTHORITY=/run/user/1000/xauth_YRAalP` 写死了，gpd 重新登录后
+   文件名变成 `xauth_Vvpurg`。改法：新增 `tools/gpd_run_app.sh` 作为 ExecStart，
+   启动时现找 XAUTHORITY（先抄 plasmashell 的 environ，退路取最新 `xauth_*`）。
+2. **验证脚本同样写死 XAUTHORITY**：`tools/verify_float_ui.sh` 现在启动时自动发现
+   并覆盖 `GPD_XAUTHORITY`，重登后不用手工改环境变量。
