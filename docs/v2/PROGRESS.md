@@ -1,6 +1,6 @@
 # MorphoFly V2 进展总览
 
-**最后更新**：2026-10-24 23:00
+**最后更新**：2026-10-25 00:20
 
 ## 一句话状态
 
@@ -99,6 +99,27 @@
 | wings-pc 桌面已就绪 | 是登录器进程 |
 | 缺陷 #4 需 300 行重构 | 50 行省 2.6 秒 |
 | wings-pc 能测 AEC | **它没有麦克风硬件** |
+
+## 第 2 轮（2026-10-24 深夜）又修了什么
+
+| 问题 | 真因 |
+|---|---|
+| 右下角又歪 212px | 启动时字幕抢在贴边前调 orb_tip，归位点拿屏幕正中当基准 |
+| 模型只回「好，查着呢」不派活，且没被纠正 | 纠正判据只认云端 `speech_started`，本地 VAD 提前 commit 时那条不来 |
+| 项目名被 ASR 听错就直接放弃 | `delegate` 里 dir 不存在只追问，没先查别名表 |
+| **Windows 上仓库根本检不出来** | 根目录有个被跟踪的空文件叫 `...`（Windows 文件名不能以点结尾） |
+| **仓库 423MB 是构建产物撑的** | `ci-dist/` 把 AppImage + 解开的 squashfs-root 提交了 |
+
+## Windows 兼容（用户 2026-10-25 要求）
+
+**能编、能打 NSIS 安装包、三个必然挂的地雷已拆；运行时没在真 Windows 上验过。**
+
+1. 数据目录只读 `HOME` → `USERPROFILE` 回退（+3 测试）
+2. `Command::new("dsh")` 拉不起 npm 装的 `dsh.cmd` → `spawn_program` 按 PATHEXT 试 + `cmd /C` 兜底
+3. 平台代码未隔离 → `force_x11_backend` cfg 到 linux；cpal 的 pulseaudio 依赖本身是 target 门控的
+
+闸门：CI 加 `build-windows` job；release 加 Windows NSIS 打包 job。
+详见 `docs/v2/windows.md`（含 5 条没验证的风险）。
 
 ## 剩余工作
 
