@@ -5,3 +5,5 @@
 {"ts": "2026-10-25T00:04:42+08:00", "seq": 5, "stage": "S2", "actor": "agent", "type": "stage_enter", "from": "S1", "status": "running", "attempt": 1}
 {"ts": "2026-10-25T00:04:42+08:00", "seq": 6, "stage": "S2", "actor": "agent", "type": "gate_pass", "gate": "G2", "status": "pass", "evidence": "docs/v2/windows.md", "sha256": "9f68b3c058e32253a9cd42f7be55435fca396354983aa410f4693000cc7a2222", "at": "2026-10-25T00:04:42+08:00", "note": "三个硬伤都给了事实与修法；W9 风险清单单独列"}
 {"ts": "2026-10-25T00:04:42+08:00", "seq": 7, "stage": "S4", "actor": "agent", "type": "stage_enter", "from": "S2", "status": "running", "attempt": 1}
+{"ts": "2026-10-25T00:07:59+08:00", "seq": 8, "stage": "S4", "actor": "agent", "type": "gate_pass", "gate": "G4", "status": "pass", "evidence": "runs/20261025-0004-windows/progress.md", "sha256": "97705bc88dc60e20de364ace6e80cec26e71bf1e8c41551c91c71a0b7c0fec77", "at": "2026-10-25T00:07:59+08:00", "note": "6 处改动全部提交；闸门首跑抓到 2 个真 bug 并已修"}
+{"ts": "2026-10-25T00:07:59+08:00", "seq": 9, "stage": "S5", "actor": "agent", "type": "stage_enter", "from": "S4", "status": "running", "attempt": 1}

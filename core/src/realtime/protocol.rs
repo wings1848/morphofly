@@ -116,6 +116,15 @@ pub enum ClientCommand {
     /// 要求模型生成一轮回复
     #[serde(rename = "response.create")]
     CreateResponse,
+    /// 要求模型生成一轮回复，并带上参数（如 `{"tool_choice": "required"}`）。
+    ///
+    /// 为什么要「强制调工具」这一档：真机实测模型会说「好，查着呢」却**不调工具**，
+    /// 光靠提示词和兜底提醒都不稳。`tool_choice: "required"` 是协议级的硬约束 ——
+    /// 一旦支持，这一轮它必须调用工具，没有「只说话」这个选项。
+    ///
+    /// 和 `RawSessionUpdate` 一样走手工序列化（不能和 `CreateResponse` 共用 rename，
+    /// 否则反序列化时两个变体撞名）。
+    RawCreateResponse { response: Value },
     /// 取消正在进行的回复（打断）
     #[serde(rename = "response.cancel")]
     CancelResponse,
@@ -259,6 +268,9 @@ pub fn client_command_json(cmd: &ClientCommand) -> Value {
     // 不能走 derive（SessionConfig 的 skip_serializing_if 会整个省略字段）。
     if let ClientCommand::RawSessionUpdate { session } = cmd {
         return json!({ "type": "session.update", "session": session });
+    }
+    if let ClientCommand::RawCreateResponse { response } = cmd {
+        return json!({ "type": "response.create", "response": response });
     }
     serde_json::to_value(cmd).unwrap_or_else(|e| {
         // 理论上不可能失败（全是简单结构），真失败了也不能 panic 掉整条语音链路
@@ -413,6 +425,28 @@ mod tests {
         assert_eq!(v["kind"], "AudioDelta");
         assert_eq!(v["pcm"], json!([1, -2, 3]));
         assert_eq!(v["sample_rate"], 24_000);
+    }
+
+    /// 回归：纠正时要用 `response.create` + `tool_choice: "required"`。
+    ///
+    /// 为什么要测序列化：这个命令走手工序列化（不能和 `CreateResponse` 共用 rename），
+    /// 写错的话服务端只会静默忽略一个不认识的字段，纠正就退化成普通一轮 —— 很难发现。
+    #[test]
+    fn raw_create_response_carries_tool_choice() {
+        let cmd = ClientCommand::RawCreateResponse {
+            response: json!({ "tool_choice": "required" }),
+        };
+        let v = client_command_json(&cmd);
+        assert_eq!(v["type"], "response.create");
+        assert_eq!(v["response"]["tool_choice"], "required");
+    }
+
+    #[test]
+    fn plain_create_response_has_no_extra_fields() {
+        // 普通那一轮不能带 response 字段，免得改坏正常路径
+        let v = client_command_json(&ClientCommand::CreateResponse);
+        assert_eq!(v["type"], "response.create");
+        assert!(v.get("response").is_none());
     }
 
     #[test]
