@@ -34,15 +34,37 @@ jobs:
       - name: 安装 tauri-cli（用预编译的 npm 包，别从源码编）
         run: npm install -g @tauri-apps/cli@^2
 
-      - name: 打 NSIS 安装包
-        # --bundles 覆盖 tauri.conf.json 里给 Linux 写的 targets（deb/appimage）
+      # ★ 2026-10-25 调整策略：先保证「Windows 上能编出可执行文件」，
+      # 安装包作为附加项。原因是 NSIS 那步要整个 Rust release 冷编译 + 打包，
+      # 实测在 windows-latest 上跑了 40+ 分钟还没完，把整条流水线拖死。
+      #
+      # --no-bundle：只编二进制，不打安装包。这一步能过 = Windows 上真的能编。
+      - name: 编译 Windows 可执行文件（不打安装包）
+        timeout-minutes: 45
+        run: |
+          cd app
+          tauri build --no-bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: morphofly-windows-x64-exe
+          path: |
+            target/release/*.exe
+          if-no-files-found: warn
+
+      # 安装包单独一步，失败不影响上面的可执行文件产物。
+      - name: 打 NSIS 安装包（可选，失败不阻塞）
+        id: nsis
+        continue-on-error: true
+        timeout-minutes: 30
         run: |
           cd app
           tauri build --bundles nsis
 
       - uses: actions/upload-artifact@v4
+        if: steps.nsis.outcome == 'success'
         with:
-          name: morphofly-windows-x64
+          name: morphofly-windows-x64-installer
           path: |
             target/release/bundle/nsis/*.exe
           if-no-files-found: warn
