@@ -27,7 +27,9 @@
 #   RUN_DIR              验收 run 目录（默认 <repo>/runs/20261024-2208-ui-ux-360）
 #   EVIDENCE_DIR         截图证据目录（默认 $RUN_DIR/evidence）
 #   POS_TOL              右下角距离阈值，右/底共用（默认 24）
-#   POS_TOL_BOTTOM       底边距离阈值（默认 = POS_TOL；实现里底部预留了 16+48=64px，见 main.rs）
+#   POS_TOL_BOTTOM       底边距离阈值（默认 80 = 右侧 margin 16 + 底部任务栏预留 48 + 余量）
+#                        为什么底部要放宽：main.rs 的 snap_to_edge 刻意在底部多留 48px 避开任务栏，
+#                        所以底距天然是 64px。验收标准 A1 已按此修正（2026-10-24）。
 #   SIZE_MAX             窗口宽高上限（默认 176）
 #   MIN_RMSE             两状态判定「可区分」的 RMSE 归一化下限（默认 0.005）
 #   SHOT_SIZE            截图视口边长（默认自动取线上窗口宽度，拿不到用 360）
@@ -63,7 +65,7 @@ RUN_DIR=${RUN_DIR:-$REPO_ROOT/runs/20261024-2208-ui-ux-360}
 EVIDENCE_DIR=${EVIDENCE_DIR:-$RUN_DIR/evidence}
 
 POS_TOL=${POS_TOL:-24}
-POS_TOL_BOTTOM=${POS_TOL_BOTTOM:-$POS_TOL}
+POS_TOL_BOTTOM=${POS_TOL_BOTTOM:-80}
 SIZE_MAX=${SIZE_MAX:-176}
 MIN_RMSE=${MIN_RMSE:-0.005}
 SHOT_SIZE=${SHOT_SIZE:-0}
