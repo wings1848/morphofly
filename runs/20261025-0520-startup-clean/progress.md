@@ -27,3 +27,22 @@
   `restart 返回之后` 的帧。
 - 修正后真机全绿：T1–T5 全 PASS，首帧就绪 840ms，T4 差分 0.00。
 - 详细报告：`verify-report.md`。
+
+## 2026-10-25 05:45 收窄范围（独立 review 后）
+
+独立 subagent review 提了两个阻塞问题，核实成立：
+
+1. `gtk_widget_set_opacity` 对 RGBA 透明窗口走 Cairo alpha，不是合成器不透明度；
+   WebKit native 子窗口遮不住，而且真机 8fps 连拍根本没拍到「空窗口黑框」——
+   用户看到的黑框就是字幕气泡。
+2. 恢复不透明度失败只 warn，窗口可能永远不可见（比原 bug 更糟）。
+
+→ 退回最小修复：只保留「启动不显示字幕」（Rust orb_state + 前端 boot/空字幕守卫），
+   删除 gtk 依赖 / orb_ready 命令 / 首帧就绪与透明过渡；顺手修 demo 模式启动字幕。
+   验收收窄为 T1–T4。文档写清「为什么不做窗口透明过渡」。
+
+## 2026-10-25 05:47 真机绿（S5）
+
+- CI run 40135239790 全绿；产物部署 gpd（sha=2724ae4）。
+- `tools/verify_startup_clean.sh`：T1–T4 全 PASS（连拍差分 0.00、位置尺寸置顶不回归、前端单测 16）。
+- 证据：`evidence/startup-clean-summary.md`、`evidence/startup-journal.log`、`evidence/startup-frames/`。
