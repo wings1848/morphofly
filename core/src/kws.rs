@@ -62,11 +62,7 @@ impl KwsConfig {
             self.model_dir.display()
         );
         let tokens = self.model_dir.join("tokens.txt");
-        anyhow::ensure!(
-            tokens.is_file(),
-            "缺少模型文件: {}",
-            tokens.display()
-        );
+        anyhow::ensure!(tokens.is_file(), "缺少模型文件: {}", tokens.display());
         anyhow::ensure!(
             self.keywords_file.is_file(),
             "关键词文件不存在: {}（用 text2token 生成，见 docs/唤醒词.md）",
