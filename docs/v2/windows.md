@@ -67,17 +67,24 @@ Windows 上没有 `HOME`，只有 `USERPROFILE`。原来取不到就退化成
 
 图标补了 `icons/icon.ico`（256/128/64/48/32/16），Windows 打包必需。
 
-## ⚠️ Windows 上的唤醒词：还没解决（不许含糊）
+## Windows 产物：真的出来了（含唤醒词）
 
-带唤醒词（crate 默认 feature `kws`）的 Windows **release 构建跑了 50 分钟没完**，
-卡在 sherpa-onnx 的 Windows 预编译库。而 `cargo check`（不带默认 feature）是过的。
+CI run `40113059133` 的 Windows job **success**，产出两个真文件（已下载核实）：
 
-所以现在的 Windows 产物是 `--no-default-features` 版本：
-- ✅ 能编、能装、能启动、点一下小球能说话
-- ❌ **还不能喊「小蝶」唤醒**
+```
+morphofly-app.exe                     PE32+ executable for MS Windows (GUI), x86-64   35MB
+蝶梦_0.1.0_x64-setup.exe               Nullsoft Installer self-extracting archive     13MB
+```
 
-要支持得单独解决 sherpa-onnx 的 Windows 预编译库（大概率是下载/链接问题），
-没解决之前不声称「Windows 上唤醒词可用」。
+带默认 feature（含 `kws` 唤醒词），所以**不是**阉割版。
+
+### 唯一的问题是慢
+
+Windows 上完整 release 构建要 **~50 分钟**（N6000 那种货色都比它快）。
+一开始我以为是卡死，还改成了「不带唤醒词」——那是错的：
+`tauri build --no-default-features` 这个参数 npm 版 CLI 根本不认
+（`unexpected argument`），改完反而把 job 跑挂了。
+现在超时给到 75 分钟，正常等就行。
 
 ## 已知风险（没验证，别当已经好了）
 
