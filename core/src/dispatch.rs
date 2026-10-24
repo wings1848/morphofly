@@ -93,6 +93,37 @@ impl Dispatcher {
     /// 为什么不能只用默认目录：真机实测本地代派把任务派到了 `/home/wings`
     /// —— 因为配置里的 `default_cwd` 就是家目录。用户说的是「蝶梦项目」，
     /// 派到家里当然干不成事。
+    /// 把任务文本里「被听错的项目名」换成正式名（`mosofly` → `morphofly`）。
+    ///
+    /// 为什么要在派活前改文本：任务原话会原样交给 DSH，名字错了它会去找
+    /// 不存在的目录/文件。目录能靠模糊匹配纠正，文本里的错字同样要纠正。
+    pub fn normalize_project_mentions(&self, task: &str) -> String {
+        let mut out = task.to_string();
+        for name in project_name_candidates(task) {
+            if name.chars().count() < 2 || self.projects.lookup(&name).is_some() {
+                continue;
+            }
+            let Some(p) = self.projects.lookup_fuzzy(&name) else {
+                continue;
+            };
+            // 替换成最长的英文别名（中文别名替换英文原名读起来更怪）
+            let canonical = p
+                .alias
+                .iter()
+                .filter(|a| a.chars().all(|c| c.is_ascii_alphanumeric()))
+                .max_by_key(|a| a.len())
+                .cloned()
+                .or_else(|| p.alias.first().cloned());
+            if let Some(c) = canonical {
+                if c != name && !c.is_empty() {
+                    tracing::info!(from = %name, to = %c, "任务文本里的项目名已纠正（ASR 听错）");
+                    out = out.replace(&name, &c);
+                }
+            }
+        }
+        out
+    }
+
     pub async fn dir_for_task(&self, task: &str) -> String {
         // ★ 顺序很关键：**任务里点名的项目优先**，其次才是会话上下文。
         //
@@ -105,6 +136,14 @@ impl Dispatcher {
                 .iter()
                 .any(|a| !a.is_empty() && task.contains(a.as_str()))
             {
+                return proj.path.clone();
+            }
+        }
+        // ★ 语音识别会把项目名听错几个字（真机：morphofly → mosofly），
+        // 模糊查表命中就用它；宁可派到「最像的已知项目」，也不要落到默认目录。
+        for name in project_name_candidates(task) {
+            if let Some(proj) = self.projects.lookup_fuzzy(&name) {
+                tracing::info!(said = %name, path = %proj.path, "项目名疑似被听错，模糊匹配成功");
                 return proj.path.clone();
             }
         }
@@ -252,6 +291,9 @@ impl Dispatcher {
             .trim()
             .to_string();
         anyhow::ensure!(!task.is_empty(), "task 不能为空");
+        // 先把「被 ASR 听错的项目名」换成正式名，再往下走：
+        // 任务文本后面会原样交给 DSH，错字留着它也会找错目录/读错文件。
+        let task = self.normalize_project_mentions(&task);
         // 目录优先级：工具参数 > 当前上下文（set_context 设的）> 默认目录
         //
         // 这样用户说「换到蝶梦项目」之后再派活，就不用每次带 dir，
@@ -287,6 +329,9 @@ impl Dispatcher {
                 .unwrap_or_default();
             if let Some(p) = self.projects.lookup(&base) {
                 tracing::info!(heard = %base, mapped = %p.path, "项目名听错了，按别名表纠正");
+                dir = p.path.clone();
+            } else if let Some(p) = self.projects.lookup_fuzzy(&base) {
+                tracing::info!(heard = %base, mapped = %p.path, "项目名听错一两个字，模糊匹配纠正");
                 dir = p.path.clone();
             }
         }
@@ -547,38 +592,24 @@ impl Dispatcher {
     }
 
     fn extract_unknown_project(&self, task: &str) -> Option<String> {
-        for marker in ["项目", "工程", "仓库"] {
-            let mut search_from = 0usize;
-            while let Some(rel) = task[search_from..].find(marker) {
-                let pos = search_from + rel;
-                // 取 marker 前面连续的中文/字母/数字作为候选名，
-                // 遇空格或标点就停（"在 aimeng 项目" → "aimeng"）。
-                // ⚠️ 必须先把前面的空白 trim 掉。
-                // 2026-10-24 踩坑：`"在 aimeng 项目"` 取 before =
-                // `"在 aimeng "`（带尾空格），take_while 第一个字符就是空格
-                // 直接返回空串 —— 提取永远失败，Bug 1 的修复等于没做。
-                let before = task[..pos].trim_end();
-                let name: String = before
-                    .chars()
-                    .rev()
-                    .take_while(|c| c.is_alphanumeric() || is_cjk(*c))
-                    .collect::<Vec<char>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                let name = name.trim().to_string();
-
-                if name.chars().count() >= 2 {
-                    if self.projects.lookup(&name).is_some() {
-                        // 已知项目，放行
-                    } else if is_common_word(&name) {
-                        // 「这个项目」「那个项目」这类指代，跳过
-                    } else {
-                        return Some(name);
-                    }
-                }
-                search_from = pos + marker.len();
+        for name in project_name_candidates(task) {
+            if name.chars().count() < 2 {
+                continue;
             }
+            if self.projects.lookup(&name).is_some() {
+                // 已知项目，放行
+                continue;
+            }
+            if self.projects.lookup_fuzzy(&name).is_some() {
+                // 听错一两个字但明显是已知项目（morphofly → mosofly），放行
+                tracing::info!(said = %name, "项目名疑似被听错，按已知项目放行");
+                continue;
+            }
+            if is_common_word(&name) {
+                // 「这个项目」「那个项目」这类指代，跳过
+                continue;
+            }
+            return Some(name);
         }
         None
     }
@@ -920,6 +951,118 @@ fn is_home_dir(p: &str) -> bool {
 /// 判断一个词是不是常见指代，不是真正的项目名。
 ///
 /// 「这个项目」「那个项目」「我的项目」这类不该被当成未识别项目名去追问。
+/// 从任务文本里提取「X 项目 / X 工程 / X 仓库」里的候选项目名。
+///
+/// 只按这三个 marker 找 —— 宁可漏（回去追问），也不要从闲聊里瞎猜项目。
+fn project_name_candidates(task: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for marker in ["项目", "工程", "仓库"] {
+        let mut search_from = 0usize;
+        while let Some(rel) = task[search_from..].find(marker) {
+            let pos = search_from + rel;
+            // 取 marker 前面的部分（先 trim 尾部空白）。
+            // 2026-10-24 踩坑：`"在 aimeng 项目"` 取到的 before 带尾空格，
+            // 直接 take_while 会立刻返回空串，提取永远失败。
+            let before = task[..pos].trim_end();
+            if let Some(name) = project_name_from_before(before) {
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+            search_from = pos + marker.len();
+        }
+    }
+    out
+}
+
+/// 从「项目」前面的文本里取出项目名。
+///
+/// 两种情况（真机都遇到过）：
+/// - 英文名：`"帮我看看mosofly"` → 取尾部 ASCII 段 → `"mosofly"`
+///   （以前把「帮我看看」也算进去，得到 `"帮我看看mosofly"`，追问话术直接崩）
+/// - 中文名：`"在蝶梦"` → 剥掉前面的「在/帮我/看看…」→ `"蝶梦"`
+fn project_name_from_before(before: &str) -> Option<String> {
+    let run: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || is_cjk(*c))
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let run = run.trim();
+    if run.is_empty() {
+        return None;
+    }
+
+    // 英文/数字项目名：取尾部那一段 ASCII
+    let ascii_tail: String = run
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if ascii_tail.chars().count() >= 2 && ascii_tail.chars().any(|c| c.is_ascii_alphabetic()) {
+        return Some(ascii_tail);
+    }
+
+    // 纯中文项目名：剥掉常见的动词/介词前缀
+    let stripped = strip_leading_fillers(run);
+    if !stripped.is_empty() {
+        return Some(stripped.to_string());
+    }
+    Some(run.to_string())
+}
+
+/// 剥掉中文口语里项目名前面常见的动词/介词（「帮我看看蝶梦」→「蝶梦」）
+fn strip_leading_fillers(s: &str) -> &str {
+    const PREFIXES: &[&str] = &[
+        "帮我看看",
+        "帮我看看",
+        "帮我看下",
+        "帮我查一下",
+        "麻烦你",
+        "帮我",
+        "麻烦",
+        "看一下",
+        "看看",
+        "查一下",
+        "读一下",
+        "读一读",
+        "瞧一瞧",
+        "在",
+        "把",
+        "到",
+        "给",
+        "用",
+        "跟",
+        "和",
+        "请",
+        "查",
+        "看",
+        "读",
+        "问",
+    ];
+    let mut cur = s.trim();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for p in PREFIXES {
+            if let Some(rest) = cur.strip_prefix(p) {
+                let rest = rest.trim_start();
+                if !rest.is_empty() && rest.chars().count() >= 2 {
+                    cur = rest;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    cur
+}
+
 fn is_common_word(s: &str) -> bool {
     const COMMON: &[&str] = &[
         "这个", "那个", "我的", "你的", "某个", "整个", "所有", "每个", "一个", "项目", "工程",
@@ -1153,12 +1296,67 @@ mod tests {
     #[test]
     fn unknown_project_is_detected() {
         let d = dispatcher_for_test();
-        // 真机 e2e 抓到的原话：aimeng 是 ASR 听错 diemeng 的结果
+        // 真·不存在的项目名必须被拦（否则 DSH 会在不存在的目录里瞎跑）
         assert_eq!(
-            d.extract_unknown_project("在 aimeng 项目里跑一下测试"),
-            Some("aimeng".into()),
+            d.extract_unknown_project("在火星基地项目里跑一下测试"),
+            Some("火星基地".into()),
             "假项目名必须被识别出来"
         );
+    }
+
+    #[test]
+    fn asr_misheard_known_project_is_allowed() {
+        let d = dispatcher_for_test();
+        // 真机 e2e 抓到的原话：aimeng 是 ASR 听错 diemeng 的结果。
+        // 现在按模糊匹配当已知项目放行（距离 2，diemeng 7 个字容忍 2），
+        // 让任务真的派到蝶梦项目，而不是反过来问用户「你是说蝶梦吗」。
+        assert_eq!(
+            d.extract_unknown_project("在 aimeng 项目里跑一下测试"),
+            None,
+            "听错一两个字的已知项目应放行"
+        );
+    }
+
+    #[test]
+    fn verb_phrase_is_not_part_of_project_name() {
+        // 真机 2026-10-25 原话（ASR: morphofly→mosofly, README→limit）：
+        // 以前把「帮我看看mosofly」整段当项目名，追问话术直接变成
+        // 「没找到「帮我看看mosofly」，你是说蝶梦吗」，等于白瞎一次派活。
+        assert_eq!(
+            project_name_candidates("帮我看看mosofly项目的 limit 第一行是什么？"),
+            vec!["mosofly".to_string()],
+            "项目名要取尾部 ASCII 段，不能把动词带进去"
+        );
+        assert_eq!(
+            project_name_candidates("帮我查一下蝶梦项目的 README"),
+            vec!["蝶梦".to_string()],
+            "中文项目名要剥掉「帮我查一下」这种前缀"
+        );
+    }
+
+    #[test]
+    fn misheard_project_name_is_rewritten_in_task() {
+        let d = dispatcher_for_test();
+        let fixed = d.normalize_project_mentions("帮我看看mosofly项目的 README 第一行是什么？");
+        assert!(
+            fixed.contains("morphofly"),
+            "听错的项目名应换成正式名: {fixed}"
+        );
+        assert!(!fixed.contains("mosofly"), "错字不该留在任务里: {fixed}");
+
+        // 已知名字不能被改写
+        let same = d.normalize_project_mentions("帮我看看蝶梦项目的 README");
+        assert_eq!(same, "帮我看看蝶梦项目的 README");
+    }
+
+    #[tokio::test]
+    async fn misheard_project_still_routes_to_right_dir() {
+        let d = dispatcher_for_test();
+        let expected = d.projects.project[0].path.clone();
+        let got = d
+            .dir_for_task("帮我看看mosofly项目的 limit 第一行是什么？")
+            .await;
+        assert_eq!(got, expected, "听错的 morphofly 也要派到蝶梦项目目录");
     }
 
     #[test]
