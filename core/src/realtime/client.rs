@@ -389,6 +389,14 @@ impl RealtimeClient {
         self.send_command(ClientCommand::CreateResponse)
     }
 
+    /// 生成一轮回复，并带上参数（例如 `{"tool_choice": "required"}`）。
+    ///
+    /// 用途：兜底纠正时逼模型必须调工具。真机实测光靠文字提醒它会继续只说
+    /// 「好，查着呢」，用协议级约束才稳。
+    pub fn create_response_with(&self, response: serde_json::Value) -> Result<()> {
+        self.send_command(ClientCommand::RawCreateResponse { response })
+    }
+
     /// 取消当前回复（打断用户听到的这半句）
     pub fn cancel_response(&self) -> Result<()> {
         self.send_command(ClientCommand::CancelResponse)

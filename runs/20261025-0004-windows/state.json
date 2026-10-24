@@ -6,7 +6,7 @@
   "tier": "light",
   "project_type": "generic",
   "human_mode": "inspect",
-  "stage": "S4",
+  "stage": "S5",
   "status": "running",
   "owner": {
     "agent": "agent",
@@ -18,7 +18,8 @@
     "S0": 1,
     "S1": 1,
     "S2": 1,
-    "S4": 1
+    "S4": 1,
+    "S5": 1
   },
   "loops": {
     "used": 0,
@@ -46,6 +47,13 @@
       "sha256": "9f68b3c058e32253a9cd42f7be55435fca396354983aa410f4693000cc7a2222",
       "at": "2026-10-25T00:04:42+08:00",
       "note": "三个硬伤都给了事实与修法；W9 风险清单单独列"
+    },
+    "G4": {
+      "status": "pass",
+      "evidence": "runs/20261025-0004-windows/progress.md",
+      "sha256": "97705bc88dc60e20de364ace6e80cec26e71bf1e8c41551c91c71a0b7c0fec77",
+      "at": "2026-10-25T00:07:59+08:00",
+      "note": "6 处改动全部提交；闸门首跑抓到 2 个真 bug 并已修"
     }
   },
   "human": {},
@@ -58,7 +66,7 @@
     "fanout_used": 0
   },
   "blocked_by": [],
-  "next_action": "S4：跑 G4 并落证据（devflow gate G4 pass --evidence <文件>）",
+  "next_action": "S5：跑 G5 并落证据（devflow gate G5 pass --evidence <文件>）",
   "artifacts": {
     "progress": "progress.md"
   }
