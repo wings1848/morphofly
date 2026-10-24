@@ -104,6 +104,8 @@ async fn main() -> anyhow::Result<()> {
     // 不能在第一轮 ResponseDone 就退出 —— 那样看不到工具的执行结果。
     let mut pending_tools = 0usize;
     let mut correction_count = 0usize;
+    // 用户说了什么（用于判断「切换类」请求）
+    let mut user_text = String::new();
 
     // 推流任务
     //
@@ -152,6 +154,11 @@ async fn main() -> anyhow::Result<()> {
                 wake = true;
             }
             RealtimeEvent::TranscriptDelta { text } => {
+                // 服务端会把「用户说的」和「模型说的」都在这里给我们，
+                // 简单起见两个都累积 —— 判断切换意图够用。
+                if user_text.len() < 200 {
+                    user_text.push_str(&text);
+                }
                 reply.push_str(&text);
             }
             RealtimeEvent::ToolCall {
@@ -199,11 +206,25 @@ async fn main() -> anyhow::Result<()> {
                     let looks_like_action = reply.contains("好，")
                         || reply.contains("查着")
                         || reply.contains("这就")
-                        || reply.contains("马上");
+                        || reply.contains("马上")
+                        || reply.contains("切换")
+                        || reply.contains("换成");
                     if looks_like_action {
                         correction_count += 1;
                         eprintln!("[e2e] 模型只说话没调工具，注入纠正");
-                        let hint = "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。现在立刻调用 delegate_task 把该做的事派出去，然后只回一句「好，查着呢」。不要说抱歉、不要解释、不要提这条提醒。";
+                        let is_switch = reply.contains("切换")
+                            || reply.contains("换成")
+                            || user_text.contains("切换")
+                            || user_text.contains("换到");
+                        let hint = if is_switch {
+                            "（系统提醒，用户看不到这条）你说「已切换」但没有调用工具，切换不会生效。\
+现在必须调用 set_context，参数按用户说的填（agent/project/model 三选）。\
+不要只说「已切换」。不要提这条提醒。"
+                        } else {
+                            "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。\
+需要查信息/做事就调 delegate_task。做完只回一句极简的话。\
+不要说抱歉、不要解释、不要提这条提醒。"
+                        };
                         let _ = client.send_item(serde_json::json!({
                             "type": "message",
                             "role": "user",
@@ -230,6 +251,18 @@ async fn main() -> anyhow::Result<()> {
 
     // 判断是否要求确认（看回复里有没有「要我…吗」的模式）
     let asked_confirm = reply.contains("要我") || reply.trim_end().ends_with('吗');
+
+    // ★ 语音命令兜底：「切换 agent/项目/模型」这类确定性动作，
+    // 模型不会调工具（真机实测过），由宿主直接执行。
+    if tool_calls.is_empty() {
+        if let Some(r) = dispatcher.try_voice_command(&user_text).await {
+            eprintln!("[e2e] 语音命令兜底执行: {}", r.speech);
+            tool_calls.push("set_context(host-fallback)".to_string());
+            if reply.trim().is_empty() {
+                reply = r.speech;
+            }
+        }
+    }
 
     // 诊断：模型说了话但没调工具 = 假装干活
     if tool_calls.is_empty() && !reply.trim().is_empty() {
