@@ -286,11 +286,4 @@ boot().finally(() => {
   // ?caption=… 直接造一条字幕（截图核对气泡用）
   if (params.caption) showCaption(params.caption);
   requestAnimationFrame(frame);
-  // ★ 启动首帧画完再通知 Rust 把窗口显形（窗口此刻是全透明的）。
-  //   连续两帧：第一帧把内容交给合成器，第二帧才确认真的画过了。
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      ipc('orb_ready').catch(() => {});
-    });
-  });
 });

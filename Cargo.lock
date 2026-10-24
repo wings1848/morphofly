@@ -2295,7 +2295,6 @@ name = "morphofly-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "gtk",
  "morphofly-core",
  "serde",
  "serde_json",
