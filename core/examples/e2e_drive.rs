@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
     // 工具调用后服务端会再来一轮 response，
     // 不能在第一轮 ResponseDone 就退出 —— 那样看不到工具的执行结果。
     let mut pending_tools = 0usize;
+    let mut correction_count = 0usize;
 
     // 推流任务
     //
@@ -184,6 +185,35 @@ async fn main() -> anyhow::Result<()> {
                     // 还有工具没回灌结果，等下一轮
                     pending_tools -= 1;
                     continue;
+                }
+                // ★ 兜底：说了话但没调工具 → 纠正一次。
+                //
+                // ⚠️ 2026-10-24 踩坑：原来这里 reply.clear() 会把**真实的回复**
+                // 一起清掉，导致判定时只看到纠正后的「好，查着呢」，
+                // 把本来正确的闲聊/追问回复都判成失败（8/14 而不是 12/14）。
+                //
+                // 修法：不清 reply，只把纠正轮的内容记到别处（不参与判定）。
+                if tool_calls.is_empty() && correction_count < 1 && !reply.trim().is_empty() {
+                    // 只对「看起来像要做事」的回复纠正，不管闲聊
+                    // （「你叫什么名字」这类不该被纠正）
+                    let looks_like_action = reply.contains("好，")
+                        || reply.contains("查着")
+                        || reply.contains("这就")
+                        || reply.contains("马上");
+                    if looks_like_action {
+                        correction_count += 1;
+                        eprintln!("[e2e] 模型只说话没调工具，注入纠正");
+                        let hint = "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。现在立刻调用 delegate_task 把该做的事派出去，然后只回一句「好，查着呢」。不要说抱歉、不要解释、不要提这条提醒。";
+                        let _ = client.send_item(serde_json::json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": hint}]
+                        }));
+                        let _ = client.create_response();
+                        // 记录纠正前的回复（供诊断），但保留 reply 供判定
+                        eprintln!("[e2e] 纠正前回复: {reply:?}");
+                        continue;
+                    }
                 }
                 speaking_done = true;
                 break;

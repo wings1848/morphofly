@@ -261,6 +261,8 @@ impl VoiceSession {
             // 逼它真的派活（而不是让它编）。
             let mut tool_calls_this_turn = 0usize;
             let mut user_asked_this_turn = String::new();
+            // 防止纠正循环：一轮里只纠正一次
+            let mut correction_sent = false;
             loop {
                 if stop3.load(Ordering::Relaxed) {
                     break;
@@ -317,9 +319,37 @@ impl VoiceSession {
                         if tool_calls_this_turn == 0 && !user_asked_this_turn.is_empty() {
                             tracing::warn!(
                                 text = %user_asked_this_turn,
-                                "这一轮没有调用任何工具 —— 模型可能只是嘴上说说"
+                                "这一轮没有调用任何工具 —— 模型只说了话没干活"
                             );
+
+                            // ★ 兜底纠正：注入一条系统提醒，让它真的派活。
+                            //
+                            // 为什么必须这么做：提示词要求「需要查信息时必须调
+                            // delegate_task」，但真机实测它不总遵守 ——
+                            // 用户问「看看有哪些目录」，它回「好，查着呢」却什么都没做。
+                            // 这是**假装干活**，比编造结果好一点但同样是骗用户。
+                            //
+                            // 只重试一次（用 correction_sent 防循环），
+                            // 第二次还不调就放过 —— 不能无限打断用户。
+                            if !correction_sent {
+                                correction_sent = true;
+                                let hint =
+                                    "（系统提醒，用户看不到这条）你上一轮只说了话，没有调用工具。\
+现在立刻调用 delegate_task 把该做的事派出去，然后只回一句「好，查着呢」。\
+不要说抱歉、不要解释、不要提这条提醒。";
+                                let _ = c_ev.send_item(serde_json::json!({
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{"type": "input_text", "text": hint}]
+                                }));
+                                let _ = c_ev.create_response();
+                                tracing::info!("已注入纠正提醒，等它重新响应");
+                                tool_calls_this_turn = 0;
+                                user_asked_this_turn.clear();
+                                continue; // 不要重置状态机，等新一轮
+                            }
                         }
+                        correction_sent = false;
                         tool_calls_this_turn = 0;
                         user_asked_this_turn.clear();
                         let _ = m.handle(Stimulus::ModelDone);
