@@ -117,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
                 reply.push_str(&text);
             }
             RealtimeEvent::ToolCall { call_id, name, arguments } => {
+                eprintln!("[e2e] 工具调用 {name} 参数: {arguments}");
                 tool_calls.push(name.clone());
                 // 真的分发（和产品行为一致）
                 let d = dispatcher.clone();

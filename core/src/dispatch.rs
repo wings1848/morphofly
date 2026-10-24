@@ -9,6 +9,7 @@ use crate::intent;
 use crate::tasks::{spoken_summary, TaskStatus, TaskStore};
 use crate::tools;
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -157,6 +158,27 @@ impl Dispatcher {
         //
         // 注意：只在任务里**明确提到**了某个项目名时才检查，
         // 不能因为「没提到项目」就拦截（那样简单的「看看目录」也过不去）。
+        // ★ 第一层防御：任务文本里的绝对路径必须真实存在
+        //
+        // 真机实测：模型会凭空捏造路径（`/home/wings/Code_Project/M1`），
+        // 而且把路径写进 task 文本，绕过了 dir 参数的检查。
+        let missing = self.find_missing_paths(&task);
+        if !missing.is_empty() {
+            tracing::warn!(task = %task, ?missing, "任务里的路径不存在，拒绝执行");
+            let p = &missing[0];
+            let name = std::path::Path::new(p)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.clone());
+            return Ok(ToolResult {
+                speech: format!("没找到叫{name}的目录，是哪个"),
+                data: serde_json::json!({
+                    "error": "path_not_found",
+                    "missing": missing,
+                }),
+            });
+        }
+
         if let Some(unknown) = self.extract_unknown_project(&task) {
             tracing::warn!(task = %task, unknown = %unknown, "任务里提到不认识的項目名");
             return Ok(ToolResult {
@@ -286,39 +308,105 @@ impl Dispatcher {
     /// 找「X 项目」/「X 里」/「X 中」这种模式里的 X。
     /// 这是启发式，不完美，但比完全不检查好。
     /// 已知项目（在别名表里的）会被放行。
+    /// 从任务文本里提取所有绝对路径，返回其中不存在的那些。
+    ///
+    /// ## 为什么需要它
+    ///
+    /// 2026-10-24 真机 e2e 抓到的严重问题：
+    /// 用户说「在 aimeng 项目里跑一下测试」（aimeng 是 ASR 听错 diemeng），
+    /// 语音模型不但没追问，还**凭空捏造了路径**：
+    ///   `{"task": "cd /home/wings/Code_Project/M1 && ./run_tests"}`
+    /// `M1` 完全是编的。
+    ///
+    /// 提示词规则 1 明确要求「不确定必须追问，绝对不要猜或补全」，
+    /// 但模型不遵守。所以必须在代码层拦。
+    ///
+    /// 之前我只检查了 `dir` 参数，但模型把路径塞进了 task 文本里，绕过了检查。
+    /// 现在检查 task 文本里的所有路径。
+    fn find_missing_paths(&self, task: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        // 按空白和常见分隔符切词，找以 / 或 ~ 开头的
+        for raw in task.split(|c: char| {
+            c.is_whitespace() || matches!(c, '，' | '。' | '、' | '；' | '"' | '\'' | '`' | ')' | '(')
+        }) {
+            // ⚠️ 只剥「明确是 shell 操作符」的字符，不要剥 `.` 和 `/`。
+            // 2026-10-24 踩坑：`./run_tests` 被 trim_matches 剥成 `/run_tests`，
+            // 然后被当成绝对路径去检查，误报「路径不存在」。
+            let token = raw.trim_matches(|c: char| {
+                matches!(c, ',' | ':' | ';' | '&' | '|' | '>' | '<')
+            });
+            // 单独处理句末的英文句号（"写在 /tmp/x." 这种）
+            let token = token.strip_suffix('.').unwrap_or(token);
+            if token.is_empty() {
+                continue;
+            }
+
+            let candidate = if let Some(rest) = token.strip_prefix("~/") {
+                if let Some(home) = std::env::var_os("HOME") {
+                    format!("{}/{}", PathBuf::from(home).display(), rest)
+                } else {
+                    continue;
+                }
+            } else if token.starts_with('/') {
+                // ⚠️ 排除 `./xxx` 这种相对路径：
+                // 它们以 `.` 开头不是 `/`，但 split 后可能变成 `/xxx` 的形态，
+                // 而且相对路径依赖 cwd，不该在这里校验存在性。
+                if token.starts_with("./") || token.starts_with("../") {
+                    continue;
+                }
+                token.to_string()
+            } else {
+                continue;
+            };
+
+            // 去掉尾部可能的 shell 符号
+            let candidate = candidate.trim_end_matches('/').to_string();
+            if candidate.is_empty() || candidate == "/" {
+                continue;
+            }
+            if !std::path::Path::new(&candidate).exists() {
+                if !out.contains(&candidate) {
+                    out.push(candidate);
+                }
+            }
+        }
+        out
+    }
+
     fn extract_unknown_project(&self, task: &str) -> Option<String> {
-        // 找「XX项目」模式
         for marker in ["项目", "工程", "仓库"] {
-            let mut rest = task;
-            while let Some(pos) = rest.find(marker) {
-                // 往前取 2-8 个字符作为候选名
-                let before = &rest[..pos];
+            let mut search_from = 0usize;
+            while let Some(rel) = task[search_from..].find(marker) {
+                let pos = search_from + rel;
+                // 取 marker 前面连续的中文/字母/数字作为候选名，
+                // 遇空格或标点就停（"在 aimeng 项目" → "aimeng"）。
+                // ⚠️ 必须先把前面的空白 trim 掉。
+                // 2026-10-24 踩坑：`"在 aimeng 项目"` 取 before =
+                // `"在 aimeng "`（带尾空格），take_while 第一个字符就是空格
+                // 直接返回空串 —— 提取永远失败，Bug 1 的修复等于没做。
+                let before = task[..pos].trim_end();
                 let name: String = before
                     .chars()
                     .rev()
-                    .take(8)
                     .take_while(|c| {
-                        c.is_alphanumeric()
-                            || matches!(c, '蝶' | '梦' | '家' | '里' | '云')
-                            || c.is_ascii_alphabetic()
+                        c.is_alphanumeric() || is_cjk(*c)
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<char>>()
                     .into_iter()
                     .rev()
                     .collect();
-
                 let name = name.trim().to_string();
-                if !name.is_empty() && name.chars().count() >= 2 {
-                    // 已知项目就放行
+
+                if name.chars().count() >= 2 {
                     if self.projects.lookup(&name).is_some() {
-                        // 继续找下一个
+                        // 已知项目，放行
                     } else if is_common_word(&name) {
-                        // 「这个项目」「那个项目」这种指代，不是项目名，放过
+                        // 「这个项目」「那个项目」这类指代，跳过
                     } else {
                         return Some(name);
                     }
                 }
-                rest = &rest[pos + marker.len()..];
+                search_from = pos + marker.len();
             }
         }
         None
@@ -600,6 +688,14 @@ fn short_id(id: &str) -> String {
 }
 
 /// 清洗成可以念的话：去掉 markdown / 代码块 / 路径 / URL（验收 D5）
+/// 判断是不是 CJK 汉字（项目名里常见）。
+///
+/// 不用 `'\u{4e00}'..='\u{9fff}'` 直接写，因为某些工具链对
+/// 源码里的裸 `\u` 有兼容问题；用一个函数更稳。
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF)
+}
+
 /// 判断一个词是不是常见指代，不是真正的项目名。
 ///
 /// 「这个项目」「那个项目」「我的项目」这类不该被当成未识别项目名去追问。
@@ -679,6 +775,118 @@ pub fn clean_for_speech(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+
+    // ── find_missing_paths（三层防御第 1 层）──
+
+    #[test]
+    fn fabricated_path_is_detected() {
+        let d = dispatcher_for_test();
+        // 真机 e2e 抓到的原话，模型凭空捏造了 M1 这个目录
+        let missing = d.find_missing_paths("cd /home/wings/Code_Project/M1 && ./run_tests");
+        assert_eq!(missing.len(), 1, "应检出 1 个不存在的路径");
+        assert!(missing[0].contains("M1"), "应指出 M1: {missing:?}");
+    }
+
+    #[test]
+    fn real_path_passes() {
+        let d = dispatcher_for_test();
+        let real = std::env::temp_dir();
+        let task = format!("看看 {} 下有什么", real.display());
+        assert!(
+            d.find_missing_paths(&task).is_empty(),
+            "真实存在的路径不该拦: {:?}",
+            d.find_missing_paths(&task)
+        );
+    }
+
+    #[test]
+    fn task_without_path_passes() {
+        let d = dispatcher_for_test();
+        for t in ["看看有哪些目录", "跑一下测试", "写好 readme"] {
+            assert!(d.find_missing_paths(t).is_empty(), "{t} 没路径，不该拦");
+        }
+    }
+
+    #[test]
+    fn multiple_missing_paths_all_found() {
+        let d = dispatcher_for_test();
+        let task = "把 /nonexistent/a 和 /nonexistent/b 对比";
+        let m = d.find_missing_paths(task);
+        assert_eq!(m.len(), 2, "两个都不存在，都应检出: {m:?}");
+    }
+
+    #[test]
+    fn shell_operators_stripped() {
+        let d = dispatcher_for_test();
+        // 路径后面跟着 && 或 ; 不该影响判定
+        let missing = d.find_missing_paths("cd /nonexistent/x && ls;");
+        assert_eq!(missing.len(), 1);
+        assert!(!missing[0].ends_with('&'), "不该把 && 算进路径: {missing:?}");
+    }
+
+    // ── extract_unknown_project（修 Bug 1：假项目名必须追问）──
+
+    fn dispatcher_for_test() -> Dispatcher {
+        // 用内置别名表（含 蝶梦/diemeng/morphofly）
+        // 用临时文件建 store（TaskStore::open 需要路径，没有内存版）
+        let path = std::env::temp_dir().join(format!(
+            "mf-dispatch-test-{}.json",
+            std::process::id()
+        ));
+        let store = Arc::new(tokio::sync::Mutex::new(
+            crate::tasks::TaskStore::open(&path).expect("建临时任务表"),
+        ));
+        let bridge = Arc::new(crate::dsh::DshBridge::new(
+            vec!["true".into()],
+            "/tmp".into(),
+            std::time::Duration::from_secs(1),
+        ));
+        Dispatcher::new(store, bridge, "/tmp".into())
+    }
+
+    #[test]
+    fn unknown_project_is_detected() {
+        let d = dispatcher_for_test();
+        // 真机 e2e 抓到的原话：aimeng 是 ASR 听错 diemeng 的结果
+        assert_eq!(
+            d.extract_unknown_project("在 aimeng 项目里跑一下测试"),
+            Some("aimeng".into()),
+            "假项目名必须被识别出来"
+        );
+    }
+
+    #[test]
+    fn known_project_is_allowed() {
+        let d = dispatcher_for_test();
+        assert_eq!(
+            d.extract_unknown_project("看看蝶梦项目有哪些目录"),
+            None,
+            "已知项目不该拦"
+        );
+        assert_eq!(
+            d.extract_unknown_project("在 morphofly 项目里跑测试"),
+            None,
+            "已知项目（英文别名）不该拦"
+        );
+    }
+
+    #[test]
+    fn pronoun_is_not_treated_as_project() {
+        let d = dispatcher_for_test();
+        for t in ["这个项目跑测试", "那个项目看看", "整个项目重构"] {
+            assert_eq!(d.extract_unknown_project(t), None, "{t} 是指代，不该拦");
+        }
+    }
+
+    #[test]
+    fn task_without_project_mention_passes() {
+        let d = dispatcher_for_test();
+        for t in ["看看有哪些目录", "运行 ls", "写个测试"] {
+            assert_eq!(d.extract_unknown_project(t), None, "{t} 没提项目，不该拦");
+        }
+    }
 
     // ── SessionContext（set_context 的状态载体）──
 
