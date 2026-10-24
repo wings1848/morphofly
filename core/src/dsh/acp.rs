@@ -175,7 +175,20 @@ impl DshClient {
     }
 
     /// 完整握手：initialize + session/new
+    /// 完整连接：initialize + 建会话。首次建连用这个。
     pub async fn connect(&mut self, cwd: &str) -> Result<String> {
+        self.initialize().await?;
+        self.new_session(cwd).await
+    }
+
+    /// 只做 `initialize` 握手（每个进程只需一次）。
+    ///
+    /// 拆出来是为了支持「常驻进程复用」：省掉 1.35 秒的握手开销，
+    /// 但每次任务仍然新建 session（任务之间互不污染）。
+    pub async fn initialize(&mut self) -> Result<()> {
+        if self.initialized.load(Ordering::SeqCst) {
+            return Ok(()); // 已经握过手，不重复
+        }
         let id = self.alloc_id();
         self.pending.lock().await.insert(id, "initialize".into());
         self.write_raw(&json!({
@@ -191,6 +204,23 @@ impl DshClient {
         }))
         .await?;
         self.initialized.store(true, Ordering::SeqCst);
+        // 等一下握手回复（reader 收到 result 就会把 initialized 置位）
+        for _ in 0..100 {
+            if self.initialized.load(Ordering::SeqCst) {
+                break;
+            }
+            if self.closed.load(Ordering::SeqCst) {
+                bail!("DSH 进程在握手前退出");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok(())
+    }
+
+    /// 在已握手的进程上新建一个会话（每个任务一个）。
+    pub async fn new_session(&mut self, cwd: &str) -> Result<String> {
+        // 清掉上一个 session 的残留，否则会误以为新会话已经建好
+        *self.session_id.lock().await = None;
 
         // session/new 的回复由 reader 解析并把 sessionId 写进 session_id
         self.send_request("session/new", json!({"cwd": cwd, "mcpServers": []}))
@@ -244,6 +274,21 @@ impl DshClient {
 
     pub fn is_alive(&mut self) -> bool {
         !self.closed.load(Ordering::SeqCst) && matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// 关掉当前会话但保留进程（用于「任务结束了，进程留着下次用」）。
+    ///
+    /// 为什么需要它：一个进程可以开多个 session，
+    /// 关掉旧 session 后能建新的，这样既复用了 initialize 的开销，
+    /// 又保证任务之间互不污染。
+    pub async fn close_session(&mut self) {
+        let sid = self.session_id.lock().await.clone();
+        if let Some(sid) = sid {
+            let _ = self
+                .send_request("session/close", json!({"sessionId": sid}))
+                .await;
+            *self.session_id.lock().await = None;
+        }
     }
 
     /// 温柔退出

@@ -69,3 +69,6 @@ name = "e2e_drive"
 
 [[example]]
 name = "aec_aloop_test"
+
+[[example]]
+name = "pool_bench"

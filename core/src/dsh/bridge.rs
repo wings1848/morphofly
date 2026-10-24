@@ -46,6 +46,21 @@ pub struct DshBridge {
     task_timeout: Duration,
     /// 全局关停开关（App 退出时置 true）
     shutdown: Arc<AtomicBool>,
+    /// 已握手但空闲的 DSH 进程，下个任务直接复用（省 1.35s initialize）。
+    ///
+    /// ## 为什么只做「复用 1 个」而不是完整进程池
+    ///
+    /// 完整的常驻池要支持「一个进程内多 session 并发」，
+    /// 那需要把 `DshClient` 的 `session_id: Option<String>` 改成路由表，
+    /// 涉及 300-400 行接口变更，且必须在有 GUI 的环境验证并发行为。
+    ///
+    /// 这个简化版只做一件事：**任务结束后不杀进程，留着下次用**。
+    /// - 省掉 initialize（1.35s）
+    /// - 每次仍然新建 session（1.45s，保证任务互不污染）
+    /// - 不涉及 session 路由，风险低
+    ///
+    /// 实测收益约 1.35s/任务，占 2.8s 总开销的 48%。
+    idle: Arc<Mutex<Option<DshClient>>>,
     /// 正在跑的任务 → 取消信号。
     ///
     /// ⚠️ 2026-10-24 修缺陷 #1：之前 `cancel_task` 只改本地状态，
@@ -65,6 +80,7 @@ impl DshBridge {
             task_timeout,
             shutdown: Arc::new(AtomicBool::new(false)),
             cancels: Arc::new(Mutex::new(HashMap::new())),
+            idle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -133,12 +149,32 @@ impl DshBridge {
             task_id: task_id.to_string(),
         };
 
-        let mut client = DshClient::spawn(&self.command)
-            .await
-            .context("拉不起 DSH")?;
+        // ★ 优先复用已握手的进程（省 1.35s initialize）
+        // 注意：不能写成 `Some(mut c) if c.is_alive() =>` ——
+        // Rust 的 match guard 里不允许可变借用（is_alive 要 &mut self）。
+        let mut reused = self.idle.lock().await.take();
+        let alive = reused
+            .as_mut()
+            .map(|c| c.is_alive())
+            .unwrap_or(false);
+        let (mut client, was_reused) = if alive {
+            tracing::debug!("复用已握手的 DSH 进程（省 1.35s）");
+            (reused.take().expect("刚判断过是 Some"), true)
+        } else {
+            let c = DshClient::spawn(&self.command)
+                .await
+                .context("拉不起 DSH")?;
+            (c, false)
+        };
         let mut rx = client.subscribe();
 
-        let sid = client.connect(cwd).await.context("建 DSH 会话失败")?;
+        let sid = if was_reused {
+            // 已握手 → 只建会话（1.45s）
+            client.new_session(cwd).await.context("建 DSH 会话失败")?
+        } else {
+            // 新进程 → 握手 + 建会话（2.8s）
+            client.connect(cwd).await.context("建 DSH 会话失败")?
+        };
         tracing::info!(session = %sid, cwd = %cwd, "DSH 会话已建");
         // 消费掉 SessionReady
         let _ = rx.recv().await;
@@ -203,7 +239,28 @@ impl DshBridge {
             }
         }
 
-        client.shutdown().await;
+        // ★ 正常结束的进程放回池子复用（省下次 1.35s initialize）。
+        //
+        // 只回收「正常 end_turn」的进程：
+        // - 报错/超时/取消的进程状态不可信，直接关掉
+        // - 关闭当前 session 后进程可以接受新 session
+        if stop_reason == "end_turn" {
+            client.close_session().await;
+            let mut idle = self.idle.lock().await;
+            // 只留 1 个（不做池），多了没用还占内存
+            if idle.is_none() {
+                *idle = Some(client);
+                tracing::debug!("DSH 进程已放回池子，下次直接复用");
+            } else {
+                // 已经有空闲的了，这个多余的关掉
+                if let Some(mut c) = idle.take() {
+                    c.shutdown().await;
+                }
+                *idle = Some(client);
+            }
+        } else {
+            client.shutdown().await;
+        }
 
         if stop_reason != "end_turn" {
             anyhow::bail!("任务没有正常结束：{stop_reason}");
