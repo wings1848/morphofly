@@ -692,17 +692,38 @@ fn main() {
             }
 
             if let Some(win) = app.get_webview_window("orb") {
-                // ★ 先不显示，等贴好边再亮出来 —— 否则会先在屏幕正中闪一下再跳走
-                // （配置里 visible:false，这里负责显示）
+                // ★ 启动顺序很讲究，2026-10-24 在 gpd 上踩了两次：
+                //
+                // 1. 窗口还没映射（visible:false）时 `outer_size()` 返回 0，
+                //    贴边公式就用 0 当尺寸算，x/y 直接飞到屏幕外
+                //    （实测 x=3056 y=1664，右边缘 3204 > 屏宽 3072）。
+                // 2. 未映射时 `set_position` 被 KWin 忽略，窗口最后还是弹在屏幕正中。
+                //
+                // 所以：先 show() → 等尺寸变非 0 → 显式设一次尺寸 → 再贴边。
                 let w2 = win.clone();
-                // ★ 贴到右下角（用户要求「默认启动在屏幕右下角」）
-                // 稍等一帧让窗口完成创建，否则拿到的尺寸是 0
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    place_orb_bottom_right(&w2);
+                    tokio::time::sleep(Duration::from_millis(120)).await;
                     if let Err(e) = w2.show() {
                         tracing::warn!(error = %e, "显示小球失败");
                     }
+                    // 等窗口真的映射出来（最多 1.5 秒）
+                    for _ in 0..30 {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        if let Ok(s) = w2.outer_size() {
+                            if s.width > 0 && s.height > 0 {
+                                break;
+                            }
+                        }
+                    }
+                    // 显式定尺寸：WebView 内容可能把窗口顶大（旧前端 360 布局就顶到 200），
+                    // 不能指望配置文件里的 width/height 就是最终值。
+                    let scale = w2.scale_factor().unwrap_or(1.0);
+                    let px = (f64::from(ORB_SIZE) * scale).round() as u32;
+                    if let Err(e) = w2.set_size(tauri::PhysicalSize::new(px, px)) {
+                        tracing::warn!(error = %e, "设置小球尺寸失败");
+                    }
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    place_orb_bottom_right(&w2);
                 });
             }
             Ok(())
