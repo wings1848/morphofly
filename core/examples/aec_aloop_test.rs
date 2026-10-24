@@ -75,7 +75,9 @@ fn main() -> anyhow::Result<()> {
     println!("播放结束: {play}");
 
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let _ = Command::new("pkill").args(["-f", "pw-cat --record"]).status();
+    let _ = Command::new("pkill")
+        .args(["-f", "pw-cat --record"])
+        .status();
     drop(rec);
 
     // 4) 读录音
