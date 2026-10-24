@@ -111,6 +111,53 @@ impl ProjectTable {
         })
     }
 
+    /// 模糊查表：容忍语音识别把项目名听错几个字。
+    ///
+    /// ## 为什么需要
+    ///
+    /// 2026-10-25 真机全链路实测，用户说「morphofly 项目」，
+    /// 云端 ASR 转成「mosofly 项目」—— 精确查表当然失败，
+    /// 于是 App 反过来问用户「你是说蝶梦吗」，白瞎一次派活。
+    /// 这种错字是供应商侧的常态（`diemeng` 也能听成 `daimian`/`aimeng`），
+    /// 本地能做的就是「差一两个字就当同一个项目」。
+    ///
+    /// ## 阈值（故意保守）
+    ///
+    /// - 英文名（长度 ≥4）：编辑距离 ≤ 长度/3（morphofly 9 个字 → 容忍 3）
+    /// - 短名（2–3 个字）：编辑距离 ≤ 1（听错一个字，如「蝶孟」→「蝶梦」）
+    ///
+    /// 宁可漏匹配（回去追问用户），也不要把任务派到错的项目里。
+    pub fn lookup_fuzzy(&self, spoken: &str) -> Option<&Project> {
+        let key = normalize(spoken);
+        let key_len = key.chars().count();
+        if key_len < 2 {
+            return None;
+        }
+        let mut best: Option<(usize, &Project)> = None;
+        for p in &self.project {
+            for a in &p.alias {
+                let na = normalize(a);
+                let na_len = na.chars().count();
+                if na_len < 2 {
+                    continue;
+                }
+                let dist = levenshtein(&key, &na);
+                let limit = if na_len >= 4 && key_len >= 4 {
+                    (na_len.max(key_len) / 3).max(2)
+                } else {
+                    1
+                };
+                if dist <= limit {
+                    match best {
+                        Some((better, _)) if better <= dist => {}
+                        _ => best = Some((dist, p)),
+                    }
+                }
+            }
+        }
+        best.map(|(_, p)| p)
+    }
+
     /// 列出所有别名（给提示词用）
     pub fn all_aliases(&self) -> Vec<String> {
         self.project
@@ -149,6 +196,29 @@ fn normalize(s: &str) -> String {
         })
         .flat_map(|c| c.to_lowercase())
         .collect()
+}
+
+/// 编辑距离（按字符算，只用来判「像不像」，不做性能优化）
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 /// 默认配置文件路径
@@ -215,6 +285,35 @@ mod tests {
         let t = table();
         assert!(t.lookup("火星基地").is_none());
         assert!(t.lookup("").is_none());
+    }
+
+    #[test]
+    fn fuzzy_matches_asr_mishearing() {
+        let t = table();
+        // 真机实测：morphofly 被听成 mosofly
+        let p = t.lookup_fuzzy("mosofly").expect("应模糊匹配到 morphofly");
+        assert_eq!(p.path, "/home/wings/Code_Project/morphofly");
+        assert!(
+            t.lookup("morphofly").is_some(),
+            "精确匹配不能被模糊逻辑弄坏"
+        );
+        assert!(t.lookup("MORPHOFLY 项目").is_some());
+    }
+
+    #[test]
+    fn fuzzy_does_not_swallow_unrelated_names() {
+        let t = table();
+        // 名字差太远必须继续追问，不能瞎派
+        assert!(t.lookup_fuzzy("火星基地").is_none());
+        assert!(t.lookup_fuzzy("homecloud2").is_none() || t.lookup("homecloud2").is_some());
+    }
+
+    #[test]
+    fn levenshtein_basics() {
+        assert_eq!(levenshtein("abc", "abc"), 0);
+        assert_eq!(levenshtein("abc", "abd"), 1);
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("mosofly", "morphofly"), 3);
     }
 
     #[test]
