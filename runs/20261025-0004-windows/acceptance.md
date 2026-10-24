@@ -7,7 +7,7 @@
 | W1 | 仓库能在 Windows 上检出（无非法路径） | CI `build-windows` 的 checkout 步骤 | success | ✅ success（删掉 `...` 之后） |
 | W2 | core 能在 Windows 上编译 | CI `cargo check -p morphofly-core` | success | ✅ success |
 | W3 | core 单测能在 Windows 上跑过 | CI `cargo test -p morphofly-core --lib` | 全过 | ✅ **248 全过**（在 Windows runner 上真跑，11 秒） |
-| W4 | app 外壳能在 Windows 上编译 | CI `cargo check -p morphofly-app --no-default-features` | success | 🔄 构建中（tauri 依赖冷编译） |
+| W4 | app 外壳能在 Windows 上编译 | CI `cargo check -p morphofly-app --no-default-features` | success | ✅ **success**（tauri 壳整套依赖在 Windows 上编过） |
 | W5 | 能打出 Windows 安装包 | release `cargo tauri build --bundles nsis` | 产出 .exe | ⏳ 构建中 |
 | W6 | 数据目录不再依赖 HOME | 本机单测 `config::data_dir_*` | 3 个测试过 | ✅ 11:xx 已过 |
 | W7 | 拉起 dsh 兼容 .cmd | 代码审查 + 注释（Windows 上无法单测） | 有 PATHEXT 分支 | ✅ |
