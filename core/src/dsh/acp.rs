@@ -25,6 +25,8 @@ pub const PROTOCOL_VERSION: i64 = 1;
 pub enum DshEvent {
     /// 建立了会话
     SessionReady { session_id: String },
+    /// `set_config_option` 的结果（用于判断模型名合不合法）
+    ConfigResult { id: i64, error: Option<String> },
     /// 助手流式文本
     TextDelta(String),
     /// 助手消息块结束
@@ -50,6 +52,11 @@ pub struct DshClient {
     pending: Arc<Mutex<HashMap<i64, String>>>,
     events_tx: broadcast::Sender<DshEvent>,
     session_id: Arc<Mutex<Option<String>>>,
+    /// session/new 返回的配置项（模型列表、推理强度等）。
+    ///
+    /// 为什么要存：实测可用模型是**动态**的，
+    /// 不能硬编码模型名，必须从这读出来。
+    config_options: Arc<Mutex<Vec<serde_json::Value>>>,
     closed: Arc<AtomicBool>,
     /// ACP 是否完成 initialize
     initialized: Arc<AtomicBool>,
@@ -77,6 +84,7 @@ impl DshClient {
         let (events_tx, _) = broadcast::channel(256);
         let pending: Arc<Mutex<HashMap<i64, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let session_id = Arc::new(Mutex::new(None));
+        let config_options = Arc::new(Mutex::new(Vec::new()));
         let closed = Arc::new(AtomicBool::new(false));
         let initialized = Arc::new(AtomicBool::new(false));
 
@@ -97,6 +105,7 @@ impl DshClient {
             pending,
             events_tx,
             session_id,
+            config_options,
             closed,
             initialized,
         };
@@ -108,6 +117,7 @@ impl DshClient {
         let pending = self.pending.clone();
         let events_tx = self.events_tx.clone();
         let session_id = self.session_id.clone();
+        let config_options = self.config_options.clone();
         let closed = self.closed.clone();
 
         tokio::spawn(async move {
@@ -126,7 +136,8 @@ impl DshClient {
                                 continue;
                             }
                         };
-                        handle_message(msg, &pending, &events_tx, &session_id).await;
+                        handle_message(msg, &pending, &events_tx, &session_id, &config_options)
+                            .await;
                     }
                     Ok(None) => break,
                     Err(e) => {
@@ -275,6 +286,92 @@ impl DshClient {
     pub fn is_alive(&mut self) -> bool {
         !self.closed.load(Ordering::SeqCst) && matches!(self.child.try_wait(), Ok(None))
     }
+    /// 读某个配置项的可用值（从 session/new 的 configOptions 里取）。
+    ///
+    /// 返回 `(currentValue, 可选值列表)`。
+    /// 找不到返回 None —— 调用方应据此如实告诉用户「这个 agent 不支持换模型」。
+    pub async fn config_option_values(&self, config_id: &str) -> Option<(String, Vec<String>)> {
+        let opts = self.config_options.lock().await;
+        for o in opts.iter() {
+            if o.get("id").and_then(|v| v.as_str()) == Some(config_id) {
+                let cur = o
+                    .get("currentValue")
+                    .map(|v| v.to_string().trim_matches('"').to_string())
+                    .unwrap_or_default();
+                let vals = o
+                    .get("options")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.get("value").and_then(|v| v.as_str()))
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return Some((cur, vals));
+            }
+        }
+        None
+    }
+
+    /// 切换会话的配置项（模型 / 推理强度等）。
+    ///
+    /// ## 实测出的两个坑（2026-10-24 探针验证）
+    ///
+    /// 1. **model 的值必须是 JSON 数组字符串**，形如
+    ///    `["deepseek-official","deepseek-v4-pro"]`（provider + model 两段）。
+    ///    直接传 `"deepseek-v4-pro"` 会报 `Invalid params: unknown model option`。
+    ///
+    /// 2. **可用值要从 `configOptions` 回读**，不能硬编码 ——
+    ///    实测切到 pro 之后再传 flash 也会报 unknown，
+    ///    说明可用集合是动态的。
+    ///
+    /// 所以这里只负责「发请求」，合法性由调用方先用
+    /// [`Self::config_options`] 查。
+    pub async fn set_config_option(&mut self, config_id: &str, value: &str) -> Result<()> {
+        let sid = self
+            .session_id
+            .lock()
+            .await
+            .clone()
+            .context("还没有会话，先 connect()")?;
+        let id = self.alloc_id();
+        self.pending
+            .lock()
+            .await
+            .insert(id, format!("set_config_option:{config_id}"));
+        // ★ 必须等响应 —— 只有 DSH 才知道模型名合不合法。
+        //
+        // 实测：session/new 返回的 configOptions 里 options 是**空的**，
+        // 只有 currentValue 有值，所以本地没法校验。
+        // 唯一可靠的办法是发过去看它接受还是拒绝。
+        let mut rx = self.events_tx.subscribe();
+        self.write_raw(&json!({
+            "jsonrpc": "2.0", "id": id,
+            "method": "session/set_config_option",
+            "params": {"sessionId": sid, "configId": config_id, "value": value}
+        }))
+        .await?;
+
+        // 等这个 request 的结果（最多 5 秒）
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Err(_) => anyhow::bail!("等 agent 回复超时（5s）"),
+                Ok(Err(_)) => anyhow::bail!("事件通道断了"),
+                Ok(Ok(DshEvent::ConfigResult { id: rid, error })) => {
+                    if rid != id {
+                        continue; // 不是我们要的那条
+                    }
+                    return match error {
+                        Some(msg) => Err(anyhow::anyhow!("{msg}")),
+                        None => Ok(()),
+                    };
+                }
+                Ok(Ok(_)) => continue,
+            }
+        }
+    }
 
     /// 关掉当前会话但保留进程（用于「任务结束了，进程留着下次用」）。
     ///
@@ -309,6 +406,7 @@ async fn handle_message(
     pending: &Arc<Mutex<HashMap<i64, String>>>,
     events_tx: &broadcast::Sender<DshEvent>,
     session_id: &Arc<Mutex<Option<String>>>,
+    config_options: &Arc<Mutex<Vec<serde_json::Value>>>,
 ) {
     // 1) 响应（有 id 且无 method）
     if msg.get("method").is_none() {
@@ -319,6 +417,10 @@ async fn handle_message(
                     Some("session/new") => {
                         if let Some(sid) = result.get("sessionId").and_then(|v| v.as_str()) {
                             *session_id.lock().await = Some(sid.to_string());
+                        }
+                        // 记住配置项（模型列表在这里，不能硬编码）
+                        if let Some(opts) = result.get("configOptions").and_then(|v| v.as_array()) {
+                            *config_options.lock().await = opts.clone();
                         }
                     }
                     Some("session/prompt") => {
@@ -331,6 +433,12 @@ async fn handle_message(
                             stop_reason: reason,
                         });
                     }
+                    Some(m) if m.starts_with("set_config_option") => {
+                        // ★ 成功也要发事件，否则调用方一直等到超时。
+                        // 2026-10-24 踩坑：合法模型名一直报「等 agent 回复超时」，
+                        // 就是因为这里 `_ => {}` 把成功响应吞了。
+                        let _ = events_tx.send(DshEvent::ConfigResult { id, error: None });
+                    }
                     _ => {}
                 }
                 return;
@@ -340,7 +448,25 @@ async fn handle_message(
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("未知错误");
+                // 如果这是 set_config_option 的失败，单独发一条结构化事件，
+                // 让调用方能立刻知道「模型名不合法」而不是笼统的 Error。
+                if method.as_deref() == Some("set_config_option:model")
+                    || method
+                        .as_deref()
+                        .is_some_and(|m| m.starts_with("set_config_option"))
+                {
+                    let _ = events_tx.send(DshEvent::ConfigResult {
+                        id,
+                        error: Some(m.to_string()),
+                    });
+                }
                 let _ = events_tx.send(DshEvent::Error(m.to_string()));
+            } else if method
+                .as_deref()
+                .is_some_and(|m| m.starts_with("set_config_option"))
+            {
+                // 成功
+                let _ = events_tx.send(DshEvent::ConfigResult { id, error: None });
             }
             return;
         }
@@ -440,7 +566,7 @@ mod tests {
         let t = tx();
         pending.lock().await.insert(7, "session/new".to_string());
         let msg = json!({"jsonrpc":"2.0","id":7,"result":{"sessionId":"abc-123"}});
-        handle_message(msg, &pending, &t, &sid).await;
+        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
         assert_eq!(sid.lock().await.clone().as_deref(), Some("abc-123"));
     }
 
@@ -455,7 +581,7 @@ mod tests {
             "params":{"update":{"sessionUpdate":"agent_message_chunk",
                                  "content":{"type":"text","text":"目录里有四项"}}}
         });
-        handle_message(msg, &pending, &t, &sid).await;
+        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
         match rx.recv().await.unwrap() {
             DshEvent::TextDelta(s) => assert_eq!(s, "目录里有四项"),
             other => panic!("期望 TextDelta，实际 {other:?}"),
@@ -470,7 +596,7 @@ mod tests {
         let mut rx = t.subscribe();
         pending.lock().await.insert(9, "session/prompt".to_string());
         let msg = json!({"jsonrpc":"2.0","id":9,"result":{"stopReason":"end_turn"}});
-        handle_message(msg, &pending, &t, &sid).await;
+        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
         match rx.recv().await.unwrap() {
             DshEvent::TurnDone { stop_reason } => assert_eq!(stop_reason, "end_turn"),
             other => panic!("期望 TurnDone，实际 {other:?}"),
@@ -485,7 +611,7 @@ mod tests {
         let mut rx = t.subscribe();
         pending.lock().await.insert(3, "session/prompt".to_string());
         let msg = json!({"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"bad request"}});
-        handle_message(msg, &pending, &t, &sid).await;
+        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
         match rx.recv().await.unwrap() {
             DshEvent::Error(e) => assert!(e.contains("bad request")),
             other => panic!("期望 Error，实际 {other:?}"),
@@ -498,7 +624,7 @@ mod tests {
         let sid = Arc::new(Mutex::new(None));
         let t = tx();
         let msg = json!({"jsonrpc":"2.0","method":"something/weird","params":{}});
-        handle_message(msg, &pending, &t, &sid).await;
+        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
     }
 
     #[tokio::test]
@@ -511,7 +637,7 @@ mod tests {
             "jsonrpc":"2.0","id":11,"method":"session/request_permission",
             "params":{"toolCall":{"title":"跑 cargo test"}}
         });
-        handle_message(msg, &pending, &t, &sid).await;
+        handle_message(msg, &pending, &t, &sid, &Arc::new(Mutex::new(Vec::new()))).await;
         match rx.recv().await.unwrap() {
             DshEvent::PermissionRequest {
                 title,

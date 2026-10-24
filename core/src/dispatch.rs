@@ -489,10 +489,42 @@ impl Dispatcher {
         }
 
         // 切模型
+        //
+        // ⚠️ 2026-10-24 审计发现的「假通过」：
+        // 之前这里只改 ctx.model 这个字段，从来没通知 DSH ——
+        // 用户说「换个模型」什么都不会发生。
+        // 和「切 agent」犯的是同一个错，这次必须真的调 API。
         if let Some(m) = model {
-            if ctx.model != m {
-                ctx.model = m.clone();
-                changes.push(m);
+            if ctx.model == m {
+                // 已经是这个了，不用动
+            } else {
+                // 真的通知 agent 进程
+                match self.bridge.set_model(&m).await {
+                    Ok(()) => {
+                        ctx.model = m.clone();
+                        changes.push(format!("模型 {m}"));
+                    }
+                    Err(e) => {
+                        // 切不了就如实说，不要假装成功
+                        tracing::warn!(error = %e, model = %m, "切模型失败");
+                        let msg = e.to_string();
+                        let speech = if msg.contains("没有活跃") {
+                            "还没干活，先派个活再说".to_string()
+                        } else if msg.contains("不支持") {
+                            format!("换不了，{m} 不在列表里")
+                        } else {
+                            "换不了模型".to_string()
+                        };
+                        return Ok(ToolResult {
+                            speech,
+                            data: serde_json::json!({
+                                "error": "model_switch_failed",
+                                "model": m,
+                                "reason": msg,
+                            }),
+                        });
+                    }
+                }
             }
         }
 
@@ -777,6 +809,28 @@ pub fn clean_for_speech(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 模型切换（set_context 的 model 参数真正生效）──
+
+    #[test]
+    fn acp_has_config_option_support() {
+        // 编译期验证：set_config_option / config_option_values 存在
+        // （这些方法是模型切换的实现基础）
+        // 运行期验证：没有活跃进程时必须如实报错
+        let bridge = crate::dsh::DshBridge::new(
+            vec!["true".into()],
+            "/tmp".into(),
+            std::time::Duration::from_secs(1),
+        );
+        // 没有活跃进程时应该如实报错，不能假装成功
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt.block_on(bridge.set_model(r#"["a","b"]"#));
+        assert!(r.is_err(), "没有活跃进程时切模型必须失败");
+        assert!(
+            r.unwrap_err().to_string().contains("没有活跃"),
+            "错误信息要说清楚原因"
+        );
+    }
 
     // ── 多 agent（set_context 真正生效）──
 
