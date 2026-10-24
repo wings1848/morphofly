@@ -288,8 +288,19 @@ impl DshClient {
         // 用户听到的汇报是「失败了：建 DSH 会话失败」。
         //
         // 真机证据（手工复现）：initialize 15.29s、session/new 1.49s。
-        for _ in 0..600 {
+        //
+        // ⚠️ 2026-10-25 04:28 又踩到一次超时（30s 没回 initialize）：
+        // 当时 gpd 负载 7.45（用户开着 Chrome 的 DSH GUI），
+        // `tools/probe_acp.py` 实测 init_ms=19189、session_new_ms=20034 ——
+        // 慢机器 + 高负载下 30 秒根本不够。放大到 75 秒，并把耗时打出来，
+        // 下次再慢能直接看到是多少秒，不用猜。
+        let wait_started = std::time::Instant::now();
+        for _ in 0..1500 {
             if self.initialized.load(Ordering::SeqCst) {
+                tracing::debug!(
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    "DSH initialize 握手完成"
+                );
                 return Ok(());
             }
             if self.closed.load(Ordering::SeqCst) {
@@ -297,7 +308,10 @@ impl DshClient {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        bail!("DSH 握手超时（30s 没回 initialize 结果）")
+        bail!(
+            "DSH 握手超时（{}s 没回 initialize 结果，慢机器上 DSH 可能只是没启完）",
+            wait_started.elapsed().as_secs()
+        )
     }
 
     /// 在已握手的进程上新建一个会话（每个任务一个）。
@@ -309,9 +323,9 @@ impl DshClient {
         self.send_request("session/new", json!({"cwd": cwd, "mcpServers": []}))
             .await?;
 
-        // 等 sessionId 出现（最多 50s）。
-        // 慢机器上 session/new 本身要 1.5s，但前面可能还排着别的事。
-        for _ in 0..500 {
+        // 等 sessionId 出现（最多 100s）。
+        // 慢机器上 session/new 本身要 1.5s，但 gpd 高负载时实测要 20s（probe 数据）。
+        for _ in 0..1000 {
             if let Some(sid) = self.session_id.lock().await.clone() {
                 let _ = self.events_tx.send(DshEvent::SessionReady {
                     session_id: sid.clone(),
@@ -323,7 +337,7 @@ impl DshClient {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        bail!("建 DSH 会话超时（50s）")
+        bail!("建 DSH 会话超时（100s；慢机器上 DSH 起会话可能要 20s+）")
     }
 
     /// 派活：发一条 prompt，流式事件从 `subscribe()` 来

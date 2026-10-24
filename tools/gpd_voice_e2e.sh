@@ -111,14 +111,18 @@ echo "$LOG" | grep -E "工具调用|派活|主动汇报|会话已建立|纠正" 
 #   1. 模型自己调 delegate_task（工具调用）
 #   2. 模型只说不动 → 本地拿用户原话代派（日志是「派活 agent=」）
 # 两条都算「派出去了」，否则本地代派这种正常路径会被判失败。
-DELEGATED=$(echo "$LOG" | grep -cE "工具调用 name=delegate_task|派活 agent=")
+# 只数「真的派出去了」这一行。工具调用日志和派活日志会同时出现，
+# 一起数会数成 2 → 脚本误判「重复派活」（2026-10-25 04:28 踩过）。
+DELEGATED=$(echo "$LOG" | grep -c "派活 agent=")
+TOOLCALLS=$(echo "$LOG" | grep -c "工具调用 name=delegate_task")
 SESSIONS=$(echo "$LOG" | grep -c "DSH 会话已建")
 REPORTS=$(echo "$LOG" | grep -c "主动汇报")
 CORRECTIONS=$(echo "$LOG" | grep -c "已注入纠正提醒")
 
 echo
 echo "── 计数 ──"
-echo "派活次数:          $DELEGATED   （期望 1，模型调用和本地代派都算）"
+echo "派活次数:          $DELEGATED   （期望 1；模型自己调工具和本地代派都走这一行）"
+echo "模型工具调用:      $TOOLCALLS   （仅供参考：>0 表示模型自己干活，0 表示走了本地代派）"
 echo "DSH 会话新建:      $SESSIONS    （期望 1）"
 echo "主动汇报:          $REPORTS     （期望 1）"
 echo "兜底纠正注入:      $CORRECTIONS （期望 0；本地代派路径下也是 0）"
