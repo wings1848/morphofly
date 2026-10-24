@@ -1,0 +1,38 @@
+version: 1
+tasks:
+  - id: T1
+    title: 修 5 个现存缺陷
+    write_scope: ['core/src/dispatch.rs', 'core/src/dsh/']
+    gate: 'cargo test -p morphofly-core --lib'
+    status: done
+    evidence: 'tests 187→229'
+  - id: T2
+    title: set_context + 项目别名表
+    write_scope: ['core/src/projects.rs', 'core/src/tools.rs', 'core/src/dispatch.rs']
+    gate: 'cargo test -p morphofly-core --lib projects'
+    status: done
+    evidence: '9 个 projects 测试'
+  - id: T3
+    title: AEC 接入
+    write_scope: ['core/src/audio/']
+    gate: 'cargo test -p morphofly-core --lib aec'
+    status: done
+    evidence: '19 passed / 34.5dB'
+  - id: T4
+    title: UI/UX（托盘/贴边/拖动）
+    write_scope: ['app/src-tauri/src/main.rs', 'app/frontend/']
+    gate: 'cargo build -p morphofly-app'
+    status: done
+    evidence: '0 警告（wings-pc 验证）'
+  - id: T5
+    title: 真机 e2e 框架 + 修复发现的 bug
+    write_scope: ['tools/e2e/', 'core/examples/e2e_drive.rs']
+    gate: 'python3 tools/e2e/run.py --mode real'
+    status: done
+    evidence: '13/14 通过'
+  - id: T6
+    title: AEC 真机验证（computer use）
+    write_scope: ['docs/v2/']
+    gate: '人工核对：外放 70% 喊停能打断'
+    status: in_progress
+    depends_on: [T3]
