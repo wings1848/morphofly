@@ -82,16 +82,23 @@ rm -f "$REC"
 SRC_ARG=""; [ -n "$SOURCE" ] && SRC_ARG="--target=$SOURCE"
 SNK_ARG=""; [ -n "$SINK" ] && SNK_ARG="--target=$SINK"
 
+# ⚠️ 用 parecord/paplay 而不是 pw-cat。
+#
+# 2026-10-24 实测：wings-gpd 上 pw-cat 录到纯静音（RMS=0），
+# 但设备状态正常（80% 音量、未静音）。
+# 设备 SUSPENDED 时 pw-cat 的默认节点解析没正确 resume。
+# parecord/paplay 走 PulseAudio 兼容层，显式指定设备就能录到。
+SRC_DEV=""; [ -n "$SOURCE" ] && SRC_DEV="--device=$SOURCE"
+SNK_DEV=""; [ -n "$SINK" ] && SNK_DEV="--device=$SINK"
+
 # 1) 静音底噪
-timeout 4 pw-cat --record $SRC_ARG --format=s16 --rate=16000 --channels=1 /tmp/aec_noise.wav 2>/dev/null || \
-  timeout 4 parecord $SRC_ARG --format=s16le --rate=16000 --channels=1 /tmp/aec_noise.wav 2>/dev/null
+timeout 4 parecord $SRC_DEV --format=s16le --rate=16000 --channels=1 --file-format=wav /tmp/aec_noise.wav 2>/dev/null
 
 # 2) 播放 + 同时录音
-timeout 15 pw-cat --record $SRC_ARG --format=s16 --rate=16000 --channels=1 "$REC" 2>/dev/null &
+timeout 15 parecord $SRC_DEV --format=s16le --rate=16000 --channels=1 --file-format=wav "$REC" 2>/dev/null &
 RECPID=$!
 sleep 2
-timeout 12 pw-cat --playback $SNK_ARG "$WAV" 2>/dev/null || \
-  timeout 12 paplay $SNK_ARG "$WAV" 2>/dev/null
+timeout 12 paplay $SNK_DEV "$WAV" 2>/dev/null
 sleep 1
 kill $RECPID 2>/dev/null
 wait $RECPID 2>/dev/null
