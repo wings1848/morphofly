@@ -153,7 +153,6 @@ impl Dispatcher {
         None
     }
 
-
     /// 分发一次工具调用。name 不在 4 个里 → Err（不变量 I1）。
     pub async fn dispatch(&self, name: &str, args: &str) -> Result<ToolResult> {
         if !tools::TOOL_NAMES.contains(&name) {
