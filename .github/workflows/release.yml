@@ -29,14 +29,16 @@ jobs:
         with:
           cache-all-crates: true
 
-      - name: 安装 tauri-cli
-        run: cargo install tauri-cli --version "^2" --locked
+      # ⚠️ 别用 `cargo install tauri-cli`：2026-10-25 实测在 Windows runner 上
+      # 编译 40+ 分钟还没完（依赖太多）。npm 上有预编译的 CLI，几秒钟。
+      - name: 安装 tauri-cli（用预编译的 npm 包，别从源码编）
+        run: npm install -g @tauri-apps/cli@^2
 
       - name: 打 NSIS 安装包
         # --bundles 覆盖 tauri.conf.json 里给 Linux 写的 targets（deb/appimage）
         run: |
           cd app
-          cargo tauri build --bundles nsis
+          tauri build --bundles nsis
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,16 +70,17 @@ jobs:
           # tauri-cli 是全局安装的二进制，缓存它避免每次重编
           cache-all-crates: true
 
-      - name: 安装 tauri-cli
+      - name: 安装 tauri-cli（用预编译的 npm 包，比 cargo install 快一个数量级）
         # 本机装了不代表 CI 有 —— 第一次跑就栽在这里（no such command: tauri）
-        run: cargo install tauri-cli --version "^2" --locked
+        run: npm install -g @tauri-apps/cli@^2
 
       - name: 构建 Tauri 包
         # target-cpu 由 .cargo/config.toml 固定为 x86-64-v2，
         # 保证产物能在老 CPU（无 AVX）上跑。
+        # 注意：用的是 npm 版 CLI，命令是 tauri（不是 cargo tauri）
         run: |
           cd app
-          cargo tauri build
+          tauri build --bundles deb,appimage
 
       - name: 校验产物 CPU 基线
         # 防止误删 .cargo/config.toml 的 target-cpu 设置 ——
