@@ -27,3 +27,9 @@ tracing-subscriber.workspace = true
 # image-png: 托盘图标要用 png 解码
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
+
+# Linux 专用：启动时用 GTK 把窗口先设成全透明，等前端首帧画完再显形
+# （修 KDE 下启动瞬间闪黑框；见 main.rs 的 linux_set_window_opacity）。
+# 版本必须跟 tauri/tao 用的 gtk 0.18 对齐，否则会重复编译两份 GTK 绑定。
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
