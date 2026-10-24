@@ -35,6 +35,8 @@ const TERMS: &[(&str, &[&str])] = &[
             "摩托fly",
             "魔方fly",
             "魔方飞",
+            "魔索fly",
+            "魔索飞",
             "魔方 fly",
             "莫否fly",
             "mofangfly",

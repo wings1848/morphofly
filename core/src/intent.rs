@@ -96,6 +96,58 @@ const CHAIN_WORDS: &[&str] = &["然后", "接着", "再", "并且", "同时", "�
 /// 判断任务复杂度。
 ///
 /// 输入是交给 `delegate_task` 的 task 文本（已经是自包含的描述）。
+/// 只读类动词：看一眼、读一下、查一下这种，天然是「简单任务」
+const READ_WORDS: &[&str] = &[
+    "查看",
+    "看看",
+    "看一下",
+    "看一眼",
+    "读一下",
+    "读一读",
+    "念一下",
+    "列一下",
+    "列出",
+    "显示",
+    "查一下",
+    "查查",
+    "是什么",
+    "第一行",
+    "告诉我",
+    "有哪些",
+];
+
+/// 会改动东西的动词：出现任何一个就不算「只读」
+const WRITE_WORDS: &[&str] = &[
+    "改",
+    "写",
+    "删",
+    "加",
+    "修",
+    "补",
+    "跑",
+    "测",
+    "提交",
+    "推送",
+    "发布",
+    "部署",
+    "安装",
+    "清理",
+    "重命名",
+    "迁移",
+    "重构",
+    "优化",
+    "创建",
+    "新建",
+    "生成",
+    "替换",
+    "重写",
+];
+
+/// 像不像「只读任务」：有只读动词、且没有任何改动动词
+fn looks_readonly(t: &str) -> bool {
+    READ_WORDS.iter().any(|w| t.contains(w)) && !WRITE_WORDS.iter().any(|w| t.contains(w))
+}
+
 pub fn classify(task: &str) -> Intent {
     let t = task.trim();
 
@@ -133,7 +185,14 @@ pub fn classify(task: &str) -> Intent {
     }
 
     // 规则 4：句子很长（超过 50 字），大概率描述复杂需求
-    if t.chars().count() > 50 {
+    //
+    // ⚠️ 例外：**只读任务不因长度判复杂**。
+    // 真机踩过（2026-10-25）：语音模型派下来的
+    // 「查看 /home/wings/Code_Project/morphofly 项目的 README 内容」
+    // 光路径就 37 个字符，整句 57 字 → 被判「任务描述过长」→ 反过来问用户确认，
+    // 于是一个「看一眼 README」的小活卡住，DSH 会话都没建，主动汇报自然也没有。
+    // 长度本身不代表复杂，**路径/文件名是噪声**。
+    if t.chars().count() > 50 && !looks_readonly(t) {
         return Intent {
             complexity: Complexity::Complex,
             reason: "任务描述过长",
@@ -261,6 +320,23 @@ mod tests {
         assert!(q.chars().count() <= 18, "确认问句太长: {q}");
         assert!(q.contains("要我"), "应包含「要我」: {q}");
         assert!(q.ends_with("吗"), "应是问句: {q}");
+    }
+
+    #[test]
+    fn long_readonly_task_with_path_is_simple() {
+        // 真机原话：路径占了 37 个字符，整句 57 字，但事情只是「看一眼 README」
+        let t = "查看 /home/wings/Code_Project/morphofly 项目的 README 内容";
+        assert!(t.chars().count() > 50, "测试串要真的超阈值");
+        let got = classify(t);
+        assert_eq!(got.complexity, Complexity::Simple, "只读任务不该因长度被拦");
+        assert!(!got.needs_confirm());
+    }
+
+    #[test]
+    fn long_task_with_writes_still_needs_confirm() {
+        let t = "查看 /home/wings/Code_Project/morphofly 项目的 README 内容，\
+                 然后改一下第一行，接着跑一遍测试，最后提交并推送";
+        assert!(classify(t).needs_confirm(), "带改动动作的长任务仍然要确认");
     }
 
     #[test]
