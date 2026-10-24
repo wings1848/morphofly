@@ -191,3 +191,48 @@ jobs:
 
       - name: 编译 core（含唤醒词）
         run: cargo build -p morphofly-core --features kws --release
+
+  # ── 构建 Linux 应用并上传产物（真机测试用这个二进制，不在本机编译）──
+  #
+  # 为什么单独一个 job：用户明确「编译走 GitHub Actions」。
+  # 真机（wings-gpd 掌机）CPU 弱，本地编一次要 5–13 分钟且会卡住正在跑的
+  # app/chrome；改成 CI 编、这里只负责下载+部署（tools/gpd_deploy_ci.sh）。
+  build-app-linux:
+    name: 构建 Linux 应用（可下载产物）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf \
+            libasound2-dev libpulse-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 编译 app（默认 features，含唤醒词）
+        run: cargo build --release -p morphofly-app
+
+      - name: 打产物包（二进制 + 随包资源 + 版本标记）
+        run: |
+          set -euo pipefail
+          rm -rf ci-dist && mkdir -p ci-dist
+          cp target/release/morphofly-app ci-dist/
+          cp -r app/src-tauri/resources ci-dist/resources
+          printf 'sha=%s\nbuilt=%s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" \
+            > ci-dist/build.txt
+          tar -C ci-dist -czf morphofly-app-linux-x64.tar.gz .
+          ls -lh morphofly-app-linux-x64.tar.gz
+          cat ci-dist/build.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: morphofly-app-linux-x64
+          path: morphofly-app-linux-x64.tar.gz
+          retention-days: 14
