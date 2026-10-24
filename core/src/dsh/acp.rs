@@ -202,7 +202,7 @@ impl DshClient {
                             &config_options,
                             &initialized,
                         )
-                            .await;
+                        .await;
                     }
                     Ok(None) => break,
                     Err(e) => {
