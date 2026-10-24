@@ -66,3 +66,6 @@ tokio = { workspace = true, features = ["full"] }
 
 [[example]]
 name = "e2e_drive"
+
+[[example]]
+name = "aec_aloop_test"
