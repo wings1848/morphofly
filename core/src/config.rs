@@ -78,7 +78,13 @@ impl Default for RealtimeConfig {
             api_key_env: "STEPFUN_KEY".to_string(),
             output_sample_rate: 24_000,
             instructions: DEFAULT_INSTRUCTIONS.to_string(),
-            use_local_vad: true,
+            // 2026-10-25 起默认走**服务端 VAD**（官方控制台的默认方式）：
+            // 配合上行自动增益（`audio::gain`），服务端 250ms 静音就判「说完」，
+            // 实测「说完 → 首音频」353–386ms（真机，见 docs/v2/turn-taking-latency.md）。
+            // 以前默认本地 VAD（要等 500ms 静音）是因为服务端 VAD 因音量太小根本不触发；
+            // 加了增益之后这个理由没了。
+            // 想退回本地 VAD：MORPHOFLY_LOCAL_VAD=1。
+            use_local_vad: false,
         }
     }
 }
@@ -365,6 +371,16 @@ impl Config {
                 "1" | "true" | "on" | "yes"
             );
             self.realtime.use_local_vad = !on;
+        }
+        // 反向开关：想退回「本地 VAD + 手动 commit」时用（不重新编译）
+        if let Ok(v) = std::env::var("MORPHOFLY_LOCAL_VAD") {
+            let on = matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes"
+            );
+            if on {
+                self.realtime.use_local_vad = true;
+            }
         }
         // 音频设备：环境变量优先于配置文件（便于临时排查，不用改文件）
         if let Ok(v) = std::env::var("MORPHOFLY_INPUT_DEVICE") {

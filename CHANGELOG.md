@@ -5,6 +5,42 @@
 
 ## [Unreleased]
 
+### 修复（V3.5，2026-10-25）——语音链路重做
+
+**症状**：说一句话，她要几秒才回、有时完全不回；她说话一卡一卡、说几个字就断。
+
+**根因（都有实测证据）**
+
+1. **服务端 VAD 根本没触发**：阶跃的 server VAD 是能量门控
+   （`energy_awakeness_threshold`），真实耳机麦的语音峰值只有 ~0.09，它不认；
+   浏览器自带 AGC 所以官方控制台一直正常。
+   探针 `core/examples/vad_probe.rs`：同一段录音原样 → 无 `speech_started`；
+   ×2（+6dB）→ 触发；×4（+12dB）→ 触发且转写更准。
+2. **播放缓冲装不下服务端突发推流**：一次回复 2.42s 音频在 650ms 内全部到达，
+   而环只有 500ms → 来不及播的样本被覆盖 → 听感就是「卡顿 + 截断」。
+3. **没有首包超时**：`commit` + `response.create` 之后若服务端不回，永久静默。
+4. **打断只停播不截断上下文**：服务端以为她整段都说出口了，下一轮答非所问。
+
+**改动**
+
+- 新增 `core/src/audio/gain.rs`：上行自动增益（1–8×，底噪不放大），`MORPHOFLY_NO_AGC=1` 可关
+- 回合判定默认改回**服务端 VAD**：静音 **250ms**（`MORPHOFLY_VAD_SILENCE_MS` 可调），
+  `MORPHOFLY_LOCAL_VAD=1` 可退回本地 VAD + 手动 commit
+- 播放环 `JITTER_MAX_MS` 500ms → **10s**，并新增丢样本 WARN（带丢弃量/队列深度）
+- 新增**首包看门狗**：触发后 2 秒无音频 → 取消并重发一次
+- 打断补 `conversation.item.truncate`（记 `assistant item_id` + 已播毫秒）
+- 修：服务端 VAD 模式下本地 VAD 不再自行取消回复；不再每轮无条件 `response.cancel`
+- 新增探针 `core/examples/vad_probe.rs`（`--tools` / `--create`），锁死服务端 VAD 契约
+- 真机结果：`说完 → 首音频` **353–386ms**，`dropped_total=0`
+
+**路由规则（用户明确）**：问题/需求/任务 → 一律整理后派给干活 agent；
+只有寒暄与「关于小蝶自己」的问题由她自己答。
+`dispatch::is_chitchat / needs_dispatch` 语义反转（默认派活），
+并把它作为本地兜底代派的判据（模型没调工具时用用户原话补派）。
+instructions 同步重写（默认派活、禁止编造答案）。
+
+**文档**：新增 `docs/v2/turn-taking-latency.md`；重写 README。
+
 ### 新增（V3.4，2026-10-25）
 
 **音频设备可显式指定（用户要求：支持设置输入输出声音的设备）**

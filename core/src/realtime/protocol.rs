@@ -549,24 +549,33 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("小蝶"));
-        // 默认 use_local_vad=true → turn_detection 应为 null（关掉服务端 VAD）
-        assert!(
-            v["session"]["turn_detection"].is_null(),
-            "默认配置用本地 VAD，turn_detection 应为 null，实际 {:?}",
+        // 2026-10-25 起默认走**服务端 VAD**（配合上行增益，实测说完→首音频 386ms），
+        // 所以默认必须带 turn_detection，且静音判定是我们调过的 250ms。
+        assert_eq!(
+            v["session"]["turn_detection"]["type"], "server_vad",
+            "默认模式应为服务端 VAD，实际 {:?}",
             v["session"]["turn_detection"]
+        );
+        assert_eq!(
+            v["session"]["turn_detection"]["silence_duration_ms"],
+            SILENCE_MS_DEFAULT
         );
     }
 
-    /// 反过来：use_local_vad=false 时必须恢复 server_vad
+    /// 反过来：本地 VAD 模式（手动 commit）必须把 turn_detection 显式置 null
     #[test]
-    fn server_vad_mode_restores_turn_detection() {
+    fn local_vad_mode_nulls_turn_detection() {
         let rc = crate::config::RealtimeConfig {
-            use_local_vad: false,
+            use_local_vad: true,
             ..Default::default()
         };
         let sc = SessionConfig::from_realtime_config(&rc);
         let v = client_command_json(&ClientCommand::SessionUpdate { session: sc });
-        assert_eq!(v["session"]["turn_detection"]["type"], "server_vad");
+        assert!(
+            v["session"]["turn_detection"].is_null(),
+            "本地 VAD 模式必须显式发 null（缺失 ≠ null），实际 {:?}",
+            v["session"]["turn_detection"]
+        );
     }
 
     #[test]
