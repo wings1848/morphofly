@@ -436,13 +436,17 @@ impl VoiceSession {
                                         let m = m_machine.lock().await;
                                         matches!(m.state(), OrbState::S3 | OrbState::S4)
                                     };
-                                    if still_responding {
-                                        let _ = client2.cancel_response();
-                                        tracing::info!(
-                                            "⚡ 上一轮回复还没结束 → 先取消，再开新一轮（不重复计数，打断已在开口时记过）"
-                                        );
-                                    }
                                     if local_vad {
+                                        // ⚠️ 服务端 VAD 模式下**不能**在这里取消 ——
+                                        // 回合归服务端管，本地 VAD 只是观察者；
+                                        // 在这里 cancel 会把刚触发的那一轮回复打死
+                                        // （真机表现：它刚开口就被自己掐掉）。
+                                        if still_responding {
+                                            let _ = client2.cancel_response();
+                                            tracing::info!(
+                                                "⚡ 上一轮回复还没结束 → 先取消，再开新一轮（不重复计数，打断已在开口时记过）"
+                                            );
+                                        }
                                         // 本地 VAD 模式：关掉了服务端 VAD，回合结束得我们自己报。
                                         let _ = client2.commit();
                                         let _ = client2.create_response();
