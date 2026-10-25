@@ -724,11 +724,16 @@ impl VoiceSession {
                         let queued = player2.queued_frames();
                         // 「回复还在进行」也算一次打断（可能是思考中还没出声）。
                         let responding = matches!(m.state(), OrbState::S3 | OrbState::S4);
-                        player2.stop_now();
-                        // ★ 修缺陷 #5：云端已经知道用户开口了，但当前这轮生成
-                        // 可能还在继续。显式取消，别浪费 token。
-                        if let Err(e) = c_ev.cancel_response() {
-                            tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
+                        // 只在「真的还有东西在播 / 这一轮还在跑」时才取消。
+                        // 2026-10-25 真机：每轮用户开口都会无条件发 cancel，
+                        // 服务端回 `no ongoing response to cancel` 刷了一堆 WARN。
+                        if queued > 0 || responding {
+                            player2.stop_now();
+                            // ★ 修缺陷 #5：云端已经知道用户开口了，但当前这轮生成
+                            // 可能还在继续。显式取消，别浪费 token。
+                            if let Err(e) = c_ev.cancel_response() {
+                                tracing::debug!(error = %e, "取消云端生成失败（可忽略）");
+                            }
                         }
                         if queued > 0 || responding {
                             let counted = count_interruption(&interruptions, &last_interrupt_ms);
@@ -820,10 +825,20 @@ impl VoiceSession {
                         // 3. `looks_like_action`：回复听起来在办事（闲聊不该被纠正）
                         //
                         // `correction_sent` 保证一次用户说话最多纠正一次，不会无限打断。
+                        // ★ 2026-10-25 用户反馈：问「今天天气怎么样」她直接瞎答，不派活。
+                        //   原因：模型把「问外部信息」当成了闲聊，而原来的纠正判据
+                        //   只看「回复听起来在办事」（好，/查着/马上…），她答「我查不到」
+                        //   一个字都不命中 → 纠正不触发 → 任务永远不派。
+                        //   现在再加一条：**用户原话本身在问外部信息**，即使她答得像闲聊，
+                        //   也补一次代派（用用户原话，不依赖模型自觉）。
+                        let user_wants_lookup = user_said_is_final
+                            && !user_said.trim().is_empty()
+                            && morphofly_core::dispatch::needs_dispatch(&user_said);
                         if tool_calls_this_turn == 0
                             && user_spoke
                             && !correction_sent
-                            && morphofly_core::dispatch::looks_like_action(&assistant_reply)
+                            && (morphofly_core::dispatch::looks_like_action(&assistant_reply)
+                                || user_wants_lookup)
                         {
                             tracing::warn!(
                                 reply = %assistant_reply,

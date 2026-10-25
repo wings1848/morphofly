@@ -1100,6 +1100,78 @@ pub fn looks_like_action(reply: &str) -> bool {
     MARKERS.iter().any(|m| t.contains(m))
 }
 
+/// 用户这句话是不是在「问外部信息 / 让人动手做事」？
+///
+/// 为什么需要它（2026-10-25 真机）：
+/// 用户问「今天天气怎么样」，模型**没有**调 `delegate_task`，而是直接瞎答一句。
+/// 原来的兜底纠正只看 `looks_like_action(模型回复)` —— 她答「我查不到」这类话
+/// 一个标记都不命中，于是纠正不触发，任务永远不派给 DSH。
+///
+/// 所以纠正判据要**同时看用户原话**：只要用户在问需要外部信息/动手的事，
+/// 就算模型答得像闲聊，也要本地代派一次（用用户原话，不依赖模型自觉）。
+///
+/// 判据故意保守：宁可漏派，也不能把「你好」「能听到吗」这种闲聊派成任务。
+pub fn needs_dispatch(said: &str) -> bool {
+    let t = said.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // 关于「小蝶自己」的问题 / 寒暄：不派活
+    const ABOUT_SELF: [&str; 14] = [
+        "你是谁",
+        "你叫什么",
+        "你几岁",
+        "你是什么",
+        "你会什么",
+        "你会做",
+        "哪些能力",
+        "什么能力",
+        "能做什么",
+        "你有名字",
+        "你听得见",
+        "能听见吗",
+        "能听到吗",
+        "你好",
+    ];
+    if ABOUT_SELF.iter().any(|m| t.contains(m)) {
+        return false;
+    }
+    // 需要外部信息 / 需要动手的关键词
+    const LOOKUP: [&str; 30] = [
+        "天气",
+        "新闻",
+        "股价",
+        "汇率",
+        "热搜",
+        "几点",
+        "查",
+        "搜",
+        "找一下",
+        "看看",
+        "看一下",
+        "看下",
+        "多少",
+        "哪里",
+        "哪个",
+        "为什么",
+        "怎么",
+        "报错",
+        "错误",
+        "代码",
+        "文件",
+        "目录",
+        "项目",
+        "测试",
+        "运行",
+        "跑一下",
+        "安装",
+        "修复",
+        "部署",
+        "进度",
+    ];
+    LOOKUP.iter().any(|m| t.contains(m))
+}
+
 /// 语音回复的硬长度上限（字符数）。
 ///
 /// 用户要求「语音消息回复极其简洁」。
@@ -1406,6 +1478,34 @@ mod tests {
         let a = SessionContext::new("dsh", "/tmp");
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn needs_dispatch_detects_lookup_questions() {
+        for s in [
+            "今天天气怎么样？",
+            "帮我查一下 README 第一行",
+            "看看这个报错",
+            "登录页那个错误修一下",
+            "项目现在什么进度",
+        ] {
+            assert!(needs_dispatch(s), "应判为需要派活: {s:?}");
+        }
+    }
+
+    #[test]
+    fn needs_dispatch_ignores_chitchat_and_self_questions() {
+        for s in [
+            "你好",
+            "你是谁",
+            "现在都有哪些能力？",
+            "能听到声音吗？",
+            "谢谢",
+            "",
+            "   ",
+        ] {
+            assert!(!needs_dispatch(s), "不该派活: {s:?}");
+        }
     }
 
     #[test]
