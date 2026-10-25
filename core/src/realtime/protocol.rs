@@ -199,7 +199,8 @@ impl SessionConfig {
             turn_detection: if rc.use_local_vad {
                 None
             } else {
-                Some(TurnDetection::default())
+                // 静音判定可用 MORPHOFLY_VAD_SILENCE_MS 覆盖（真机调参不重新编译）
+                Some(TurnDetection::from_env())
             },
             tools: None,
         }
@@ -242,6 +243,28 @@ pub struct TurnDetection {
     pub energy_awakeness_threshold: Option<u32>,
 }
 
+/// 服务端 VAD 的「说完」静音判定默认值（毫秒）。
+///
+/// 实测口径（`core/examples/vad_probe.rs` 对真实 API 跑）：
+/// 这个值直接决定「你闭嘴之后，服务端多久认为这一轮说完了」。
+/// 300 → 250 省 50ms；再往下（<200）中文换气会被切成两轮。
+pub const SILENCE_MS_DEFAULT: u32 = 250;
+
+impl TurnDetection {
+    /// 按环境变量 `MORPHOFLY_VAD_SILENCE_MS` 覆盖静音判定（真机调参用，不用重新编译）。
+    pub fn from_env() -> Self {
+        let mut td = Self::default();
+        if let Ok(v) = std::env::var("MORPHOFLY_VAD_SILENCE_MS") {
+            if let Ok(ms) = v.trim().parse::<u32>() {
+                if (50..=2000).contains(&ms) {
+                    td.silence_duration_ms = Some(ms);
+                }
+            }
+        }
+        td
+    }
+}
+
 impl Default for TurnDetection {
     fn default() -> Self {
         // ⚠️ 2026-10-24 二次实测（参数扫描）——**这些参数对 StepFun 实际不生效**：
@@ -269,7 +292,11 @@ impl Default for TurnDetection {
         Self {
             kind: "server_vad".into(),
             prefix_padding_ms: Some(300), // 300：曾用 500，降到 300 减少用户等待
-            silence_duration_ms: Some(300), // 300：原 450 让「说完」判定太慢（占 P1 延迟大头）
+            // 250：2026-10-25 用户要求从 300 降到 250（再省 50ms 开口延迟）。
+            // 官方文档默认 100、OpenAI 官方 demo 500、pipecat 200(VAD)+600(策略)；
+            // 250 在「别切碎句子」和「别等太久」之间，中文换气通常 150–250ms。
+            // 可用环境变量 MORPHOFLY_VAD_SILENCE_MS 临时覆盖（不用重新编译）。
+            silence_duration_ms: Some(SILENCE_MS_DEFAULT),
             energy_awakeness_threshold: Some(500),
         }
     }
