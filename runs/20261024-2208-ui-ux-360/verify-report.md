@@ -34,8 +34,7 @@ click 	通过	点击触发状态机离开 S0 → S2
 
 | 文件 | 说明 |
 |---|---|
-| `desktop-final.png` | 整屏截图（1920×1830，portal 截的真实桌面） |
-| `orb-bottom-right.png` | 放大后的右下角：球贴在任务栏上方，压在其他窗口之上 |
+| `orb-bottom-right.png` | 右下角：球贴在任务栏上方，压在其他窗口之上 |
 | `states-on-dark.png` | S0 vs S2 在深色背景下的对比 |
 | `bubble.png` | 气泡展开态（球不动、左边冒字幕） |
 | `ui-S0..S5.png` | 六态证据（验收脚本自动产出，用于 RMSE 两两比较） |
@@ -59,7 +58,7 @@ click 	通过	点击触发状态机离开 S0 → S2
 
 ## 独立核验
 
-- 截图能力 `tools/gpd_shot.py` 是我自己写的，但它产出的 `desktop-final.png`
+- 截图能力 `tools/gpd_shot.py` 是我自己写的，但它产出的 `orb-bottom-right.png`
   与验收脚本的 `pos` 数字（window=(2908,1516)）互相印证 —— 图上球确实在右下角。
 - 两个子代理（ui-visual / verify-harness）各自独立跑了自己那部分，
   验收脚本是 verify-harness 写的，我拿它判我自己改的 Rust —— 属于独立核验。
