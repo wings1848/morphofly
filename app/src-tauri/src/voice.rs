@@ -238,6 +238,23 @@ impl VoiceSession {
             // 诊断计数（2026-10-25 加）：用来区分「麦克风没声音」和「VAD 没判出来」。
             let mut frames_seen = 0u64;
             let mut peak_rms = 0.0f32;
+            // ★ 上行自动增益（2026-10-25）。
+            //
+            // 真机实测：耳机麦的语音峰值只有 ~0.09（-21dBFS），阶跃的**服务端 VAD
+            // 是能量门控**的，这么小的声音它直接不判 → 服务端 VAD 模式完全不回复。
+            // 探针（core/examples/vad_probe.rs）用同一段录音验证：
+            //   原样 → 无 speech_started；×2 → 触发；×4 → 触发且 ASR 更准。
+            // 这里只放大**上行**（送识别的那一路）；本地 VAD 仍用原始帧。
+            let agc_enabled = std::env::var("MORPHOFLY_NO_AGC")
+                .map(|v| {
+                    !matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "on" | "yes"
+                    )
+                })
+                .unwrap_or(true);
+            let mut uplink_gain = morphofly_core::audio::AutoGain::new();
+            tracing::debug!(agc_enabled, "上行自动增益状态");
             tracing::debug!("推流任务启动（等待采集帧）");
             // ★ 本地 VAD：三个用途
             //   1. 打断（用户说话 → 立刻停播）
@@ -291,7 +308,7 @@ impl VoiceSession {
                     break;
                 }
                 match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-                    Ok(Ok(frame)) => {
+                    Ok(Ok(mut frame)) => {
                         let rms = morphofly_core::spectrum::rms_i16(&frame);
                         let bins = spectrum.analyze_i16(&frame);
                         on_spec(bins, morphofly_core::spectrum::rms_to_visual(rms));
@@ -486,6 +503,12 @@ impl VoiceSession {
                                 _ => {}
                             }
                         }
+                        // 上行增益：服务端 VAD 认音量，太小就完全没反应（见上面注释）
+                        let uplink_peak = if agc_enabled {
+                            uplink_gain.process_i16(&mut frame)
+                        } else {
+                            0.0
+                        };
                         if let Err(e) = client2.send_audio(&frame) {
                             tracing::warn!(error = %e, "推流失败，推流任务退出（此后麦克风不再上传）");
                             break;
@@ -505,6 +528,8 @@ impl VoiceSession {
                             tracing::debug!(
                                 frames = frames_seen,
                                 peak_rms = format!("{peak_rms:.4}"),
+                                uplink_peak = format!("{uplink_peak:.3}"),
+                                agc = format!("{:.1}", uplink_gain.gain()),
                                 queued,
                                 "推流心跳"
                             );

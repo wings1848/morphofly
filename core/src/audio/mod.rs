@@ -13,15 +13,18 @@
 //! | [`capture`] | cpal 采集 → 下混 → 重采样 → 分帧 | 下混 / 重采样 / 分帧（纯函数） |
 //! | [`playback`] | rodio 0.23 播放、追加任意采样率 PCM、`stop_now()`、队列深度 | 队列计量 / 流式 source |
 //! | [`ring`] | 有界环形缓冲（播放侧 200–500ms 抗抖动） | 全部 |
+//! | [`gain`] | 上行自动增益（服务端 VAD 是能量门控，麦克风太小它就不认） | 全部 |
 
 pub mod aec;
 pub mod capture;
 pub mod device;
+pub mod gain;
 pub mod playback;
 pub mod ring;
 
 pub use capture::{AudioCapture, CaptureConfig, CaptureFormat, CapturePipeline, LinearResampler};
 pub use device::DeviceEntry;
+pub use gain::AutoGain;
 pub use playback::{AppendConverter, AudioPlayer, OutputFormat, PlaybackQueue, RingSource};
 pub use ring::SampleRing;
 
