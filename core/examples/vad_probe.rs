@@ -145,6 +145,42 @@ async fn run(path: &str, do_create: bool, with_tools: bool) -> anyhow::Result<()
             .turn_detection
     );
 
+    // ★ 事件读取必须和推流**并发**：否则事件全在广播缓冲里，
+    //   读到的「时间戳」是 flush 时刻，不是真实到达时刻（第一版探针就踩了这个坑）。
+    let speech_end = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let speech_end_r = speech_end.clone();
+    let t0c = t0;
+    let reader = tokio::spawn(async move {
+        let mut counts = std::collections::BTreeMap::<String, u32>::new();
+        let mut first_audio_ms: Option<u64> = None;
+        loop {
+            let ev = match tokio::time::timeout(Duration::from_secs(20), rx.recv()).await {
+                Ok(Ok(e)) => e,
+                _ => break,
+            };
+            let now = t0c.elapsed().as_millis() as u64;
+            let end = speech_end_r.load(std::sync::atomic::Ordering::Relaxed);
+            let since_end = if end == u64::MAX {
+                "未推完".to_string()
+            } else {
+                format!("+{}ms", now.saturating_sub(end))
+            };
+            let name = ev.kind().to_string();
+            *counts.entry(name.clone()).or_default() += 1;
+            if name == "AudioDelta" {
+                if first_audio_ms.is_none() && end != u64::MAX {
+                    first_audio_ms = Some(now.saturating_sub(end));
+                }
+            } else {
+                println!("[probe] +{now}ms {since_end} {}", ev_name(&ev));
+            }
+            if name == "ResponseDone" {
+                break;
+            }
+        }
+        (counts, first_audio_ms)
+    });
+
     if with_tools {
         // App 在 connect 之后会再发一次 session.update（带工具）——
         // 用这个开关复现「发了工具之后服务端 VAD 还灵不灵」。
@@ -174,47 +210,29 @@ async fn run(path: &str, do_create: bool, with_tools: bool) -> anyhow::Result<()
         client.send_audio(&silence)?;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let t_done = Instant::now();
+    speech_end.store(
+        t0.elapsed().as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     println!(
-        "[probe] +{}ms 静音推完，开始观察 12 秒",
+        "[probe] +{}ms 静音推完（= 说完时刻），观察 20 秒",
         t0.elapsed().as_millis()
     );
 
     if do_create {
         tokio::time::sleep(Duration::from_millis(300)).await;
         client.create_response()?;
-        println!(
-            "[probe] +{}ms 已补发 response.create",
-            t0.elapsed().as_millis()
-        );
+        println!("[probe] 已补发 response.create");
     }
 
-    let mut counts = std::collections::BTreeMap::<String, u32>::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
-    loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(ev)) => {
-                let name = ev.kind().to_string();
-                *counts.entry(name.clone()).or_default() += 1;
-                if name != "AudioDelta" {
-                    println!(
-                        "[probe] +{}ms {} （audio流结束 +{}ms）",
-                        t0.elapsed().as_millis(),
-                        ev_name(&ev),
-                        t_done.elapsed().as_millis()
-                    );
-                }
-            }
-            Ok(Err(_)) => {
-                println!("[probe] 事件通道关闭");
-                break;
-            }
-            Err(_) => break,
-        }
-    }
+    let (counts, first_audio_ms) = reader.await.unwrap_or_default();
     println!("[probe] ==== 统计 ====");
     for (k, v) in counts {
         println!("[probe]   {k}: {v}");
+    }
+    match first_audio_ms {
+        Some(ms) => println!("[probe] ★ 说完 → 首音频: {ms}ms"),
+        None => println!("[probe] ★ 说完 → 首音频: 没有音频"),
     }
     Ok(())
 }

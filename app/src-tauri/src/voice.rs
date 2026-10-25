@@ -565,6 +565,8 @@ impl VoiceSession {
         let c_ev = client.clone();
         let ev_task = tokio::spawn(async move {
             let mut speech_started: Option<std::time::Instant> = None;
+            // 云端 speech_stopped 的时刻（用于量「说完 → 首音频」）
+            let mut cloud_stop: Option<std::time::Instant> = None;
             // ★ 兜底纠正：模型说「好，查着呢」却没真调工具 = 假装干活。
             //
             // 统计单位必须是**一次用户说话**，不能是「一次模型响应」。
@@ -699,6 +701,8 @@ impl VoiceSession {
                                 if let Some(t) = w.since {
                                     tracing::info!(
                                         wait_ms = t.elapsed().as_millis() as u64,
+                                        cloud_wait_ms =
+                                            cloud_stop.map(|c| c.elapsed().as_millis() as u64),
                                         local_vad,
                                         "首次音频到达（说完 → 它开口）"
                                     );
@@ -715,6 +719,7 @@ impl VoiceSession {
                         }
                     }
                     RealtimeEvent::SpeechStarted => {
+                        tracing::debug!(local_vad, "云端判定用户开口（speech_started）");
                         // ★ barge-in：本地先停，不等云端确认
                         let queued = player2.queued_frames();
                         // 「回复还在进行」也算一次打断（可能是思考中还没出声）。
@@ -756,6 +761,11 @@ impl VoiceSession {
                         let _ = m.handle(Stimulus::UserSpeechStarted);
                     }
                     RealtimeEvent::SpeechStopped => {
+                        // ★ 云端判定「你说完了」的时刻（2026-10-25 排延迟用）。
+                        // 这是用户真正感觉得到的那个点：从这一刻到他听见声音，
+                        // 剩下全是「服务端 ASR + 大模型 + TTS 首包」的时间。
+                        cloud_stop = Some(std::time::Instant::now());
+                        tracing::info!("云端判定用户说完（speech_stopped）");
                         speech_started = Some(std::time::Instant::now());
                     }
                     RealtimeEvent::UserTranscript { text, is_final } => {
