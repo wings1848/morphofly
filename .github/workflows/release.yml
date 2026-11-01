@@ -169,7 +169,7 @@ jobs:
 
       - name: 创建 Release（仅打 tag 时）
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             target/release/bundle/deb/*.deb
